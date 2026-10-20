@@ -164,7 +164,7 @@ export function registerEventTools(server: McpServer) {
             ...orderedPageArgs(direction, pageSize - rawNodes.length, innerCursor),
           });
           reads += 1;
-          const page = orderedPage(data.events.nodes, data.events.pageInfo, direction);
+          const page = orderedPage(data.events.nodes, data.events.pageInfo, direction, innerCursor);
           rawNodes.push(...page.nodes);
           if (!page.has_next_page) {
             endCursor = page.next_cursor;

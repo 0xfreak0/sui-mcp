@@ -37,14 +37,16 @@ sidebar:
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Recommended for wallet activity) Read a wallet's decoded protocols, actions and coin flows; prefer this to query_transactions for exploring activity. Rows use complete balance changes and commands. Newest first by default; oldest starts at the first transaction. Pass next_cursor as cursor with the same order. address_poisoning always checks the shown page only, so empty pairs clear nothing older. subject_flow is the queried wallet's signed change per coin; token_flow is the sender's, omitted when they are the same address. Counterparties include at most 25 value recipients; counterparty_count reports larger sets. Summary keeps ~35k characters, preserving failed and lookalike-involved rows; omitted reports the rest and detail:'full' lists the whole page. signed_as_alias separately lists transactions signed as another wallet's address_alias delegate, which the main page cannot show. The delegate scan is cached for up to five minutes; alias_scan_as_of dates it and signed_as_alias_unavailable marks incomplete scans, even beside returned matches.
+(Recommended for wallet activity) Read a wallet's decoded protocols, actions and coin flows; prefer this to query_transactions for exploring activity. from/to bound the chain query: ISO times are inclusive, checkpoint numbers exclusive. Rows use complete balance changes and commands. Newest first by default; oldest starts at the first transaction in the window. Pass next_cursor as cursor with the same from, to and order. address_poisoning always checks the shown page only, so empty pairs clear nothing older. subject_flow is the queried wallet's signed change per coin; token_flow is the sender's, omitted when they are the same address. Counterparties include at most 25 value recipients; counterparty_count reports larger sets. Summary keeps ~35k characters, preserving failed and lookalike-involved rows; omitted reports the rest and detail:'full' lists the whole page. signed_as_alias separately lists transactions signed as another wallet's address_alias delegate, which the main page cannot show. The delegate scan is cached for up to five minutes; alias_scan_as_of dates it and signed_as_alias_unavailable marks incomplete scans, even beside returned matches.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | yes | Sui wallet address (0x...) |
+| `from` | string | no | Inclusive window start as ISO 8601 time or exclusive after-checkpoint number. |
+| `to` | string | no | Inclusive window end as ISO 8601 time, 'now', or exclusive before-checkpoint number. |
 | `limit` | number (1 to 50), default `10` | no | Number of transactions to return (default 10, max 50) |
 | `order` | `newest` \| `oldest` | no | 'newest' (default) pages backward from recent activity; 'oldest' pages forward from the first transaction. |
-| `cursor` | string | no | `next_cursor` from the previous page. Continues in the same direction; pass the same `order`. |
+| `cursor` | string | no | `next_cursor` from the previous page. Continues in the same direction; pass the same `order`, `from` and `to`. |
 | `detail` | `summary` \| `full` | no | 'summary' (default) keeps ~35k chars in page order, always retaining failed and lookalike-involved rows; omitted reports the rest. 'full' lists every row of the page. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 

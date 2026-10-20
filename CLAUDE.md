@@ -213,6 +213,13 @@ never on a page's length: `query_events` reads on until `limit` is filled, the
 list ends or `QUERY_EVENTS_MAX_READS` reads are spent, and a call the budget
 cut short reports `scan` with `reads` and the `next_call` that continues.
 
+A read made from a list's last cursor, or from a cursor outside the filter's
+checkpoint window, returns no rows with the flag still true and the same
+cursor handed back, so following it reads the same empty page forever. Pass
+the request's cursor to `orderedPage`, which ends the list there. Oldest
+first, the last page keeps its end cursor for a later poll, so a tool gives
+a `next_call` only when `has_next_page` is true.
+
 ## Time windows go into the filter
 
 A window is applied as `afterCheckpoint` / `beforeCheckpoint`, never by
@@ -232,11 +239,15 @@ active since 2023 returned nothing, and its `activity_hours` described 2023.
   `query_transactions` call `resolveWindow` on their existing
   `after_checkpoint` / `before_checkpoint` arguments. The names also accept
   checkpoint numbers; descriptions must lead with dates so a caller does not
-  binary-search checkpoint numbers first. `aggregate_events` uses `from` /
-  `to`. Keep one pair of window arguments per tool so cursor continuations
-  cannot disagree about the window.
+  binary-search checkpoint numbers first. `aggregate_events` and
+  `get_transaction_history` use `from` / `to`. Keep one pair of window
+  arguments per tool so cursor continuations cannot disagree about the
+  window, and carry both into every `next_call`.
 - **Parse before probing.** An unparseable bound is an error before any
-  request, never a silently unbounded read.
+  request, never a silently unbounded read. So is an inverted window: its
+  empty result would read as no activity. Two times or two checkpoints are
+  compared before any request (checkpoint bounds are exclusive, so equal
+  ones hold nothing); a time against a checkpoint once both are resolved.
 - **A budget that stops a walk says where.** `build_timeline` reports per
   address `truncated`, `reached_checkpoint` and a `continue_with` bound that
   re-reads the boundary checkpoint, since other transactions of that address

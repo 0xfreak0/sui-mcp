@@ -94,6 +94,18 @@ two-pool `router::swap_ab_bc`, `swap_ab_cb`, `swap_ba_bc` or `swap_ba_cb`
 names the first and third type arguments as input and output, and a swap's
 direction is a lead to check against `get_transaction`.
 
+Interest Protocol memez curve trades use the call's `pump` or `dump` direction
+and its `<meme, quote>` types, including stable and auction curves. A pump of
+BLAST quoted in SUI appears as `Swap SUI → BLAST on Interest Protocol` in
+`get_transaction_history`, `get_transaction` and other action lists; a dump
+appears as `Swap BLAST → SUI on Interest Protocol`.
+
+SuiPump's `bonding_curve::buy` and `sell`, its session trades, and Koi's
+`curve::buy` and `sell` use the same labels with the traded token. History
+rows without call type arguments infer the token only when the sender's SUI
+and one other coin changed in the expected directions; otherwise they show
+`Buy on SuiPump` or `Sell on Koi` without naming a coin.
+
 
 ## Why a transaction failed
 

@@ -110,10 +110,12 @@ try {
   const removed = await call("manage_labels", { action: "remove", address: NEMO_ATTACKER });
   const idAttacker = await call("identify_address", { address: NEMO_ATTACKER });
   ck("remove restores the disclosed label", removed.removed === true && idAttacker.label?.category === "malicious" && idAttacker.label?.is_sink === false, short(idAttacker.label));
-  const imp = await call("manage_labels", { action: "import", labels: [
+ const imp = await call("manage_labels", {
+  action: "import", labels: [
     { address: BINANCE_HOT, label: "Surface probe import", category: "cex" },
     { address: "0xZZ", label: "bad", category: "cex" },
-  ] });
+  ]
+ });
   const impLook = await call("manage_labels", { action: "lookup", address: BINANCE_HOT });
   ck("import keeps the valid entry and reports the malformed one", imp.imported === 1 && imp.skipped_count === 1 && impLook.label?.label === "Surface probe import", `${imp.imported}/${imp.skipped_count}`);
 
@@ -211,6 +213,18 @@ try {
     const unknown = tokens.filter((t) => !toolNames.has(t) && !documented.has(t) && verbs.has(t.split("_")[0]));
     ck(`${name} renders and names only existing tools`, text.length > 1000 && tokens.some((t) => toolNames.has(t)) && unknown.length === 0, unknown.join(","));
   }
+
+ // Curve function names fix the trade side even where list reads omit type
+ // arguments. The purchase is in this wallet's first history page.
+ const pumpDigest = "EjSbVgHBfsAaBGxVZNRb9RYKsWfteQmojbaNh7WKxsLM";
+ const dumpDigest = "7m3x9WWzXkCaVotZenSkFFkcqfsWZpAaoTu69Pmnf5Xi";
+ const pumpTx = await call("get_transaction", { digest: pumpDigest });
+ const dumpTx = await call("get_transaction", { digest: dumpDigest });
+ ck("memez pump names SUI and BLAST", pumpTx.actions?.includes("Swap SUI → BLAST on Interest Protocol"));
+ ck("memez dump names BOOST and SUI", dumpTx.actions?.includes("Swap BOOST → SUI on Interest Protocol"));
+ const pumpHistory = await call("get_transaction_history", { address: pumpTx.sender, order: "oldest", limit: 50, detail: "full" });
+ ck("memez trade names its coins in wallet history",
+  pumpHistory.transactions?.find((tx) => tx.digest === pumpDigest)?.actions?.includes("Swap SUI → BLAST on Interest Protocol"));
 
   // ======================================================================
   // Tokens

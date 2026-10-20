@@ -5,6 +5,7 @@
 ### Fixed
 - **A window that ends before it starts is refused.** Every tool taking a time or checkpoint window returns an error for a start later than its end, or a checkpoint start at or above a checkpoint end, instead of an empty result.
 - **Paging ends at the last cursor.** Read from a list's last cursor, or from a cursor outside the window, `get_transaction_history`, `query_transactions`, `query_events` and `check_activity` report no further page instead of an empty page that claims more.
+- **Launchpad curve trades name their direction.** Interest Protocol memez `pump`/`dump`, SuiPump bonding-curve and session `buy`/`sell`, and Koi curve `buy`/`sell` calls render as `Swap SUI → MEME` or `Swap MEME → SUI` when the traded coin is known. History rows without generic arguments use the sender's isolated SUI and token changes or retain a coinless Buy/Sell label.
 - **Forward fund traces follow the recipients of a drain named `swap`.** `trace_funds` reads a call named `swap` as a swap only while addresses other than the sender and pools received less than half of what the sender moved, compared in USD when every coin involved is priced and per coin otherwise. A drainer's claim function named `swap` that pays collectors and mints a bait coin to the signer now continues to the larger collector and lists the other under `unfollowed_recipients`. Router swaps that pay a fee or referrer, in the input, output or an intermediate coin, still follow the swapper, including on a first hop with no `coin_type`.
 
 ### Added

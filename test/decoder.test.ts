@@ -60,6 +60,73 @@ describe("decodeTransaction", () => {
     expect(result.actions[0]).toContain("Cetus");
   });
 
+ it.each([
+  ["memez_pump", "pump", "0x508638a4423c01aad826486d345aa7f446b4e8197db9717e18b37945a1bbb8f2::blast::BLAST", "Swap SUI → BLAST on Interest Protocol"],
+  ["memez_pump", "dump", "0xcd40dd0d8cf0277ef34f0a90033864f1a35d65de6ff5cea4cf3e5cdd1c3068c3::boost::BOOST", "Swap BOOST → SUI on Interest Protocol"],
+  ["memez_stable", "pump", "0x11::meme::MEME", "Swap SUI → MEME on Interest Protocol"],
+  ["memez_stable", "dump", "0x11::meme::MEME", "Swap MEME → SUI on Interest Protocol"],
+  ["memez_auction", "pump", "0x11::meme::MEME", "Swap SUI → MEME on Interest Protocol"],
+  ["memez_auction", "dump", "0x11::meme::MEME", "Swap MEME → SUI on Interest Protocol"],
+ ])("labels %s::%s by the curve's trade direction", (mod, fn, meme, expected) => {
+  const pkg = "0x779829966a2e8642c310bed79e6ba603e5acd3c31b25d7d4511e2c9303d6e3ef";
+  const call = makeCommand(pkg, mod, fn, [meme, "0x2::sui::SUI"]);
+  expect(decodeTransaction([call], [], "0xsender").actions).toEqual([expected]);
+  expect(decodeTransaction([call], [
+   makeBalanceChange("0xsender", meme, fn === "pump" ? "-1" : "1"),
+   makeBalanceChange("0xsender", "0x2::sui::SUI", fn === "pump" ? "1" : "-1"),
+  ], "0xsender").actions).toEqual([expected]);
+ });
+
+ it("uses the actual quote type rather than assuming SUI", () => {
+  const pkg = "0x779829966a2e8642c310bed79e6ba603e5acd3c31b25d7d4511e2c9303d6e3ef";
+  const types = ["0x11::meme::MEME", "0x22::quote::USDC"];
+  expect(decodeTransaction([makeCommand(pkg, "memez_stable", "pump", types)], [], "0xsender").actions)
+   .toEqual(["Swap USDC → MEME on Interest Protocol"]);
+  expect(decodeTransaction([makeCommand(pkg, "memez_stable", "dump", types)], [], "0xsender").actions)
+   .toEqual(["Swap MEME → USDC on Interest Protocol"]);
+  expect(decodeTransaction([makeCommand(pkg, "memez_stable", "quote_pump", types)], [], "0xsender").actions)
+   .toEqual(["Call memez_stable::quote_pump on Interest Protocol"]);
+ });
+
+ it.each([
+  ["pump", "0x508638a4423c01aad826486d345aa7f446b4e8197db9717e18b37945a1bbb8f2::blast::BLAST", "-1004549652", "1240551349715226", "Swap SUI → BLAST on Interest Protocol"],
+  ["dump", "0xcd40dd0d8cf0277ef34f0a90033864f1a35d65de6ff5cea4cf3e5cdd1c3068c3::boost::BOOST", "16403367642", "-19349934894876210", "Swap BOOST → SUI on Interest Protocol"],
+ ])("labels real %s balance changes in GraphQL action rows", (fn, meme, suiAmount, memeAmount, expected) => {
+  const call = makeCommand("0x779829966a2e8642c310bed79e6ba603e5acd3c31b25d7d4511e2c9303d6e3ef", "memez_pump", fn);
+  const changes = [
+   makeBalanceChange("0xsender", "0x2::sui::SUI", suiAmount),
+   makeBalanceChange("0xsender", meme, memeAmount),
+  ];
+  expect(decodeTransaction([call], changes, "0xsender").actions).toEqual([expected]);
+  expect(decodeTransaction([call], [...changes, makeBalanceChange("0xsender", "0x42::other::OTHER", "1")], "0xsender").actions)
+   .toEqual([`${fn === "pump" ? "Buy" : "Sell"} on Interest Protocol`]);
+ });
+
+ it("labels a SuiPump bonding-curve purchase by its one coin type", () => {
+  const call = makeCommand("0xb205fea41ccedac051bc66498e6ca68cb802c4a6ea06da12e524bed09c80d9b0",
+   "bonding_curve", "buy", ["0xc0f8d86b3234512c957c1f075abf35b57792f27cb0b2cf435e858f957e72e2a3::suipump::SUIPUMP"]);
+  expect(decodeTransaction([call], [], "0xsender").actions).toEqual(["Swap SUI → SUIPUMP on SuiPump"]);
+  expect(decodeTransaction([makeCommand("0xb205fea41ccedac051bc66498e6ca68cb802c4a6ea06da12e524bed09c80d9b0",
+   "bonding_curve", "buy")], [makeBalanceChange("0xsender", "0x2::sui::SUI", "-6839004")], "0xsender").actions)
+   .toEqual(["Buy on SuiPump"]);
+ });
+
+ it("labels a Koi sale with its actual traded token", () => {
+  const token = "0x8732a85296fc8d200f883a0ae8d0a16971ff1a4d49349b1a9e0b0b0881f4ac92::ham::HAM";
+  const pkg = "0xad6769be9937a4a818d3a8b222de9c4e99d2bc9012a2828aaf24ada1ff7e81b4";
+  expect(decodeTransaction([makeCommand(pkg, "curve", "sell", [token])], [], "0xsender").actions)
+   .toEqual(["Swap HAM → SUI on Koi"]);
+  expect(decodeTransaction([makeCommand(pkg, "curve", "sell")], [
+   makeBalanceChange("0xsender", "0x2::sui::SUI", "42776268"),
+   makeBalanceChange("0xsender", token, "-15845144955"),
+  ], "0xsender").actions).toEqual(["Swap HAM → SUI on Koi"]);
+ });
+
+ it("does not promote another package's memez-named call to a trade", () => {
+  const result = decodeTransaction([makeCommand("0x2", "memez_pump", "pump", ["0x11::meme::MEME", "0x2::sui::SUI"])], [], "0xsender");
+  expect(result.actions).toEqual(["Call memez_pump::pump on Sui Framework"]);
+ });
+
   it.each(["swap_ab_bc", "swap_ab_cb", "swap_ba_bc", "swap_ba_cb"])(
     "reports the input and final output of router::%s rather than its intermediate coin",
     (fn) => {

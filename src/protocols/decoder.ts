@@ -158,6 +158,8 @@ function shortCoinType(coinType: string): string {
 
 const ACTION_LABELS: Record<string, string> = {
   swap: "Swap",
+ buy: "Buy",
+ sell: "Sell",
   add_liquidity: "Add liquidity",
   remove_liquidity: "Remove liquidity",
   open_position: "Open position",
@@ -602,6 +604,39 @@ export function decodeTransaction(
         // The generic DEX module patterns must not call them liquidity.
         const bridgeCall =
           lookupProtocol(pkg)?.type === "bridge" || BRIDGE_PROTOCOLS.some((p) => p.packages?.[getNetwork()] === normalizeSuiAddress(pkg));
+    // Curated launchpad calls state direction in their function names.
+    // Memez takes <meme, quote>; SuiPump and Koi trade one token against SUI.
+    const memezTrade = proto?.type === "launchpad" &&
+     (mod === "memez_pump" || mod === "memez_stable" || mod === "memez_auction") &&
+     (fn === "pump" || fn === "dump");
+    const suiCurve = proto?.type === "launchpad" &&
+     ((proto.name === "SuiPump" && ((mod === "bonding_curve" && (fn === "buy" || fn === "sell")) ||
+      (mod === "agent_session" && (fn === "buy_with_session" || fn === "sell_with_session")))) ||
+      (proto.name === "Koi" && mod === "curve" &&
+       (fn === "buy" || fn === "sell" || fn === "buy_to_sender" || fn === "sell_to_sender")));
+    const buying = fn === "pump" || fn.startsWith("buy");
+    // GraphQL list reads omit type arguments. Infer SUI and one other coin
+    // only when this is the sole curve trade and the sender's net agrees.
+    const inferredMeme = (memezTrade || suiCurve) && typeArgs.length === 0 &&
+     commands.filter((command) => command.command.oneofKind === "moveCall" &&
+      command.command.moveCall.package === pkg &&
+      (command.command.moveCall.function === "pump" || command.command.moveCall.function === "dump" ||
+       command.command.moveCall.function === "buy" || command.command.moveCall.function === "sell" ||
+       command.command.moveCall.function === "buy_to_sender" || command.command.moveCall.function === "sell_to_sender" ||
+       command.command.moveCall.function === "buy_with_session" || command.command.moveCall.function === "sell_with_session")).length === 1
+     ? [...net].filter(([coin]) => !coin.endsWith("::sui::SUI"))
+     : [];
+    const suiChange = (memezTrade || suiCurve) ? [...net].find(([coin]) => coin.endsWith("::sui::SUI"))?.[1] : undefined;
+    const meme = memezTrade && typeArgs.length === 2 ? typeArgs[0]
+     : suiCurve && typeArgs.length === 1 ? typeArgs[0]
+      : inferredMeme.length === 1 && suiChange !== undefined &&
+       (buying ? suiChange < 0n && inferredMeme[0][1] > 0n : suiChange > 0n && inferredMeme[0][1] < 0n)
+       ? inferredMeme[0][0] : null;
+    const memezCoins = memezTrade && typeArgs.length === 2
+     ? buying ? [typeArgs[1], typeArgs[0]] : [typeArgs[0], typeArgs[1]]
+     : meme && (suiCurve || memezTrade)
+      ? buying ? ["0x2::sui::SUI", meme] : [meme, "0x2::sui::SUI"]
+      : null;
         const named = bridgeCall ? null : lookupOperation(mod, fn);
         // A flash swap whose pool states the swap and whose repay the PTB
         // carries took one coin in and paid the other out: it is a swap.
@@ -615,7 +650,8 @@ export function decodeTransaction(
             ? eventHops.get(index)
             : undefined;
         const swaps = stated ?? swapContexts?.hops.get(index);
-        const op = swaps ? CONTEXT_SWAP : named;
+    const op = swaps ? CONTEXT_SWAP : memezCoins ? { action: "swap" } :
+     (memezTrade || suiCurve) ? { action: buying ? "buy" : "sell" } : named;
 
         if (proto) {
           protocols.add(proto.name);
@@ -667,7 +703,9 @@ export function decodeTransaction(
           }
         } else if (op) {
           let args: string[] = typeArgs;
-          if (op.action === "swap" && routed) {
+     if (memezCoins) {
+      args = memezCoins;
+     } else if (op.action === "swap" && routed) {
             const hop = routeHop(typeArgs, pathCoin, hasCoinEvidence, { own: nextInPath.get(index), routeOut, poolParams });
             args = hop ?? typeArgs.slice(1);
             if (hop) {

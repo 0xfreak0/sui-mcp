@@ -542,6 +542,20 @@ leg of a PTB, so the guess read Astros, 7k and FlowX routes backwards.
 - **Only `get_transaction` has the evidence.** `get_transaction_history`,
   `build_timeline`, `trace_funds` and the flow graphs decode without events
   and keep the fallback, so their swap direction is a lead, not a reading.
+- **Memez curve names fix the trade direction without events.** For curated
+  launchpad packages, `memez_pump`, `memez_stable` and `memez_auction` calls
+  named exactly `pump` or `dump` take `<meme, quote>`: pump spends quote,
+  dump spends meme. Do not apply the rule to `quote_pump`, `quote_dump` or
+  another package whose module happens to have the same name. The quote
+  need not be SUI.
+- **Other curated launchpads have unambiguous names.** SuiPump's
+  `bonding_curve::buy`/`sell` and `agent_session::buy_with_session`/
+  `sell_with_session`, and Koi's `curve::buy`/`sell` and `_to_sender`
+  variants, trade one type argument against SUI. GraphQL list commands
+  omit type arguments: infer the coin only when one call and the sender's
+  net changes isolate the two sides. Keep a coinless Buy/Sell label
+  otherwise, rather than naming a token another leg moved.
+
 
 ## Completeness beats payload size
 

@@ -6,7 +6,7 @@ sidebar:
   label: "Overview"
   order: 100
 ---
-These pages are generated from the `tools/list` response of the server started with `SUI_TOOLS=all`. The server registers 78 tools. 77 belong to one or more of the profiles `core`, `forensics`, `developer`, `market`, and `enable_tools` is always on.
+These pages are generated from the `tools/list` response of the server started with `SUI_TOOLS=all`. The server registers 79 tools. 78 belong to one or more of the profiles `core`, `forensics`, `developer`, `market`, and `enable_tools` is always on.
 
 ## Groups
 
@@ -14,7 +14,7 @@ These pages are generated from the `tools/list` response of the server started w
 |---|---|
 | [Recommended starting points](/reference/tools/starting-points/) | `analyze_token`, `get_transaction_history`, `get_wallet_overview`, `get_wallet_packages`, `identify_address` |
 | [Chain and network](/reference/tools/chain-and-network/) | `get_chain_info`, `get_checkpoint` |
-| [Objects](/reference/tools/objects/) | `get_object`, `list_dynamic_fields`, `list_owned_objects` |
+| [Objects](/reference/tools/objects/) | `get_object`, `list_dynamic_fields`, `list_objects_by_type`, `list_owned_objects` |
 | [Coins and tokens](/reference/tools/coins-and-tokens/) | `get_balance`, `get_coin_info`, `get_token_prices`, `search_token` |
 | [Transactions and events](/reference/tools/transactions-and-events/) | `get_transaction`, `get_transactions`, `query_events`, `query_transactions` |
 | [DeFi](/reference/tools/defi/) | `find_pools`, `get_defi_positions`, `get_pool_stats` |
@@ -87,6 +87,7 @@ These pages are generated from the `tools/list` response of the server started w
 | [`list_findings`](/reference/tools/incident-investigation/#list_findings) | List recorded findings, or every case with its finding count. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
 | [`list_nft_collections`](/reference/tools/nfts/#list_nft_collections) | Summary of the NFT collections a wallet holds: every kiosk plus directly owned objects, one row per collection type with its count. | [NFTs](/reference/tools/nfts/) | `core` (default) |
 | [`list_nfts`](/reference/tools/nfts/#list_nfts) | List NFTs owned by a wallet, including kiosk-stored NFTs. | [NFTs](/reference/tools/nfts/) | `core` (default) |
+| [`list_objects_by_type`](/reference/tools/objects/#list_objects_by_type) | Scan current Sui objects matching a Move struct or module filter across every owner kind. | [Objects](/reference/tools/objects/) | `forensics` |
 | [`list_owned_objects`](/reference/tools/objects/#list_owned_objects) | List raw objects owned by a Sui address with optional type filter and pagination. | [Objects](/reference/tools/objects/) | `core` (default) |
 | [`manage_labels`](/reference/tools/incident-investigation/#manage_labels) | Manage chain-qualified address labels for investigation and trace sinks. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
 | [`mvr_get_package_info`](/reference/tools/move-registry/#mvr_get_package_info) | Get the full Move Registry record for a single package name. | [Move Registry (MVR)](/reference/tools/move-registry/) | `developer` |

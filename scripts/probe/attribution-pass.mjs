@@ -340,6 +340,16 @@ try {
   const rawOwned = (await gql(`query($a:SuiAddress!){ address(address:$a){ objects(first:50){ nodes{ address } } } }`, { a: NEMO })).address.objects.nodes.map((n) => n.address);
   ck("owned objects equal the raw list", sameSet((owned.objects ?? []).map((o) => o.object_id), rawOwned), `${owned.objects?.length} vs ${rawOwned.length}`);
 
+ const byType = await call("list_objects_by_type", {
+  type: "0x3::staking_pool::StakedSui", sum_fields: ["principal"], max_scan: 5, detail: "full",
+ });
+ const rawStakes = (await gql(`query { objects(filter:{type:"0x3::staking_pool::StakedSui"},first:5) {
+    nodes { address asMoveObject { contents { json } } } pageInfo { hasNextPage endCursor } } }`)).objects;
+ ck("type-wide objects sum all five stake principals and preserve their IDs",
+  byType.scanned === rawStakes.nodes.length &&
+  byType.sums?.principal?.total === rawStakes.nodes.reduce((total, n) => total + BigInt(n.asMoveObject.contents.json.principal), 0n).toString() &&
+  sameSet((byType.objects ?? []).map((n) => n.object_id), rawStakes.nodes.map((n) => n.address)));
+
   // ---- identify_address ---------------------------------------------------
   console.log("\nidentify_address on each kind of address");
   const idW = await call("identify_address", { address: NEMO });

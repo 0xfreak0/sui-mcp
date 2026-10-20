@@ -193,6 +193,39 @@ entry. Anything else is scanned as an NFT collection.
 For NFT collections, `holder_kind` says how each holder was found; see
 [Kiosk-held NFTs](/concepts/nft-ownership/).
 
+## Objects by Move type
+
+`list_objects_by_type` scans current objects across all owners. To count bids
+with a funded `offer` and sum their SUI value:
+
+```json
+{"type":"0xabc::bidding::Bid","sum_fields":["offer"],"where":{"field":"offer","gt":"0"}}
+```
+
+For example, a completed scan with two funded bids may include this response:
+
+```json
+{"scanned":3,"matched":2,"complete":true,"sums":{"offer":{"total":"1000000000","min":"300000000","max":"700000000","count":2,"unreadable":0,"coin_type":"0x2::sui::SUI","formatted_total":"1","decimals":9,"decimals_source":"registry"}},"owner_kinds":{"shared":2,"address":0,"object":0,"consensus":0,"immutable":0,"unknown":0}}
+```
+
+`scanned` counts every object read and `matched` counts bids passing `where`.
+`sums.offer.total`, `min` and `max` are raw integer units over all matching
+rows, including rows the display cap leaves under `omitted`. A missing value
+leaves `total` null, with `observed_total` and `unreadable` stating what was
+read. `where_unreadable` marks objects whose funding test could not be made.
+When the Move layout declares `offer` as `Balance<SUI>`, `formatted_total`
+also reports SUI units and `decimals_source` states where the scale came from.
+Owner counts include address, object, shared, consensus and immutable
+ownership. For a nested field use a path such as `state.offer`.
+
+The scan walks object IDs, not bids ordered by value. `complete: false`
+means the sums and counts cover only the scanned portion. `next_call` resumes
+at the next cursor with fresh, separate totals; they are not cumulative.
+Use `detail: "full"` to retrieve omitted rows. A full view too large for
+one response continues with `row_offset`; its sums still cover the entire
+scan. A module filter can span types introduced by different package
+versions; `other_defining_packages` lists any versions this scan did not cover.
+
 ## DeFi positions
 
 `get_defi_positions` values staked SUI with accrued rewards, liquid-staking

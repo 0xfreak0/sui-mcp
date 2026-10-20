@@ -2773,6 +2773,30 @@ per pool type.
 A holder continuation includes the pool ID (`liquidity_holder_pool`) and the
 offset within that pool. Applying one pool's displayed count as a global
 offset to several pools repeats or skips another pool's holders.
+### Type-wide object scans
+
+`list_objects_by_type` scans `objects(filter: {type})` across every owner kind.
+Its `scanned`, `matched`, `owner_kinds` and `sums` cover all objects read in
+this call, before the display cap. A `where` filter excludes unfunded objects
+from the matched counts and sums but not `scanned`. Numeric totals use BigInt
+and keep raw units; an unreadable numeric field makes its total null with an
+`observed_total` for the rows read. A `Balance<T>` is formatted only when
+the Move layout identifies one coin and `prefetchCoinScale` has read its
+decimals. More than 20 concrete types leave raw sums and a scale-unavailable
+note, rather than spending unbounded layout requests.
+
+A module can contain types defined at several upgrade IDs. Read its
+`typeOrigins` first, name other defining packages if one GraphQL filter cannot
+cover them, and never call the result a complete count across that module.
+GraphQL walks in object-id order, not value order. A page with
+`hasNextPage: true` and no advancing `endCursor` is incomplete and must not
+restart at the first page. The per-call object and time budgets stop a scan;
+`complete` means it reached the end of every defining package queried; when
+the module spans other defining IDs, `queried_complete` describes the one
+read and `complete` remains false. `next_cursor` resumes with independent
+counts and sums. The rows shown under the default output cap are ranked by
+selected values; the aggregate precedes the cap. A full view over 450k
+characters pages its rows with `row_offset`.
 
 ### Holder scans rank a sample, not the chain
 

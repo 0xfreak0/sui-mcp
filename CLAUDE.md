@@ -2774,6 +2774,48 @@ A holder continuation includes the pool ID (`liquidity_holder_pool`) and the
 offset within that pool. Applying one pool's displayed count as a global
 offset to several pools repeats or skips another pool's holders.
 
+### Type-wide object scans
+
+`list_objects_by_type` scans `objects(filter: {type})` across every owner kind.
+Its `scanned`, `matched`, `owner_kinds` and `sums` cover all objects read in
+this call, before the display cap. The filter indexes top-level objects only:
+an object wrapped in another object's fields is not listed, so an empty result
+says so (`scope_note`). Rules a change is likely to break:
+
+- **A total has one unit.** Two objects of one concrete type hold a field of
+  one type, so the object type is always a sound unit. A coin is the unit only
+  when `coinLayout` (`state-read.ts`, gRPC `GetDatatype`) shows the path is a
+  `Balance<T>`, its `value` or a `Supply<T>`; the layout is read once per
+  struct definition with placeholder type arguments, then each object's own
+  arguments are substituted, so `Coin<T>` over a thousand coins costs one
+  read. `total` is non-null only with one unit and every amount read; one
+  unit with unreadable rows gives `observed_total`, a lower bound; several
+  units give `sum_units` rows and no number, min or max across them. A
+  layout the budget skipped or could not read falls back to the object type,
+  never to a raw sum, and a field that is `Balance<T>` in one struct and
+  `u64` in another of the same module is two units.
+- **A missing key is a missing field.** GraphQL renders every field of a
+  struct, so a path absent from the JSON is `absent`, not `unreadable`, and
+  a path no matched object has gives a null total with the first object's
+  field names. `null` (an `Option` that is none) is unreadable. GraphQL
+  renders a `Balance<T>` as its amount, so `balance.value` reads that string.
+- **The type is resolved before the walk.** `resolveDefiningType`
+  (`package-versions.ts`, shared with `resolveEventTypeFilter`) rewrites the
+  outer struct and every type argument to its defining package from
+  `typeOrigins` and pads addresses. A module, struct or type argument its
+  package does not define is refused with the closest names: the service
+  answers it with an empty, complete-looking page. A module spanning several
+  defining IDs reads the requested one when it defines any, else the one
+  defining most, lists the rest in `other_defining_packages`, and keeps
+  `complete` false (`queried_complete` is the one read).
+- **Walks.** GraphQL walks by type, then object id, never by value. A page
+  with `hasNextPage: true` and no advancing `endCursor` stops the scan rather
+  than restarting it. `next_cursor` resumes with separate counts and sums and
+  keeps `detail`. A full view over 450k characters pages rows with
+  `row_offset`, which scans live state again from the same cursor, so
+  `row_offset_note` says rows can move between pages; the stored result
+  pages one scan.
+
 ### Holder scans rank a sample, not the chain
 
 `scanTokenTopHolders` walks `objects(filter: Coin<T>)` in **object-id order**,

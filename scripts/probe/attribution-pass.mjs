@@ -340,6 +340,29 @@ try {
   const rawOwned = (await gql(`query($a:SuiAddress!){ address(address:$a){ objects(first:50){ nodes{ address } } } }`, { a: NEMO })).address.objects.nodes.map((n) => n.address);
   ck("owned objects equal the raw list", sameSet((owned.objects ?? []).map((o) => o.object_id), rawOwned), `${owned.objects?.length} vs ${rawOwned.length}`);
 
+  const byType = await call("list_objects_by_type", {
+    type: "0x3::staking_pool::StakedSui", sum_fields: ["principal"], max_scan: 5, detail: "full",
+  });
+  const rawStakes = (await gql(`query { objects(filter:{type:"0x3::staking_pool::StakedSui"},first:5) {
+    nodes { address asMoveObject { contents { json } } } pageInfo { hasNextPage endCursor } } }`)).objects;
+  ck("type-wide objects sum all five stake principals and preserve their IDs",
+    byType.scanned === rawStakes.nodes.length &&
+    byType.sums?.principal?.total === rawStakes.nodes.reduce((total, n) => total + BigInt(n.asMoveObject.contents.json.principal), 0n).toString() &&
+    sameSet((byType.objects ?? []).map((n) => n.object_id), rawStakes.nodes.map((n) => n.address)));
+  // Each TreasuryCap<T> holds a Supply<T> of another coin: one total per coin, none across them.
+  const caps = await call("list_objects_by_type", { type: "0x2::coin::TreasuryCap", sum_fields: ["total_supply"], max_scan: 20 });
+  const rawCaps = (await gql(`query { objects(filter:{type:"0x2::coin::TreasuryCap"},first:20) {
+    nodes { asMoveObject { contents { type { repr } json } } } } }`)).objects.nodes;
+  const rawByCoin = new Map(rawCaps.map((n) => [n.asMoveObject.contents.type.repr.slice(n.asMoveObject.contents.type.repr.indexOf("<") + 1, -1), n.asMoveObject.contents.json.total_supply.value]));
+  ck("type-wide sums over different coins give per-coin totals and no cross-coin total",
+    caps.sums?.total_supply?.total === null && rawByCoin.size > 1 &&
+    (caps.sum_units ?? []).length === rawByCoin.size &&
+    (caps.sum_units ?? []).every((u) => rawByCoin.get(u.coin_type) === u.raw_total),
+    `${caps.sum_units?.length} units vs ${rawByCoin.size} coins`);
+  const typo = await call("list_objects_by_type", { type: "0x2::coin::Coin<0x2::SUI::SUI>" });
+  ck("a type argument naming a module its package lacks is refused with the closest names",
+    /closest first: sui/.test(typo.error ?? typo._text ?? ""), typo.error ?? typo._text);
+
   // ---- identify_address ---------------------------------------------------
   console.log("\nidentify_address on each kind of address");
   const idW = await call("identify_address", { address: NEMO });

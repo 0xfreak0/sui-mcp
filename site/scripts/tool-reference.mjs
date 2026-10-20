@@ -40,7 +40,7 @@ export const GROUPS = [
   {
     slug: "objects",
     title: "Objects",
-    tools: ["get_object", "list_owned_objects", "list_dynamic_fields"],
+  tools: ["get_object", "list_owned_objects", "list_objects_by_type", "list_dynamic_fields"],
   },
   {
     slug: "coins-and-tokens",

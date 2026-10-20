@@ -1,5 +1,6 @@
 import { registerChainTools } from "./chain.js";
 import { registerObjectTools } from "./objects.js";
+import { registerObjectsByTypeTools } from "./objects-by-type.js";
 import { registerCoinTools } from "./coins.js";
 import { registerTransactionTools } from "./transactions.js";
 import { registerEventTools } from "./events.js";
@@ -70,6 +71,7 @@ export function registerAllTools(rawServer: McpServer) {
 
   registerChainTools(server);
   registerObjectTools(server);
+  registerObjectsByTypeTools(server);
   registerCoinTools(server);
   registerTransactionTools(server);
   registerEventTools(server);

@@ -106,6 +106,9 @@ export const PROFILES = {
     "query_events",
     "check_activity",
     "get_top_holders",
+    // Every current object of a type, with sums per coin: open bids, funded
+    // vaults, caps of one kind across owners.
+    "list_objects_by_type",
     "compare_oracle_price",
     // What an exploit took, per transaction and across an incident, in USD at
     // the time: the question every incident report opens with.

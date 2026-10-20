@@ -7,6 +7,8 @@ import { isVerifiedCoin } from "../utils/coin-registry.js";
 import { poolSwapsByCommand, type SwapEvidence } from "../utils/pool-swap-events.js";
 import { getNetwork } from "../config.js";
 import { BRIDGE_PROTOCOLS } from "../utils/bridge/detect.js";
+import { isSuiCoinType } from "../utils/sponsor-gas.js";
+import { isPlumbingPackage } from "../utils/system-packages.js";
 
 export interface DecodedTransaction {
   protocols: string[];
@@ -158,6 +160,8 @@ function shortCoinType(coinType: string): string {
 
 const ACTION_LABELS: Record<string, string> = {
   swap: "Swap",
+  buy: "Buy",
+  sell: "Sell",
   add_liquidity: "Add liquidity",
   remove_liquidity: "Remove liquidity",
   open_position: "Open position",
@@ -251,6 +255,67 @@ function senderNetByCoin(
 /** Action kinds whose own balance changes can overlap a swap's coins, so a whole-PTB net can no longer be trusted to isolate one swap's flow. */
 const NET_POLLUTING_ACTIONS = new Set(["deposit", "withdraw", "borrow", "repay", "add_liquidity", "remove_liquidity"]);
 const CONTEXT_SWAP: OperationInfo = { action: "swap" };
+
+/**
+ * Curated launchpad curve calls whose function names state the trade side,
+ * by protocol and module. A `pair` curve takes `<token, quote>` (memez,
+ * Vice); the others trade their one type argument against SUI.
+ */
+interface CurveTrade {
+  buy: readonly string[];
+  sell: readonly string[];
+  pair: boolean;
+}
+const MEMEZ_CURVE: CurveTrade = { buy: ["pump"], sell: ["dump"], pair: true };
+const CURVE_TRADES: Record<string, Record<string, CurveTrade>> = {
+  "Interest Protocol": { memez_pump: MEMEZ_CURVE, memez_stable: MEMEZ_CURVE, memez_auction: MEMEZ_CURVE, memez_router: MEMEZ_CURVE },
+  SuiPump: {
+    bonding_curve: { buy: ["buy"], sell: ["sell"], pair: false },
+    agent_session: { buy: ["buy_with_session"], sell: ["sell_with_session"], pair: false },
+  },
+  Koi: { curve: { buy: ["buy", "buy_to_sender"], sell: ["sell", "sell_to_sender"], pair: false } },
+  Vice: { pool: { buy: ["buy"], sell: ["sell"], pair: true } },
+};
+const SUI_COIN = "0x2::sui::SUI";
+
+interface CurveCall {
+  protocol: string;
+  side: "buy" | "sell";
+  pair: boolean;
+}
+
+/** The side of a curated launchpad's curve trade, when its function name states it. */
+function curveCall(pkg: string, mod: string, fn: string): CurveCall | null {
+  const proto = lookupProtocol(pkg);
+  if (proto?.type !== "launchpad") return null;
+  const trade = CURVE_TRADES[proto.name]?.[mod];
+  const side = trade?.buy.includes(fn) ? "buy" : trade?.sell.includes(fn) ? "sell" : null;
+  return trade && side ? { protocol: proto.name, side, pair: trade.pair } : null;
+}
+
+/**
+ * The coins a curve trade paid and received, in that order. They come from
+ * the call's type arguments, or, when a GraphQL read omitted them, from the
+ * sender's net: only when nothing else in the PTB could move a coin
+ * (`isolated`) and the sender's SUI and exactly one other coin moved the way
+ * the side states. Null when neither settles them.
+ */
+function curveCoins(call: CurveCall, typeArgs: string[], isolated: boolean, net: Map<string, bigint>): [string, string] | null {
+  let pair: [string, string] | null = null;
+  if (call.pair && typeArgs.length === 2) pair = [typeArgs[0], typeArgs[1]];
+  else if (!call.pair && typeArgs.length === 1) pair = [typeArgs[0], SUI_COIN];
+  else if (typeArgs.length === 0 && isolated) {
+    const others = [...net].filter(([coin]) => !isSuiCoinType(coin));
+    const sui = [...net].find(([coin]) => isSuiCoinType(coin))?.[1];
+    if (others.length === 1 && sui !== undefined) {
+      const [coin, amount] = others[0];
+      if (call.side === "buy" ? sui < 0n && amount > 0n : sui > 0n && amount < 0n) pair = [coin, SUI_COIN];
+    }
+  }
+  if (!pair) return null;
+  const [token, quote] = pair;
+  return call.side === "buy" ? [quote, token] : [token, quote];
+}
 
 /**
  * The direction a swap function name states outright, when it does:
@@ -506,6 +571,14 @@ export function decodeTransaction(
   const protocols = new Set<string>();
   const actions: string[] = [];
   const net = senderNetByCoin(balanceChanges, sender);
+  // A curve trade's coins are read from the sender's net only when it is the
+  // PTB's one curve trade and every other call is the framework's or the same
+  // protocol's, so no other leg can have moved a coin.
+  const moveCalls = commands.flatMap((cmd) => (cmd.command.oneofKind === "moveCall" ? [cmd.command.moveCall] : []));
+  const curves = moveCalls.flatMap((mc) => curveCall(mc.package ?? "", mc.module ?? "", mc.function ?? "") ?? []);
+  const curveIsolated =
+    curves.length === 1 &&
+    moveCalls.every((mc) => isPlumbingPackage(mc.package ?? "0x0") || lookupProtocol(mc.package ?? "")?.name === curves[0].protocol);
 
   // The type tokens of every deposit/withdraw/borrow/repay/liquidity leg in
   // the PTB. Such a leg can move the coins a swap does, and then the
@@ -602,6 +675,8 @@ export function decodeTransaction(
         // The generic DEX module patterns must not call them liquidity.
         const bridgeCall =
           lookupProtocol(pkg)?.type === "bridge" || BRIDGE_PROTOCOLS.some((p) => p.packages?.[getNetwork()] === normalizeSuiAddress(pkg));
+        const curve = curveCall(pkg, mod, fn);
+        const curveTrade = curve ? curveCoins(curve, typeArgs, curveIsolated, net) : null;
         const named = bridgeCall ? null : lookupOperation(mod, fn);
         // A flash swap whose pool states the swap and whose repay the PTB
         // carries took one coin in and paid the other out: it is a swap.
@@ -615,7 +690,7 @@ export function decodeTransaction(
             ? eventHops.get(index)
             : undefined;
         const swaps = stated ?? swapContexts?.hops.get(index);
-        const op = swaps ? CONTEXT_SWAP : named;
+        const op = swaps ? CONTEXT_SWAP : curveTrade ? CONTEXT_SWAP : curve ? { action: curve.side } : named;
 
         if (proto) {
           protocols.add(proto.name);
@@ -667,7 +742,9 @@ export function decodeTransaction(
           }
         } else if (op) {
           let args: string[] = typeArgs;
-          if (op.action === "swap" && routed) {
+          if (curveTrade) {
+            args = curveTrade;
+          } else if (op.action === "swap" && routed) {
             const hop = routeHop(typeArgs, pathCoin, hasCoinEvidence, { own: nextInPath.get(index), routeOut, poolParams });
             args = hop ?? typeArgs.slice(1);
             if (hop) {

@@ -94,6 +94,26 @@ two-pool `router::swap_ab_bc`, `swap_ab_cb`, `swap_ba_bc` or `swap_ba_cb`
 names the first and third type arguments as input and output, and a swap's
 direction is a lead to check against `get_transaction`.
 
+Launchpad bonding-curve trades are labelled from the function name, which
+states the side:
+
+|Protocol|Calls|Coins|
+|---|---|---|
+|Interest Protocol (memez)|`pump`, `dump` in `memez_pump`, `memez_stable`, `memez_auction`, `memez_router`|`<token, quote>` type arguments|
+|Vice|`pool::buy`, `pool::sell`|`<token, quote>` type arguments|
+|SuiPump|`bonding_curve::buy`/`sell`, `agent_session::buy_with_session`/`sell_with_session`|one type argument, traded against SUI|
+|Koi|`curve::buy`/`sell`, `buy_to_sender`/`sell_to_sender`|one type argument, traded against SUI|
+
+`get_transaction` reads the coins from the type arguments, so a memez pump of
+BLAST quoted in SUI is `Swap SUI → BLAST on Interest Protocol` and the dump
+is `Swap BLAST → SUI on Interest Protocol`. `get_transaction_history`,
+`build_timeline` and `trace_funds` read commands without type arguments.
+They name the token only when the trade is the transaction's one curve trade,
+every other call is into the Sui framework or the same protocol, and the
+sender's SUI and one other coin moved in the trade's direction. Other rows
+read `Buy on SuiPump` or `Sell on Koi` with no coin; `get_transaction` on the
+digest names it. Migration, graduation and quote calls stay as
+`Call memez_pump::migrate on Interest Protocol`.
 
 ## Why a transaction failed
 

@@ -216,6 +216,20 @@ try {
     ck(`${name} renders and names only existing tools`, text.length > 1000 && tokens.some((t) => toolNames.has(t)) && unknown.length === 0, unknown.join(","));
   }
 
+  // Launchpad curve trades name their coins from the function name and type
+  // arguments, and history rows, which have no type arguments, from the
+  // sender's net. The purchase is in this wallet's first history page.
+  const pumpDigest = "EjSbVgHBfsAaBGxVZNRb9RYKsWfteQmojbaNh7WKxsLM";
+  const pumpTx = await call("get_transaction", { digest: pumpDigest });
+  const dumpTx = await call("get_transaction", { digest: "7m3x9WWzXkCaVotZenSkFFkcqfsWZpAaoTu69Pmnf5Xi" });
+  const routerTx = await call("get_transaction", { digest: "7meCE2Lewanu2iUoV2HVhmDr18pd6uEBcCMiREeBYCvp" });
+  ck("memez pump names SUI and BLAST", pumpTx.actions?.includes("Swap SUI → BLAST on Interest Protocol"), short(pumpTx.actions));
+  ck("memez dump names BOOST and SUI", dumpTx.actions?.includes("Swap BOOST → SUI on Interest Protocol"), short(dumpTx.actions));
+  ck("memez router dump names BLOFI and SUI", routerTx.actions?.includes("Swap BLOFI → SUI on Interest Protocol"), short(routerTx.actions));
+  const pumpHistory = await call("get_transaction_history", { address: pumpTx.sender, order: "oldest", limit: 50, detail: "full" });
+  const pumpRow = pumpHistory.transactions?.find((tx) => tx.digest === pumpDigest);
+  ck("memez trade names its coins in wallet history", pumpRow?.actions?.includes("Swap SUI → BLAST on Interest Protocol"), short(pumpRow?.actions));
+
   // ======================================================================
   // Tokens
   // ======================================================================

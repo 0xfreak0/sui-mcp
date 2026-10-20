@@ -20,8 +20,10 @@ import { candidates, gqlTx, type HopSpec } from "../helpers/trace-shapes.js";
 
 const mockSui = createMockClient() as MockSuiClient & {
   ledgerService: { batchGetTransactions: ReturnType<typeof vi.fn> };
+  movePackageService: { getDatatype: ReturnType<typeof vi.fn> };
 };
 mockSui.ledgerService.batchGetTransactions = vi.fn();
+mockSui.movePackageService.getDatatype = vi.fn();
 const mockGqlQuery = vi.fn();
 vi.mock("../../src/clients/grpc.js", () => ({ sui: mockSui, archive: mockSui }));
 vi.mock("../../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
@@ -69,6 +71,7 @@ const { registerCoinTools } = await import("../../src/tools/coins.js");
 const { registerFlowTools } = await import("../../src/tools/flows.js");
 const { registerFundingTools } = await import("../../src/tools/funding.js");
 const { registerWorkflowTools } = await import("../../src/tools/workflow.js");
+const { registerObjectsByTypeTools } = await import("../../src/tools/objects-by-type.js");
 
 type Handler = (args: Record<string, unknown>) => Promise<{ content: { text: string }[]; isError?: boolean }>;
 const handlers = new Map<string, Handler>();
@@ -88,6 +91,7 @@ for (const register of [
   registerFlowTools,
   registerFundingTools,
   registerWorkflowTools,
+  registerObjectsByTypeTools,
 ]) {
   register(server);
 }
@@ -348,5 +352,29 @@ describe("amount-formatting tools read a coin's decimals before formatting it", 
       cursor: null,
     });
     expectRealScale(await runCold("get_object", { object_id: BANK }));
+  });
+
+  it("list_objects_by_type", async () => {
+    const PKG = `0x${"5a".repeat(32)}`;
+    const VAULT = `${PKG}::vault::Vault<${FAKE}>`;
+    route = (query) => query.includes("typeOrigins")
+      ? { package: { typeOrigins: [{ module: "vault", struct: "Vault", definingId: PKG }, { module: "fake", struct: "FAKE", definingId: FAKE.split("::")[0] }] } }
+      : {
+        objects: {
+          nodes: [{ address: `0x${"5b".repeat(32)}`, version: 3, owner: { __typename: "Shared" }, asMoveObject: { contents: { type: { repr: VAULT }, json: { reserve: RAW } } } }],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+      };
+    mockSui.movePackageService.getDatatype.mockResolvedValue({
+      response: {
+        datatype: {
+          fields: [{
+            name: "reserve",
+            type: { type: 10, typeName: "0x2::balance::Balance", typeParameterInstantiation: [{ type: 11, typeParameter: 0, typeParameterInstantiation: [] }] },
+          }],
+        },
+      },
+    });
+    expectRealScale(await runCold("list_objects_by_type", { type: VAULT, sum_fields: ["reserve"] }));
   });
 });

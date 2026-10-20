@@ -79,6 +79,171 @@ export async function fetchTypeOrigins(packageId: string): Promise<TypeOrigin[] 
   return origins;
 }
 
+/** A parsed Move type: a primitive, a vector, or a struct (a module or package filter when `name` or `module` is absent). */
+type TypeNode =
+ | { kind: "primitive"; text: string }
+ | { kind: "vector"; of: TypeNode }
+ | { kind: "struct"; pkg: string; module?: string; name?: string; args: TypeNode[] };
+
+const MOVE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const MOVE_PRIMITIVES: Record<string, true> = {
+ bool: true, u8: true, u16: true, u32: true, u64: true, u128: true, u256: true, address: true, signer: true,
+};
+
+/** Split a type-argument list at its top-level commas; null when the brackets do not balance. */
+function splitArgs(text: string): string[] | null {
+ const parts: string[] = [];
+ let depth = 0;
+ let start = 0;
+ for (let i = 0; i < text.length; i++) {
+  if (text[i] === "<") depth++;
+  else if (text[i] === ">" && --depth < 0) return null;
+  else if (text[i] === "," && depth === 0) {
+   parts.push(text.slice(start, i).trim());
+   start = i + 1;
+  }
+ }
+ if (depth !== 0) return null;
+ parts.push(text.slice(start).trim());
+ return parts;
+}
+
+/** Parse a Move type. `filter` admits a bare package or module as the outermost type. */
+function parseType(text: string, filter: boolean): TypeNode | null {
+ const t = text.trim();
+ if (!filter && MOVE_PRIMITIVES[t]) return { kind: "primitive", text: t };
+ if (!filter && t.startsWith("vector<") && t.endsWith(">")) {
+  const of = parseType(t.slice(7, -1), false);
+  return of ? { kind: "vector", of } : null;
+ }
+ const lt = t.indexOf("<");
+ const [pkg, module, name, ...rest] = (lt < 0 ? t : t.slice(0, lt)).split("::");
+ if (rest.length || !/^0x[0-9a-fA-F]{1,64}$/.test(pkg ?? "")) return null;
+ if (module !== undefined && !MOVE_IDENT.test(module)) return null;
+ if (name !== undefined && !MOVE_IDENT.test(name)) return null;
+ if (!filter && name === undefined) return null;
+ if (lt < 0) return { kind: "struct", pkg: pkg!, module, name, args: [] };
+ if (name === undefined || !t.endsWith(">")) return null;
+ const parts = splitArgs(t.slice(lt + 1, -1));
+ const args = parts?.map((p) => parseType(p, false));
+ if (!args?.length || args.some((a) => !a)) return null;
+ return { kind: "struct", pkg: pkg!, module, name, args: args as TypeNode[] };
+}
+
+function formatType(node: TypeNode): string {
+ if (node.kind === "primitive") return node.text;
+ if (node.kind === "vector") return `vector<${formatType(node.of)}>`;
+ const head = [normalizeSuiAddress(node.pkg), node.module, node.name].filter((p) => p !== undefined).join("::");
+ return node.args.length ? `${head}<${node.args.map(formatType).join(",")}>` : head;
+}
+
+/** A struct, module or package a type names that its package does not define. */
+export interface UnknownTypeName {
+ package: string;
+ /** The module asked for; absent when the address is not a package. */
+ module?: string;
+ /** The struct asked for, when the module exists and lacks it. */
+ struct?: string;
+ /** True when the address holds no package. */
+ not_a_package?: true;
+ /** Modules of the package that define structs, when the module was not found. */
+ modules?: string[];
+ /** Structs of the module, when the struct was not found. */
+ structs?: string[];
+ /** Declared types to suggest for a missing struct (the module's when known, else the package's). */
+ candidates?: TypeOrigin[];
+ /** True for the outermost struct, module or package; absent for a type argument. */
+ outer?: true;
+}
+
+export interface DefiningTypeResolution {
+ /** Canonical type with every struct at the package that defined it; unknown parts are kept as written, padded. */
+ filter: string;
+ /** True when any package id in the type was rewritten. */
+ rewritten: boolean;
+ /** The package the outermost struct, module or package filter was read at. */
+ chosen: string;
+ /** Other packages defining structs under an outermost module or package filter. */
+ other_defining_packages: string[];
+ /** Names in the type that their package does not define. */
+ unknown: UnknownTypeName[];
+ /** Whether the outermost package's origins were unreadable or unavailable. */
+ origins_unverified?: "read_failed" | "unavailable";
+}
+
+/**
+ * Rewrite every struct of a Move type (`0xpkg`, `0xpkg::module` or
+ * `0xpkg::module::Name<…>`, type arguments included) to the package that
+ * defined it, from `typeOrigins`. Both an event's type and an object's type
+ * carry the defining package, for the outer struct and each type argument,
+ * so a type written with an upgraded id matches nothing.
+ *
+ * A struct name maps to exactly one defining package. An outermost package or
+ * module filter can span several when structs were added by upgrades; it
+ * keeps the requested package if it defines any of them, else takes the one
+ * defining the most, and lists the others.
+ *
+ * Null when the text is not a Move type. A package read that fails throws, so
+ * a caller can tell a failed read from an answer; with `tolerant`, that part
+ * of the type is kept as written instead.
+ */
+export async function resolveDefiningType(type: string, tolerant = false): Promise<DefiningTypeResolution | null> {
+ const root = parseType(type, true);
+ if (!root || root.kind !== "struct") return null;
+ const unknown: UnknownTypeName[] = [];
+ let rewritten = false;
+ let chosen = normalizeSuiAddress(root.pkg);
+ let others: string[] = [];
+ let originsUnverified: DefiningTypeResolution["origins_unverified"];
+ // One read per package, however many times the type names it.
+ const reads = new Map<string, Promise<TypeOrigin[] | null>>();
+
+ const resolve = async (node: TypeNode, outer: boolean): Promise<TypeNode> => {
+  if (node.kind === "primitive") return node;
+  if (node.kind === "vector") return { kind: "vector", of: await resolve(node.of, false) };
+  const args = await Promise.all(node.args.map((a) => resolve(a, false)));
+  const requested = normalizeSuiAddress(node.pkg);
+  if (!reads.has(requested)) reads.set(requested, fetchTypeOrigins(requested));
+  let origins: TypeOrigin[] | null;
+  try {
+   origins = await reads.get(requested)!;
+  } catch (error) {
+   if (!tolerant) throw error;
+   if (outer) originsUnverified = "read_failed";
+   return { ...node, args };
+  }
+  const flag = outer ? { outer: true as const } : {};
+  if (outer && (!origins || !origins.length)) originsUnverified = "unavailable";
+  if (origins === null) {
+   unknown.push({ package: requested, not_a_package: true, ...flag });
+   return { ...node, args };
+  }
+  const relevant = origins.filter((o) => (!node.module || o.module === node.module) && (!node.name || o.struct === node.name));
+  if (!relevant.length) {
+   const inModule = node.module ? origins.filter((o) => o.module === node.module) : [];
+   unknown.push(inModule.length
+    ? { package: requested, module: node.module, struct: node.name, structs: [...new Set(inModule.map((o) => o.struct))].sort(), ...(outer ? { candidates: inModule } : {}), ...flag }
+    : { package: requested, module: node.module, modules: [...new Set(origins.map((o) => o.module))].sort(), ...(outer && node.name ? { candidates: origins } : {}), ...flag });
+   return { ...node, args };
+  }
+  const counts = new Map<string, number>();
+  for (const o of relevant) {
+   const id = normalizeSuiAddress(o.definingId);
+   counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  const pick = counts.has(requested) ? requested : [...counts.entries()].sort((a, b) => b[1] - a[1])[0]![0];
+  if (pick !== requested) rewritten = true;
+  if (outer) {
+   chosen = pick;
+   others = [...counts.keys()].filter((id) => id !== pick);
+  }
+  return { ...node, pkg: pick, args };
+ };
+
+ const resolved = await resolve(root, true);
+ return { filter: formatType(resolved), rewritten, chosen, other_defining_packages: others, unknown, ...(originsUnverified ? { origins_unverified: originsUnverified } : {}) };
+}
+
 export interface EventTypeResolution {
   /** The filter string to send. */
   filter: string;
@@ -95,28 +260,15 @@ export interface EventTypeResolution {
 }
 
 /**
- * Rewrite an event-type filter (`0xpkg`, `0xpkg::module` or
- * `0xpkg::module::Name<…>`) to the package that defines the type.
- *
- * A struct name maps to exactly one defining package. A package or module
- * filter can span several when structs were added by upgrades; the filter then
- * keeps the requested package if it defines any of them, else takes the one
- * defining the most, and the others are listed so the caller can query them.
- * A package whose type origins cannot be read is passed through with an
- * unverified note. A named struct absent from a readable lineage is rejected:
- * querying it would otherwise return an apparently conclusive empty page.
+ * Rewrite an event-type filter through {@link resolveDefiningType}. Refuse
+ * names absent from a readable lineage; unreadable origins leave the filter
+ * unchanged with an unverified note.
  */
 export async function resolveEventTypeFilter(eventType: string): Promise<EventTypeResolution> {
   const trimmed = eventType.trim();
-  const lt = trimmed.indexOf("<");
-  const head = lt === -1 ? trimmed : trimmed.slice(0, lt);
-  const generics = lt === -1 ? "" : trimmed.slice(lt);
-  const [pkg, mod, name] = head.split("::");
-  if (!pkg?.startsWith("0x")) return { filter: trimmed };
-
-  let origins: TypeOrigin[] | null;
+ let resolved: DefiningTypeResolution | null;
   try {
-    origins = await fetchTypeOrigins(pkg);
+  resolved = await resolveDefiningType(trimmed, true);
   } catch {
     return {
       filter: trimmed,
@@ -128,36 +280,34 @@ export async function resolveEventTypeFilter(eventType: string): Promise<EventTy
       },
     };
   }
-  if (!origins?.length) {
+ if (!resolved) return { filter: trimmed };
+ if (resolved.origins_unverified) {
     return {
       filter: trimmed,
       resolution: {
         requested: trimmed,
         queried: trimmed,
         unverified: true,
-        note: "No package type origins were available for this ID. The event type was queried unchanged; an empty result does not establish that this type has no events.",
+    note: resolved.origins_unverified === "read_failed"
+     ? "Package type origins could not be read. The event type was queried unchanged; an empty result does not establish that this type has no events."
+     : "No package type origins were available for this ID. The event type was queried unchanged; an empty result does not establish that this type has no events.",
       },
     };
   }
-
-  const requested = normalizeSuiAddress(pkg);
-  const relevant = origins.filter((o) => (!mod || o.module === mod) && (!name || o.struct === name));
-  if (!relevant.length && mod && name) {
-    const inModule = origins.filter((o) => o.module === mod);
-    const candidates = inModule.length ? inModule : origins;
+ const root = parseType(trimmed, true) as Extract<TypeNode, { kind: "struct" }>;
+ const missing = resolved.unknown.find((u) => u.outer);
+ if (missing && root.name) {
+  const candidates = missing.candidates ?? [];
     const eventLike = candidates.filter((o) => /Event$/.test(o.struct));
-    const words = (name.match(/[A-Z]?[a-z]+/g) ?? [name])
+  const words = (root.name.match(/[A-Z]?[a-z]+/g) ?? [root.name])
       .filter((word) => word.length >= 5)
       .map((word) => word.slice(0, 5).toLowerCase());
-    // Rank an action word ahead of declaration order.
     const ranked = (eventLike.length ? eventLike : candidates)
       .sort((a, b) =>
         Number(words.some((word) => b.struct.toLowerCase().includes(word))) -
         Number(words.some((word) => a.struct.toLowerCase().includes(word))))
       .map((o) => `${normalizeSuiAddress(o.definingId)}::${o.module}::${o.struct}`);
-    // A tool error is cut at MAX_ERROR_CHARS; a cut inside a candidate would
-    // leave a truncated type that reads as a real one, so only whole
-    // candidates that fit are listed.
+  // Include only whole candidates within the tool's error limit.
     let message =
       `Event type ${quoteInput(trimmed)} is not a struct in this package lineage. ` +
       "event_type names the defining module; module names the emitting call. " +
@@ -172,14 +322,12 @@ export async function resolveEventTypeFilter(eventType: string): Promise<EventTy
     if (!listed) message += ranked.length ? " too long to list; get_package with detail 'full' lists them" : " none";
     throw new Error(`${message}.`);
   }
-  if (!relevant.length) {
-    // Only a module filter reaches here: no struct of the lineage is defined
-    // in that module, so no event type can match it in any window.
+ if (missing && root.module) {
     const more = ", and others";
     let message =
       `Event type module ${quoteInput(trimmed)} defines no struct in this package lineage, so no event type belongs to it. ` +
       "To match events emitted by calls into a module, use the module argument. Modules defining structs:";
-    const modules = [...new Set(origins.map((o) => o.module))];
+  const modules = missing.modules ?? [];
     let listed = 0;
     for (const m of modules) {
       const next = `${message}${listed ? "," : ""} ${m}`;
@@ -189,26 +337,18 @@ export async function resolveEventTypeFilter(eventType: string): Promise<EventTy
     }
     throw new Error(`${message}${listed < modules.length ? more : ""}.`);
   }
-
-  const counts = new Map<string, number>();
-  for (const o of relevant) {
-    const id = normalizeSuiAddress(o.definingId);
-    counts.set(id, (counts.get(id) ?? 0) + 1);
-  }
-  const chosen = counts.has(requested) ? requested : [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
-  const others = [...counts.keys()].filter((id) => id !== chosen);
-  if (chosen === requested && !others.length) return { filter: trimmed };
-
-  const filter = [chosen, mod, name].filter(Boolean).join("::") + generics;
-  const scope = name ? "This event type" : mod ? `Event types in module ${mod}` : "Event types in this package";
+ const others = resolved.other_defining_packages;
+ if (!resolved.rewritten && !others.length) return { filter: trimmed };
+ const { filter, chosen } = resolved;
+ const scope = root.name ? "This event type" : root.module ? `Event types in module ${root.module}` : "Event types in this package";
   return {
     filter,
     resolution: {
       requested: trimmed,
       queried: filter,
       note: others.length
-        ? `${scope} are defined across ${counts.size} package versions, and an event carries the ID of the version that defined its struct, so one filter cannot cover them. This query reads ${chosen}; query the others in other_defining_packages for the rest.`
-        : `${scope} ${name ? "is" : "are"} defined at ${chosen}, and an event carries the ID of the package version that defined its struct, not the ID it was requested by. The filter was rewritten to it.`,
+    ? `${scope} are defined across ${others.length + 1} package versions, and an event carries the ID of the version that defined its struct, so one filter cannot cover them. This query reads ${chosen}; query the others in other_defining_packages for the rest.`
+    : `${scope} ${root.name ? "is" : "are"} defined at ${chosen}, and an event carries the ID of the package version that defined its struct, not the ID it was requested by. The filter was rewritten to it.`,
       ...(others.length ? { other_defining_packages: others } : {}),
     },
   };

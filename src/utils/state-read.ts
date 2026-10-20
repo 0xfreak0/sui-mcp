@@ -126,6 +126,11 @@ const FOLLOWED = new Set([normalizeStructTag("0x2::coin::Coin"), normalizeStruct
 
 const layoutCache = new Map<string, Promise<LayoutRead | null>>();
 
+/** Tests only: forget every cached layout. */
+export function resetCoinLayouts(): void {
+  layoutCache.clear();
+}
+
 /**
  * Where a struct keeps coins: its `Balance<T>` fields and its `Supply<T>`
  * fields (a `Supply` renders as `{ value }`), following nested structs

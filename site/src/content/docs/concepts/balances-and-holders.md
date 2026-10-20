@@ -195,36 +195,66 @@ For NFT collections, `holder_kind` says how each holder was found; see
 
 ## Objects by Move type
 
-`list_objects_by_type` scans current objects across all owners. To count bids
-with a funded `offer` and sum their SUI value:
+`list_objects_by_type` scans current top-level objects of a Move struct or
+module across all owners. An object wrapped inside another object's fields is
+not indexed by type and is not listed. To count bids with a funded `offer` and
+sum their value:
 
 ```json
 {"type":"0xabc::bidding::Bid","sum_fields":["offer"],"where":{"field":"offer","gt":"0"}}
 ```
 
-For example, a completed scan with two funded bids may include this response:
+A completed scan with two funded bids, both `Bid<SUI>`, includes:
 
 ```json
-{"scanned":3,"matched":2,"complete":true,"sums":{"offer":{"total":"1000000000","min":"300000000","max":"700000000","count":2,"unreadable":0,"coin_type":"0x2::sui::SUI","formatted_total":"1","decimals":9,"decimals_source":"registry"}},"owner_kinds":{"shared":2,"address":0,"object":0,"consensus":0,"immutable":0,"unknown":0}}
+{"scanned":3,"matched":2,"complete":true,"sums":{"offer":{"total":"1000000000","min":"300000000","max":"700000000","count":2,"unreadable":0,"coin_type":"0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI","formatted_total":"1","decimals":9,"decimals_source":"registry"}},"owner_kinds":{"shared":2,"address":0,"object":0,"consensus":0,"immutable":0,"unknown":0}}
 ```
 
 `scanned` counts every object read and `matched` counts bids passing `where`.
-`sums.offer.total`, `min` and `max` are raw integer units over all matching
-rows, including rows the display cap leaves under `omitted`. A missing value
-leaves `total` null, with `observed_total` and `unreadable` stating what was
-read. `where_unreadable` marks objects whose funding test could not be made.
-When the Move layout declares `offer` as `Balance<SUI>`, `formatted_total`
-also reports SUI units and `decimals_source` states where the scale came from.
-Owner counts include address, object, shared, consensus and immutable
-ownership. For a nested field use a path such as `state.offer`.
+Sums cover all matching rows, including rows the display cap leaves under
+`omitted`. Amounts are raw integers; `formatted_total` applies the coin's
+decimals and `decimals_source` says where they came from. For a nested field
+use a path such as `state.offer`; `balance.value` and `balance` read the same
+`Balance<T>`.
 
-The scan walks object IDs, not bids ordered by value. `complete: false`
-means the sums and counts cover only the scanned portion. `next_call` resumes
-at the next cursor with fresh, separate totals; they are not cumulative.
-Use `detail: "full"` to retrieve omitted rows. A full view too large for
-one response continues with `row_offset`; its sums still cover the entire
-scan. A module filter can span types introduced by different package
-versions; `other_defining_packages` lists any versions this scan did not cover.
+A total is given only when every amount is in one unit. A field the struct
+layout shows to be a `Balance<T>` or `Supply<T>` is counted in coin `T`, so
+objects of different types holding the same coin add up. Any other field is
+counted per concrete object type. When the scanned objects hold the field in
+more than one unit, `total`, `min` and `max` are null and `sum_units` lists
+each unit:
+
+```json
+{"sums":{"offer":{"total":null,"min":null,"max":null,"count":3,"unreadable":0,"unit_count":2}},
+ "sum_units":[
+  {"field":"offer","coin_type":"0xc0…::coins::A","count":2,"raw_total":"150","min":"50","max":"100","formatted_total":"1.5","decimals":2,"decimals_source":"coin_metadata"},
+  {"field":"offer","coin_type":"0xc0…::coins::B","count":1,"raw_total":"7000000","min":"7000000","max":"7000000","formatted_total":"7","decimals":6,"decimals_source":"coin_metadata"}]}
+```
+
+A value that cannot be read as an integer leaves `total` null, with
+`observed_total` (a lower bound) and `unreadable` saying what was read. An
+object whose struct has no field at the path is counted under `absent`; when
+no matched object has it, `field_note` lists the first object's fields.
+`where_unreadable` and `where_absent` count objects the `where` test could
+not be applied to.
+
+The type is rewritten to the package version that defined each struct, type
+arguments included, since that is the id an object's type carries. A module,
+struct or type argument the package does not define is refused with the
+closest names:
+
+```json
+{"error":"Package 0x…0002 defines no struct in a module named SUI, so no object can have this type. Modules that define structs, closest first: sui, bag, bcs, coin, …"}
+```
+
+The scan walks by type and object ID, not by value. `complete: false` means
+the sums and counts cover only the scanned portion. `next_call` resumes at the
+next cursor with separate totals; they are not cumulative. Use
+`detail: "full"` to retrieve omitted rows. A full view too large for one
+response continues with `row_offset`, which scans current state again from
+the same cursor, so rows can move between pages if objects changed. A module
+filter can span types introduced by different package versions;
+`other_defining_packages` lists the versions this scan did not cover.
 
 ## DeFi positions
 

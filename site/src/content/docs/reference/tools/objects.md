@@ -9,7 +9,7 @@ sidebar:
 |---|---|
 | [`get_object`](#get_object) | Get a Sui object by its ID. |
 | [`list_dynamic_fields`](#list_dynamic_fields) | List dynamic fields of a Sui object. |
-| [`list_objects_by_type`](#list_objects_by_type) | Scan current Sui objects matching a Move struct or module filter across every owner kind. |
+| [`list_objects_by_type`](#list_objects_by_type) | Scan current top-level Sui objects matching a Move struct or module filter across every owner kind. |
 | [`list_owned_objects`](#list_owned_objects) | List raw objects owned by a Sui address with optional type filter and pagination. |
 
 ## get_object
@@ -49,16 +49,16 @@ Get a Sui object by its ID. Returns type, owner, version, content (JSON), and di
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-Scan current Sui objects matching a Move struct or module filter across every owner kind. Reports scanned and matched counts, owner kinds, raw integer sums/min/max over selected fields, and largest rows. `where: {field:'offer',gt:'0'}` keeps funded objects only. Nested paths use dots. Balance&lt;T> sums include coin decimals when the type layout and metadata are available. A partial scan reports `truncated` and, when a cursor is available, `next_call`; totals cover only scanned objects. A module spanning defining package versions reports the other IDs separately. Rows are ranked by selected value and capped. `detail:'full'` pages large row sets with `row_offset`. Object-id order is unrelated to value. Use `max_scan` to bound the scan and `cursor` to resume; totals on separate calls are not cumulative.
+Scan current top-level Sui objects matching a Move struct or module filter across every owner kind. Objects wrapped inside another object's fields are not indexed by type and are not listed. Reports scanned and matched counts, owner kinds, integer sums/min/max over selected fields, and the largest rows. `where: {field:'offer',gt:'0'}` keeps funded objects only. Nested paths use dots. A total is given only when every amount is in one unit: a Balance&lt;T> field adds up per coin T with its decimals, any other field per object type; mixed units are listed in `sum_units`. Types are rewritten to the package versions that defined them; a module or struct the package lacks is refused with the names it has. A partial scan reports `truncated` and, when a cursor is available, `next_call`; totals cover only the objects this call scanned and are not cumulative across calls. Object-id order is unrelated to value. `detail:'full'` pages rows with `row_offset`, which scans again.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `type` | string | yes | Move struct type or module, e.g. 0x2::kiosk::Kiosk or 0x2::kiosk |
+| `type` | string | yes | Move struct type or module, e.g. 0x2::kiosk::Kiosk, 0x2::coin::Coin&lt;0x2::sui::SUI> or 0x2::kiosk |
 | `sum_fields` | array of string (at most 8 items) | no | Numeric field paths to sum, e.g. ['offer'] or ['balance.value'] |
 | `where` | object | no | Include only objects with the named numeric field greater than gt (default '0') |
 | `max_scan` | integer (1 to 50000) | no | Max objects to scan per call (default 10000, max 50000) |
 | `cursor` | string | no | Continue at next_cursor; sums and counts cover this call only |
-| `row_offset` | integer (0 to 50000) | no | Offset into value-ranked rows of this scan, for full-view pagination |
+| `row_offset` | integer (0 to 50000) | no | Offset into value-ranked rows of this scan, for full-view pagination; each page scans again |
 | `detail` | `summary` \| `full` | no | 'full' returns all rows scanned; summary caps rows but keeps totals |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 

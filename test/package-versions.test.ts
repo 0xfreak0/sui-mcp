@@ -32,9 +32,24 @@ beforeEach(() => {
 describe("resolveEventTypeFilter", () => {
   it("rewrites a struct type to the version that defined it, keeping type arguments", async () => {
     const r = await resolveEventTypeFilter(`${V5}::pool::SwapEvent<0x2::sui::SUI>`);
-    expect(r.filter).toBe(`${V1}::pool::SwapEvent<0x2::sui::SUI>`);
+  expect(r.filter).toBe(`${V1}::pool::SwapEvent<0x${"0".repeat(63)}2::sui::SUI>`);
     expect(r.resolution?.requested).toBe(`${V5}::pool::SwapEvent<0x2::sui::SUI>`);
   });
+
+ it("rewrites a type argument written with an upgraded id", async () => {
+  const r = await resolveEventTypeFilter(`${V1}::pool::SwapEvent<${V5}::vault::DepositEvent>`);
+  expect(r.filter).toBe(`${V1}::pool::SwapEvent<${V3}::vault::DepositEvent>`);
+ });
+
+ it("still rewrites the event struct when a type argument's package cannot be read", async () => {
+  const COIN = `0x${"7".repeat(64)}`;
+  mockGqlQuery.mockImplementation(async (_q: string, vars: { a: string }) => {
+   if (vars.a === COIN) throw new Error("HTTP 503");
+   return origins;
+  });
+  const r = await resolveEventTypeFilter(`${V5}::pool::SwapEvent<${COIN}::c::C>`);
+  expect(r.filter).toBe(`${V1}::pool::SwapEvent<${COIN}::c::C>`);
+ });
 
   it("leaves a type already written with its defining package alone", async () => {
     const r = await resolveEventTypeFilter(`${V3}::vault::DepositEvent`);
@@ -69,6 +84,14 @@ describe("resolveEventTypeFilter", () => {
     expect(r.filter).toBe("0x9999::m::E");
     expect(r.resolution?.unverified).toBe(true);
   });
+
+ it("leaves an empty type-origin lineage unverified", async () => {
+  mockGqlQuery.mockResolvedValue({ package: { typeOrigins: [] } });
+  const r = await resolveEventTypeFilter("0x999a::m::E");
+  expect(r.filter).toBe("0x999a::m::E");
+  expect(r.resolution?.unverified).toBe(true);
+  expect(r.resolution?.note).toContain("empty result does not establish");
+ });
 
   it("keeps the unknown-struct error whole under the tool error cap", async () => {
     // Tool errors are cut at 500 characters. Long candidate types and a long

@@ -1,8 +1,8 @@
 name: Data release
 
-# Publishes a merged data-sync PR. data-sync.yml already bumped the version and
-# wrote the CHANGELOG section, so all that is left is the tag publish.yml
-# releases from.
+# Publishes a merged data-sync PR only if it bumped the version. Data merged
+# under Unreleased keeps the existing version; the next normal release ships it.
+# A release PR already wrote its CHANGELOG section.
 #
 # A tag pushed with GITHUB_TOKEN does not start publish.yml (GitHub runs no
 # workflow for events that token causes), so this job dispatches it on the tag.
@@ -39,10 +39,17 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 2
 
       - name: Tag the merged release and publish it
         run: |
           set -euo pipefail
+          previous="$(git show HEAD^1:package.json | node -p 'JSON.parse(require("node:fs").readFileSync(0, "utf8")).version')"
+          current="$(node -p "require('./package.json').version")"
+          if [ "$previous" = "$current" ]; then
+            echo "Data merged under Unreleased; no version change, so no release." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           tag="v$(node -p "require('./package.json').version")"
           # Retry only the same release: an existing tag for another commit
           # must never silently publish old code in place of this merged PR.

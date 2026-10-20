@@ -56,22 +56,27 @@ export async function readObjectEnd(objectId: string): Promise<ObjectEnd | null>
   const r = await gqlQuery<LastTouchResult>(LAST_TOUCH_QUERY, { id: objectId });
   const last = r.transactions.nodes[0];
   if (!last) return null;
+  return {
+    kind: await objectEndKind(objectId, last.digest),
+    tx: last.digest,
+    timestamp: last.effects?.timestamp ?? null,
+    checkpoint: last.effects?.checkpoint?.sequenceNumber ?? null,
+    sender: last.sender?.address ?? null,
+  };
+}
+
+/** Whether `digest`, the last transaction to touch an object no longer at top level, deleted or wrapped it. Throws when the transaction does not list the id. */
+export async function objectEndKind(objectId: string, digest: string): Promise<ObjectEnd["kind"]> {
   const res = await withArchiveFallback<GrpcTypes.GetTransactionResponse>(
-    (client) => client.ledgerService.getTransaction({ digest: last.digest, readMask: { paths: ["effects"] } }),
+    (client) => client.ledgerService.getTransaction({ digest, readMask: { paths: ["effects"] } }),
     (x) => !x.transaction?.effects,
   );
   const want = normalizeSuiAddress(objectId);
   const change = res.transaction?.effects?.changedObjects?.find(
     (c) => c.objectId !== undefined && normalizeSuiAddress(c.objectId) === want,
   );
-  if (!change) throw new Error(`transaction ${last.digest} does not list ${objectId} among its changed objects`);
-  return {
-    kind: isDeletion(change) ? "deleted" : "wrapped",
-    tx: last.digest,
-    timestamp: last.effects?.timestamp ?? null,
-    checkpoint: last.effects?.checkpoint?.sequenceNumber ?? null,
-    sender: last.sender?.address ?? null,
-  };
+  if (!change) throw new Error(`transaction ${digest} does not list ${objectId} among its changed objects`);
+  return isDeletion(change) ? "deleted" : "wrapped";
 }
 
 const PUBLISH_COMMANDS_QUERY = `query ($d: String!, $after: String) {

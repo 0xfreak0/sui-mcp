@@ -9,7 +9,7 @@ vi.mock("../../src/clients/grpc.js", () => ({ sui: mockSui, archive: mockSui }))
 vi.mock("../../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
 
 // Imported after the mocks above, which the factories close over.
-const { registerPoolTools } = await import("../../src/tools/pools.js");
+const { registerPoolTools, discoverCoinPools } = await import("../../src/tools/pools.js");
 
 const tools = new Map<string, Function>();
 registerPoolTools({
@@ -55,7 +55,9 @@ describe("find_pools", () => {
 
     expect(data.pools.map((p: { pool_id: string }) => p.pool_id).sort()).toEqual(["0xb1", "0xc1", "0xc2", "0xc3", "0xt1"]);
     expect(data.pools.every((p: { token_a: string; token_b: string }) => p.token_a === USDC && p.token_b === SUI)).toBe(true);
-    expect(data.incomplete).toBeUndefined();
+    expect(data.incomplete).toBe(true);
+    expect(data.venues.find((venue: { venue: string }) => venue.venue === "flowx_v2").status).toBe("failed");
+    expect(data.venues.find((venue: { venue: string }) => venue.venue === "cetus").status).toBe("complete");
   });
 
   it("says when a search failed instead of reporting no pools", async () => {
@@ -67,5 +69,84 @@ describe("find_pools", () => {
     const result = await tools.get("find_pools")!({ token_a: SUI, token_b: USDC, protocol: "turbos" });
 
     expect(result.isError).toBe(true);
+  });
+
+  it("keeps verified pools when one of a venue's ordered searches fails", async () => {
+    const bluefin = "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267::pool::Pool";
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { type: string }) => {
+      if (vars.type === `${bluefin}<${SUI}, ${USDC}>`) throw new Error("GraphQL temporarily unavailable");
+      return page([node("0xb1", `${bluefin}<${USDC}, ${SUI}>`)]);
+    });
+
+    const result = await tools.get("find_pools")!({ token_a: SUI, token_b: USDC, protocol: "bluefin" });
+    const data = JSON.parse(result.content[0].text);
+    expect(result.isError).toBe(false);
+    expect(data.pools.map((pool: { pool_id: string }) => pool.pool_id)).toEqual(["0xb1"]);
+    expect(data.venues).toEqual([expect.objectContaining({ venue: "bluefin", status: "failed", searched: 2 })]);
+    expect(data.failed_searches[0].error).toContain("temporarily unavailable");
+  });
+
+  it("marks a null continuation cursor incomplete without losing matched pools", async () => {
+    const bluefin = "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267::pool::Pool";
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { type: string }) =>
+      vars.type === `${bluefin}<${USDC}, ${SUI}>`
+        ? { objects: { nodes: [node("0xb2", vars.type)], pageInfo: { hasNextPage: true, endCursor: null } } }
+        : page([]));
+
+    const result = await tools.get("find_pools")!({ token_a: SUI, token_b: USDC, protocol: "bluefin" });
+    const data = JSON.parse(result.content[0].text);
+    expect(data.pools.map((pool: { pool_id: string }) => pool.pool_id)).toEqual(["0xb2"]);
+    expect(data.venues[0]).toMatchObject({ status: "incomplete", searched: 2 });
+    expect(data.incomplete).toBe(true);
+  });
+
+  it("pages a venue's many pools with a structured continuation, counting every pool", async () => {
+    const bluefin = "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267::pool::Pool";
+    const type = `${bluefin}<${SUI}, ${USDC}>`;
+    const ids = Array.from({ length: 900 }, (_, i) => `0x${(i + 1).toString(16).padStart(64, "0")}`);
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { type: string; after?: string | null }) => {
+      if (vars.type !== type) return page([]);
+      const from = vars.after ? Number(vars.after) : 0;
+      const end = Math.min(from + 50, ids.length);
+      return page(ids.slice(from, end).map((id) => node(id, type)), end < ids.length ? String(end) : null);
+    });
+
+    const seen: string[] = [];
+    let args: Record<string, unknown> = { token_a: SUI, token_b: USDC, protocol: "bluefin" };
+    for (let call = 0; call < 20; call++) {
+      const data = JSON.parse((await tools.get("find_pools")!(args)).content[0].text);
+      expect(data.total).toBe(900);
+      expect(JSON.stringify(data).length).toBeLessThan(50_000);
+      seen.push(...data.pools.map((pool: { pool_id: string }) => pool.pool_id));
+      if (!data.omitted) break;
+      expect(data.omitted.lists.pools.from).toBe(seen.length);
+      expect(data.omitted.next_call.tool).toBe("find_pools");
+      args = data.omitted.next_call.args;
+    }
+    expect(seen).toEqual(ids);
+  });
+
+  it("stops a coin's pool discovery at its time budget and marks the venue incomplete", async () => {
+    const coin = `0x${"c0".padStart(64, "0")}::coin::COIN`;
+    const type = `${CETUS}<${coin}, ${SUI}>`;
+    let pages = 0;
+    const start = Date.now();
+    const now = vi.spyOn(Date, "now").mockImplementation(() => start + (pages > 0 ? 31_000 : 0));
+    mockGqlQuery.mockImplementation(async (query: string, vars: { type?: string }) => {
+      if (query.includes("object(address")) return { object: null };
+      if (vars.type !== type) return page([]);
+      pages++;
+      return page([node(`0x${pages.toString(16).padStart(64, "0")}`, type)], `p${pages}`);
+    });
+    try {
+      const discovery = await discoverCoinPools(coin);
+      const cetus = discovery.venues.find((venue) => venue.venue === "cetus")!;
+      expect(pages).toBe(1);
+      expect(cetus.status).toBe("incomplete");
+      expect(cetus.error).toMatch(/30 s time budget after 1 page /);
+      expect(discovery.pools.map((pool) => pool.pool_id)).toHaveLength(1);
+    } finally {
+      now.mockRestore();
+    }
   });
 });

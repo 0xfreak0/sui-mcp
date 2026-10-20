@@ -1,10 +1,9 @@
 name: Data sync
 
-# Shipped attribution and screening data only reaches users in an npm release,
-# and a release is the one update channel that carries provenance. This job
-# reruns the syncs every week and, when something real changed, opens one PR
-# with the version bump and CHANGELOG section already in it. Merging that PR is
-# the review; data-release.yml then tags and publishes it.
+# Shipped attribution and screening data reaches users in an npm release.
+# This job opens a PR for material changes. Pending Unreleased notes keep the
+# data under Unreleased for the next normal release; otherwise the PR bumps
+# the patch version and data-release.yml publishes it on merge.
 #
 # Not synced here:
 #   - deposit-labels.json: reads the latest transactions of every exchange
@@ -123,23 +122,22 @@ jobs:
           npm run build
           npm test
 
-      - name: Prepare the release commit
+      - name: Prepare the data commit
         id: release
         if: steps.summary.outputs.material == 'true'
         env:
           FILES: ${{ steps.sync.outputs.files }}
         run: |
-          # Recorded before data-release-prep.mjs renames the section.
-          if grep -q '^## Unreleased' CHANGELOG.md; then echo "unreleased=true" >> "$GITHUB_OUTPUT"; fi
-          version="$(node scripts/data-release-prep.mjs /tmp/changelog-note.md | tail -n 1)"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          mode="$(node scripts/data-release-prep.mjs /tmp/changelog-note.md | tail -n 1)"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -C "$BRANCH"
-          # Only the synced data and the version bump; dist/ and scratch files stay out.
+          # Only the synced data and any version bump; dist/ and scratch files stay out.
           # shellcheck disable=SC2086
           git add CHANGELOG.md package.json package-lock.json server.json $FILES
-          git commit -q -m "Data refresh for $version"
+          git commit -q -m "Data refresh"
           # Rebuilt from main every week, so last week's unmerged run is replaced, not stacked.
           git push --force origin "$BRANCH"
 
@@ -147,12 +145,16 @@ jobs:
         if: steps.summary.outputs.material == 'true'
         env:
           VERSION: ${{ steps.release.outputs.version }}
-          UNRELEASED: ${{ steps.release.outputs.unreleased }}
+          MODE: ${{ steps.release.outputs.mode }}
           FAILED: ${{ steps.sync.outputs.failed }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           {
-            echo "Weekly data refresh. Merging publishes **$VERSION** through publish.yml (npm with provenance, MCP Registry, GitHub release)."
+            if [ "$MODE" = "release" ]; then
+              echo "Weekly data refresh. Merging publishes **$VERSION** through publish.yml (npm with provenance, MCP Registry, GitHub release)."
+            else
+              echo "Weekly data refresh for **Unreleased**. Merging adds data to the next normal release; it does not tag or publish $VERSION."
+            fi
             echo
             echo "### Required CI"
             echo "A maintainer must approve the bot-triggered CI run using **Approve workflows to run** in this PR. Wait for both \`check (22)\` and \`check (24)\` before merging."
@@ -164,18 +166,20 @@ jobs:
               echo "### Syncs that failed"
               for s in $FAILED; do echo "- \`$s\` (see the run log)"; done
             fi
-            if [ "$UNRELEASED" = "true" ]; then
+            if [ "$MODE" = "unreleased" ]; then
               echo
-              echo "> main had unreleased CHANGELOG entries. They ship in this release too; their section is now $VERSION."
+              echo "> main has pending Unreleased entries. Review and run the full \`npm run verify:live\` before the next normal release."
             fi
             echo
             echo "Run: $RUN"
           } > /tmp/pr-body.md
           existing="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')"
+          title="Data refresh $VERSION"
+          if [ "$MODE" = "unreleased" ]; then title="Data refresh (Unreleased)"; fi
           if [ -n "$existing" ]; then
-            gh pr edit "$existing" --title "Data refresh $VERSION" --body-file /tmp/pr-body.md
+            gh pr edit "$existing" --title "$title" --body-file /tmp/pr-body.md
           else
-            gh pr create --base main --head "$BRANCH" --title "Data refresh $VERSION" --body-file /tmp/pr-body.md
+            gh pr create --base main --head "$BRANCH" --title "$title" --body-file /tmp/pr-body.md
           fi
 
       # workflow_dispatch job checks do not satisfy required PR checks.

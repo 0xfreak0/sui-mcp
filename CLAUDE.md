@@ -219,6 +219,51 @@ cursor handed back, so following it reads the same empty page forever. Pass
 the request's cursor to `orderedPage`, which ends the list there. Oldest
 first, the last page keeps its end cursor for a later poll, so a tool gives
 a `next_call` only when `has_next_page` is true.
+`query_events` with `affected_object` reads `transactions(filter:
+{affectedObject})` and pages each transaction's decoded events. The transaction
+connection supplies per-row cursors: an event limit in the middle of a
+transaction resumes from the preceding row and an offset into that
+transaction's events. Newest order reverses both the transaction and event
+pages. The object filter belongs on transactions; `event_type` and `module`
+narrow events after the read and may leave short or empty pages. `sender`
+cannot be combined with `affected_object`; the transaction filter does not
+support that combination. `names_object` checks top-level decoded fields for
+the object ID, to distinguish a pool's own events from other legs in the same
+transaction. Continuation reads share `OBJECT_EVENTS_MAX_READS`; any
+transaction with incomplete event pagination is listed under
+`incomplete_transactions` for a `get_transaction` follow-up. A short page is
+not evidence of absent events while `has_next_page` is true.
+`query_events` with `affected_object` (`src/utils/object-events.ts`) reads
+`transactions(filter: {affectedObject})` and pages each transaction's decoded
+events. The filter covers failed transactions and every transaction that took
+the object, so on a busy pool most rows are not its trades (345 transactions
+and 1,000 events on the Cetus SUI/USDC pool in 400 checkpoints, 21 events
+naming it). `names_object` checks top-level decoded fields for a listed ID and
+`names_object: true` keeps only those; a router's echo names the pool too, and
+some venues' events name no pool ID. `sender` goes into the same transaction
+filter as `sentAddress`; `event_type` and `module` narrow events after the read,
+may leave short or empty pages, and match every defining package of a module.
+
+- **Up to 20 objects merge through `mergeVersionPages`**, 10 aliased
+  connections a request (11 with the nested events selection exceed the
+  300-node limit). A transaction is listed once, and only after every other
+  object's page has passed its checkpoint, so its `object_refs` are complete;
+  a duplicate behind another object's position is skipped through the
+  cursor's `seen` digests of the last checkpoint. Rows of different objects in
+  one checkpoint follow the object list's order.
+- **A split transaction resumes by digest.** The cursor records each object's
+  position, the transaction the page filled in (`at`) and the matching
+  events already shown. A newest-first walk is pinned below the highest
+  checkpoint its first read saw, so a transaction landing later cannot take
+  the offset; a continuation that does not start on `at` is refused.
+- **An empty read that hands back its own cursor ends that object's list.**
+  The service answers a read from a list's last cursor, or from a cursor
+  outside the window, that way on every repeat.
+- **A transaction whose events cannot be completed waits for the next call**
+  unless it is the call's first; only then is it listed under
+  `incomplete_transactions`, so every call reads the same prefix of it.
+  Continuation reads share `OBJECT_EVENTS_MAX_READS`. A short page is not
+  evidence of absent events while `has_next_page` is true.
 
 ## Time windows go into the filter
 

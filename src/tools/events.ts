@@ -1,9 +1,10 @@
 import { z } from "zod";
-import { numArg, addressArg, refinePoint } from "./args.js";
+import { numArg, addressListArg, addressArg, boolArg, refinePoint } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { describeWindow, resolveWindow } from "../utils/checkpoint-time.js";
 import { resolveEventTypeFilter, resolveModuleEventFilter } from "../utils/package-versions.js";
+import { OBJECT_EVENTS_MAX_OBJECTS, readObjectEvents } from "../utils/object-events.js";
 import {
   BOTH_WAYS_PAGE_INFO,
   orderedPage,
@@ -71,13 +72,21 @@ export const QUERY_EVENTS_MAX_READS = 10;
 export function registerEventTools(server: McpServer) {
   server.tool(
     "query_events",
-    "Query events by type, sender, emitting module or time/checkpoint range. For a date range, pass ISO 8601 times directly as after_checkpoint and before_checkpoint, e.g. \"2026-08-07T00:00:00Z\"; checkpoint numbers are optional. Event fields are decoded; no hand-written GraphQL is needed. Use a protocol's own events to measure its flow: whole-PTB balance changes can over-attribute it. For one known transaction, use get_transaction. Pages default to newest first and report order, timestamp bounds and the resolved window. Continue with next_cursor as cursor, preserving order and filters; short service pages are filled to limit, and scan names the continuation if the read budget stops first. Event types use their struct's defining package ID: upgraded IDs are rewritten and event_type_resolution reports it. A full event type absent from the lineage is rejected with candidate struct names. Module filters use the module whose call emitted the event, which may differ from the struct's defining module. They follow the network's emitting-ID cutover, using the original ID before it and the called version afterward, merging both for crossing windows. module_scope reports the scope and other version IDs; after cutover, one ID covers only that version. Framework packages upgraded in place keep one ID covering the lineage.",
+    "Query decoded events by type, sender, emitting module, affected object or time/checkpoint range. With affected_object (an object ID such as a pool, or up to 20), scans transactions touching it, failed ones included, and lists every event with its digest, checkpoint, timestamp and names_object (true only when a top-level decoded field equals a listed ID); names_object: true lists only those, which include a router's echo of a pool's swap, so count trades by the venue's own event_type. Several objects merge into one checkpoint-ordered list whose events carry object_refs into objects. Event type and module narrow the returned events; sender selects transactions it sent. For a date range, pass ISO 8601 times directly as after_checkpoint and before_checkpoint, e.g. \"2026-08-07T00:00:00Z\"; checkpoint numbers are optional. Use a protocol's own events to measure its flow: whole-PTB balance changes can over-attribute it. For one known transaction, use get_transaction. Pages default to newest first and report order, timestamp bounds and the resolved window. Continue with next_cursor as cursor, preserving order and filters; short service pages are filled to limit, and scan names the continuation if the read budget stops first. An object event scan whose nested event connection cannot be completed lists incomplete_transactions; read those digests with get_transaction. Event types use their struct's defining package ID: upgraded IDs are rewritten and event_type_resolution reports it. A full event type absent from the lineage is rejected with candidate struct names. Module filters use the module whose call emitted the event, which may differ from the struct's defining module. They follow the network's emitting-ID cutover, using the original ID before it and the called version afterward, merging both for crossing windows. module_scope reports the scope and other version IDs; after cutover, one ID covers only that version. Framework packages upgraded in place keep one ID covering the lineage.",
     {
       event_type: z
         .string()
         .optional()
         .describe("Filter by event type: 0x..., 0x...::module or 0x...::module::Name. An unknown struct or struct-less module returns candidates from its package."),
       sender: addressArg().optional().describe("Filter by transaction sender"),
+      affected_object: addressListArg()
+        .min(1)
+        .max(OBJECT_EVENTS_MAX_OBJECTS)
+        .optional()
+        .describe(`Object ID (such as a pool), or up to ${OBJECT_EVENTS_MAX_OBJECTS}: lists every event of the transactions touching it, failed ones included, with names_object. sender selects transactions it sent; event_type and module narrow events after the transactions are read.`),
+      names_object: boolArg()
+        .optional()
+        .describe("With affected_object: list only events whose top-level decoded field equals a listed object ID. Some venues' events name no pool ID."),
       module: z
         .string()
         .optional()
@@ -104,6 +113,8 @@ export function registerEventTools(server: McpServer) {
     async ({
       event_type,
       sender,
+      affected_object,
+      names_object,
       module,
       after_checkpoint,
       before_checkpoint,
@@ -111,14 +122,62 @@ export function registerEventTools(server: McpServer) {
       limit,
       cursor,
     }) => {
+      if (names_object !== undefined && !affected_object) {
+        return errorResult("names_object needs affected_object.");
+      }
       try {
         const direction = order ?? "newest";
+        const pageSize = limit ?? 20;
         const window = await resolveWindow(after_checkpoint, before_checkpoint);
         const typeFilter = event_type ? await resolveEventTypeFilter(event_type) : null;
         const moduleFilter = module
           ? await resolveModuleEventFilter(module, window.after?.checkpoint ?? null, window.before?.checkpoint ?? null)
           : null;
-        const pageSize = limit ?? 20;
+        if (affected_object) {
+          // Object mode filters events after reading them, so one call can match
+          // every package version that defines a struct of the requested module.
+          let eventTypes: string[] | undefined;
+          let typeResolution = typeFilter?.resolution;
+          if (typeFilter) {
+            if (!/^0x[0-9a-fA-F]{1,64}(::[A-Za-z_]\w*){0,2}(<.+>)?$/.test(typeFilter.filter)) {
+              return errorResult(`event_type ${JSON.stringify(event_type).slice(0, 80)} is not a package, module or struct type.`);
+            }
+            const rest = typeFilter.filter.slice(typeFilter.filter.indexOf("::"));
+            const others = typeResolution?.other_defining_packages ?? [];
+            eventTypes = [typeFilter.filter, ...others.map((pkg) => (typeFilter.filter.includes("::") ? `${pkg}${rest}` : pkg))];
+            if (typeResolution && others.length) {
+              typeResolution = {
+                ...typeResolution,
+                note: `Event types here are defined across ${others.length + 1} package versions; events of every one of them are matched.`,
+              };
+            }
+          }
+          const objectEvents = await readObjectEvents({
+            objects: [...new Set(affected_object)],
+            filter: {
+              ...(window.after?.checkpoint != null ? { afterCheckpoint: window.after.checkpoint } : {}),
+              ...(window.before?.checkpoint != null ? { beforeCheckpoint: window.before.checkpoint } : {}),
+              ...(sender ? { sentAddress: sender } : {}),
+            },
+            eventTypes,
+            module: moduleFilter,
+            namesObjectOnly: names_object === true,
+            order: direction,
+            limit: pageSize,
+            cursor,
+          });
+          return {
+            content: [{
+              type: "text" as const, text: JSON.stringify({
+                order: direction,
+                window: describeWindow(after_checkpoint, before_checkpoint, window),
+                ...(typeResolution ? { event_type_resolution: typeResolution } : {}),
+                ...(moduleFilter?.resolution ? { module_scope: moduleFilter.resolution } : {}),
+                ...objectEvents,
+              }),
+            }],
+          };
+        }
 
         const baseFilter: Record<string, unknown> = {};
         if (typeFilter) baseFilter.type = typeFilter.filter;

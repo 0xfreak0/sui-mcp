@@ -56,6 +56,22 @@ export const BALANCE_CHANGES_SELECTION = `balanceChanges(first: ${NESTED_PAGE_SI
 /** Select inside `... on ProgrammableTransaction { }` (or ProgrammableSystemTransaction). */
 export const COMMANDS_SELECTION = `commands(first: ${NESTED_PAGE_SIZE}) { ${COMMAND_PAGE} }`;
 
+/** Select inside `effects { }` for a transaction's decoded events. */
+export const EVENTS_SELECTION = `events(first: ${NESTED_PAGE_SIZE}) { pageInfo { hasNextPage endCursor } nodes { contents { type { repr } json } sender { address } transactionModule { fullyQualifiedName } } }`;
+
+export interface GqlEventNode {
+  contents?: { type?: { repr?: string }; json?: unknown };
+  sender?: { address: string };
+  transactionModule?: { fullyQualifiedName: string };
+}
+
+const MORE_EVENTS = `query ($digest: String!, $after: String) {
+  transaction(digest: $digest) { effects { events(first: ${NESTED_PAGE_SIZE}, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { contents { type { repr } json } sender { address } transactionModule { fullyQualifiedName } }
+  } } }
+}`;
+
 const MORE_BALANCE_CHANGES = `query ($digest: String!, $after: String) {
   transactionEffects(digest: $digest) { balanceChanges(first: ${NESTED_PAGE_SIZE}, after: $after) { ${BALANCE_CHANGE_PAGE} } }
 }`;
@@ -169,6 +185,15 @@ export function readAllObjectChanges(
     (r: MoreObjectChanges) => r.transaction?.effects?.objectChanges,
     OBJECT_CHANGE_PAGES,
   );
+}
+
+/** Complete decoded events for one transaction, within the caller's read budget. */
+export function readAllEvents(
+  digest: string,
+  first: GqlConnection<GqlEventNode> | null | undefined,
+  take?: ReadGate,
+): Promise<CompletedConnection<GqlEventNode>> {
+  return drain(digest, first, MORE_EVENTS, (r: { transaction?: { effects?: { events?: GqlConnection<GqlEventNode> } } }) => r.transaction?.effects?.events, MAX_PAGES, take);
 }
 
 export interface TxConnections {

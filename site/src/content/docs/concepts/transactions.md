@@ -431,6 +431,47 @@ the scope. After cutover any one ID, including the original, matches only
 that version, and `module_scope.other_version_ids` lists the rest. Framework
 packages such as `0x2` and `0x3` upgrade in place, so one ID covers all versions.
 
+### Events of a pool or a set of pools
+
+`affected_object` lists the decoded events of every transaction that touched
+an object, such as a pool, including failed transactions, which emit none. It
+takes one ID or up to 20, and merges several objects into one list in
+checkpoint order. A transaction that touched more than one of them is listed
+once.
+
+```json
+{ "affected_object": ["0x…pool_a", "0x…pool_b"], "names_object": true, "after_checkpoint": "2026-10-19T00:00:00Z", "before_checkpoint": "2026-10-20T00:00:00Z", "limit": 50 }
+```
+
+```json
+{ "objects": ["0x…pool_a", "0x…pool_b"], "events": [{ "type": "0x…::pool::SwapEvent", "data": { "pool": "0x…pool_b", "…": "…" }, "tx_digest": "…", "checkpoint": 336210042, "timestamp": "…", "names_object": true, "object_refs": [1], "named_object_ref": 1 }], "has_next_page": true, "next_cursor": "…" }
+```
+
+Most transactions touching a busy pool are not its trades: arbitrage that
+fails, bots that pass the pool to another venue's call, and other legs of a
+routed swap. `names_object` is true when a top-level decoded field holds a
+listed ID, and `names_object: true` lists only those events. A router's echo of
+a swap also names the pool, so count trades with the venue's own event type
+in `event_type`. Some venues' swap events name no pool ID (a pair kept as a
+dynamic field and identified by its coin types), so `false` does not mean the
+event concerns another object. With several objects, `object_refs` indexes the
+listed objects the transaction touched and `named_object_ref` the one the
+event names.
+
+`event_type` and `module` narrow the events after the transactions are read,
+so both can be given at once here, and an `event_type` module spanning several
+defining packages matches all of them. `sender` selects transactions that
+address sent. Narrowing can leave a page short or empty while
+`has_next_page` is true; continue with `next_cursor`. A page that fills in the
+middle of a transaction resumes inside it. Newest-first, events of one
+transaction are listed last emitted first. Transactions of different objects
+in one checkpoint follow the order of the object list, because the service
+does not report their order within a checkpoint.
+
+One call reads up to 50 transactions per object per request, 20 requests in
+all. The busiest pools see over 200 transactions a minute, so a day of one
+takes hundreds of calls; narrow the window first.
+
 ## Ranking event activity
 
 `aggregate_events` answers questions such as "who were the top wallets on

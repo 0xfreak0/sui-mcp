@@ -285,10 +285,10 @@ TRANSACTION:
   lists only whole candidates that fit `MAX_ERROR_CHARS`, since a cut inside
   a type reads as a different type. A failed or unavailable origins
   read is `event_type_resolution.unverified`, and a zero-match result cannot
-  establish absence. `typeOrigins` lists all structs and enums, not only
-  emitted events, so suggestions must not claim each candidate emitted. The
-  event's `transactionModule` is the call that emitted it, not necessarily
-  the module defining its struct: DeepBook margin's
+  establish absence. `typeOrigins` lists every struct and enum, emitted or
+  not, so suggestions must not claim each candidate was emitted. The
+  event's `transactionModule` is the module of the call that emitted it,
+  which can differ from the module defining its struct: DeepBook margin's
   `margin_manager::LiquidationEvent` was emitted by
   `liquidation_vault` through a separately published package.
 - **An event's emitting module carries whichever id the checkpoint's era

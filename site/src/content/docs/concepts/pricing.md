@@ -6,8 +6,8 @@ sidebar:
 ---
 
 USD valuations are estimates: token amounts multiplied by third-party price
-quotes. The chain records token amounts, not these USD values, and a quote
-does not establish the price anyone actually traded at.
+quotes. The chain records token amounts, and the quote may differ from the
+execution price.
 
 [Price sources](/guides/configuration/#price-sources) explains Aftermath,
 DefiLlama, the keyless CoinGecko and GeckoTerminal historical fallbacks, and
@@ -68,7 +68,7 @@ unpriced; an answered request without a historical quote is not an outage.
 | `trace_flow_graph`, `find_flow_path` | Historical quotes shared within each UTC hour, requested at the first transaction time priced in that hour. |
 | `summarize_address_flows`, `summarize_incident_losses`, `aggregate_events` with `group_pnl` | Each coin's median movement time within each UTC hour, before summing. If the window needs too many quotes, each coin's median time within each UTC day is used instead. |
 | `summarize_incident_losses` with `price_at` | One fixed price time for coins and objects. |
-| `compare_oracle_price` | Pyth at each market candle's close, or the window's end for an open candle. |
+| `compare_oracle_price` | Pyth at each market candle's close, or the window's end for an open candle. Requires `PYTH_API_KEY`; without it `oracle_unavailable` is reported and `flagged_count` is null. |
 
 For an even number of movements, the median is the later of the two middle
 times. It is not rounded to the start of the hour or day. The window tools
@@ -95,7 +95,10 @@ Window totals accept quotes up to two hours from the requested sample time;
 quotes more than one hour away are marked stale. Older quotes, unknown
 decimals and missing prices or timestamps are excluded, making the total
 partial. A partial net can be too high as well as too low if missing amounts
-include losses. A missing price does not mean a token is worth zero.
+include losses. A missing price does not mean a token is worth zero. For
+an object handover in `trace_flow_graph` or `find_flow_path`, inspect the
+edge's valuation tier; NFT estimates are heuristic, and an object without
+a readable value receives no traced share.
 
 ## Read the qualifications
 

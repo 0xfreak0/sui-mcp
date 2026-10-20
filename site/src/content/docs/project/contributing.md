@@ -15,13 +15,21 @@ in the repository. It covers:
   addresses or SuiNS names, and the hooks that block them.
 - Adding a new tool: argument helpers, profiles, the generated tool
   reference, store overrides, tests and a live check.
+- Live checks, including the independent `oracle-pass` checks for funding,
+  holders, staking, bridge events, past balances and checkpoint lookups, and
+  `consistency-pass` comparisons of transaction, funding, balance, flow and
+  identity answers on the same subjects. An affected-tier run selects these
+  passes when a tool they check changes; bounded reads are reported separately.
 - Running a blind investigation and writing a case file.
 - Changing an anomaly detector.
 - Keeping the protocol registry and curated verified coins current; uncurated
-  mainnet symbol discovery searches live DEX pools, not a shipped coin index.
+  mainnet symbol discovery searches live DEX pools and a bounded metadata scan.
 - Citing the Sui framework source for claims about it.
 - Writing mocks that match what a service can return.
 - Adding a bridge.
+- Weekly data-refresh PRs: pending Unreleased changes receive data under
+  Unreleased for the next normal release, while a data-only PR bumps the patch
+  version and publishes on merge. A maintainer approves the bot PR's CI run.
 - Releasing, and what needs a new release.
 
 To build and run the server from a clone, see

@@ -42,6 +42,14 @@ totals cover every sale. A `get_transaction` event list too long for the
 budget folds events that differ only in amounts into one row, and says so
 under `omitted.folded`.
 
+`list_objects_by_type` also caps displayed rows separately from its object
+walk. `omitted.next_call` requests `detail: "full"` for rows already counted
+by `sums`; full-view `row_offset` pages scan current state again. If the walk
+stops, `complete: false` and `stop_reason` qualify its sums and owner counts.
+`next_call` resumes at the object cursor when one is available, but the next
+call's totals are separate. `other_defining_packages` means even a fully
+walked module filter leaves types from other defining versions to query.
+
 `get_validators` defaults to `detail: "summary"`: name, address, stake,
 commission, voting power and at-risk status, sorted over the whole set before
 the list is capped. At-risk validators stay even beyond the summary budget

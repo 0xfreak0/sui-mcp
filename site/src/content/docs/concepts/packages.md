@@ -10,8 +10,9 @@ sidebar:
 `analyze_package` accepts a package ID or an MVR name such as `@org/app`.
 It summarizes modules, public and entry functions, and struct shapes, then
 scans for freeze/denylist and mint authority, admin capabilities, fund
-handling, randomness and hot-potato types. It is a heuristic surface scan,
-not a security audit; no finding proves a flaw and no empty scan proves safety.
+handling, randomness and hot-potato types. Its heuristic leads need
+bytecode and state review before they support a security conclusion.
+A scan without leads does not establish safety.
 
 By default, `overview.modules` lists function and struct counts and entry
 and public function names. `modules: ["pool"]` returns just those modules'
@@ -61,10 +62,10 @@ it as an authority (`Cap`, `Admin`, `Operator`, `Owner`, `Manager`,
 `Authority`), catching a capability such as Volo's `OperatorCap`, minted long
 after publish and handed to one key.
 
-A type held by a small number of addresses is listed individually, each
-holder's `signing_scheme` reported alongside it. One held one-per-user, like
-DeepBook v3's `balance_manager::TradeCap` or 0x2's `kiosk::KioskOwnerCap`, is
-reported as a count in `user_held_types` instead of one entry per holder.
+A type held by a small number of addresses is listed individually, with
+each holder's `signing_scheme`. User-held types, such as
+`balance_manager::TradeCap` and `kiosk::KioskOwnerCap`, appear as counts
+under `user_held_types` instead of one entry per holder.
 
 A struct whose instance scan fails outright (a timeout, a 429 after retries),
 or whose defining package version cannot be read, is named in

@@ -52,17 +52,15 @@ valuation summaries; use `list_nft_collections` for their collection details.
 
 ## The kiosk owner field
 
-A kiosk-held NFT is owned by the Kiosk object, and a kiosk carries an `owner`
-field that `set_owner` writes. That field does not follow the
-`KioskOwnerCap`, so it names whoever set it last. On mainnet it often
-disagrees with the real cap holder, and a single address can be declared by
-many kiosks, which is enough to invent a top holder out of a platform address.
+A kiosk-held NFT is owned by the Kiosk object. Its `owner` field is written
+by `set_owner` and remains unchanged when the `KioskOwnerCap` moves, so it
+can name a former cap holder. In a holder ranking, several kiosks declaring
+one address may inflate that address's apparent NFT holdings.
 
 ## Owners learned from sales
 
-`get_nft_sales` closes that gap. A marketplace sale names the buyer and the
-buyer's kiosk in one record, so any kiosk seen trading has a chain-derived
-owner:
+`get_nft_sales` reads marketplace sales that name both buyer and buyer's
+kiosk, establishing the kiosk's holder at that sale's checkpoint:
 
 ```json
 {"hours":24}
@@ -111,8 +109,7 @@ at once, where reading each one's creation transaction is not practical.
 
 ## Filtering by collection
 
-`collection_type` narrows the result, but only for marketplaces that name the
-collection in the event, and most sales carry no collection type at all.
-Those are counted in
-`unattributable_sales` rather than filtered out quietly, so a small number of
-matches is never mistaken for a collection that did not trade.
+`collection_type` narrows sales only for marketplaces whose event names the
+collection. Sales without a named type are counted in
+`unattributable_sales`; a filtered result can miss trades from those
+marketplaces.

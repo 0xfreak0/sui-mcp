@@ -27,6 +27,21 @@ Common control is the inference being tested.
 | Shared funder | `0xb43139646d70b02e44dd5c16af587197e693b3197ebbcb60a750d03d82abfaa5` |
 | WAL claim event | `0x98af8b8fde88f3c4bdf0fcedcf9afee7d10f66d480b74fb5a3a2e23dc7f5a564::events::NFTWithdrawal` |
 
+`query_events` can inspect the claim records before sampling:
+
+```json wrap
+{ "event_type": "0x98af8b8fde88f3c4bdf0fcedcf9afee7d10f66d480b74fb5a3a2e23dc7f5a564::events::NFTWithdrawal",
+  "after_checkpoint": "2025-03-27T10:00:00Z",
+  "before_checkpoint": "2025-03-27T10:30:00Z" }
+```
+
+The response lists decoded `events` with `sender`, `emitting_module` and
+`tx_digest`. `event_type` filters by the defining struct; the separate
+`module` argument filters the emitting call, which can be in another module.
+Pass `next_cursor` as `cursor` with the same filters and `order` while
+`has_next_page` is true. A short or empty service read does not by itself
+mean the event list has ended.
+
 ## Steps
 
 ### 1. See who paid the collector
@@ -189,11 +204,11 @@ from the same claim event in the same half hour, excluding the 24:
 …
 ```
 
-The seeded sample selects other addresses that emitted the same event
-in the specified window, among the 5,000 events scanned. The population
-scan was truncated, so this draw cannot establish coverage of every claimant
-in the window. Record and pass its `addresses` to the next call; the seed
-makes the draw reproducible from that scanned population.
+The seeded sample selects other event senders in the specified window
+among the 5,000 events scanned. The population scan was truncated, so
+this draw cannot establish coverage of every claimant in the window.
+Record and pass its `addresses` to the next call; the seed makes the draw
+reproducible from that scanned population.
 
 ### 5. Run the same funding test on the control
 

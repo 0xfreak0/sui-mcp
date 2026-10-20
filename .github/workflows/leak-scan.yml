@@ -1,12 +1,8 @@
 name: Leak scan
 
-# Backstop for `.githooks/`. Git does not clone hooks and `--no-verify` skips
-# them, so the local hook alone cannot keep a session URL out of the repo.
-#
-# This checks only `.githooks/patterns` — the TRACKED list. The private list
-# (`patterns.local`) is gitignored precisely because publishing it would
-# publish what it protects, so CI cannot see it and that half rests on the
-# local hook. Stated rather than silently half-enforced.
+# Backstop for `.githooks/`: Git does not clone hook settings and --no-verify
+# skips local hooks. CI checks tracked patterns and commit identities, but
+# cannot read the ignored patterns.local file.
 on:
   pull_request:
   push:
@@ -47,6 +43,26 @@ jobs:
           done
           exit $fail
 
+      - name: Commit identities
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            range="${{ github.event.pull_request.base.sha }}..HEAD"
+          else
+            range="${{ github.event.before }}..HEAD"
+          fi
+          git rev-list "$range" >/dev/null 2>&1 || range="HEAD~20..HEAD"
+          git rev-list "$range" >/dev/null 2>&1 || range="HEAD"
+          echo "Checking commit identities in $range"
+          fail=0
+          for sha in $(git rev-list "$range"); do
+            if ! ./.githooks/identity-check.sh --commit "$sha" --ci; then
+              fail=1
+            fi
+          done
+          exit $fail
+
       - name: Tracked file contents
         run: |
           fail=0
@@ -56,6 +72,8 @@ jobs:
             # The pattern files and this workflow legitimately contain the
             # patterns themselves.
             case "$f" in .githooks/patterns*|.github/workflows/leak-scan.yml) continue ;; esac
+            # The scanner only reads its label argument; it writes no files.
+            # shellcheck disable=SC2094
             if ! ./.githooks/leak-scan.sh "$f" < "$f"; then fail=1; fi
           done
           exit $fail

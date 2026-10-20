@@ -219,6 +219,20 @@ cursor handed back, so following it reads the same empty page forever. Pass
 the request's cursor to `orderedPage`, which ends the list there. Oldest
 first, the last page keeps its end cursor for a later poll, so a tool gives
 a `next_call` only when `has_next_page` is true.
+`query_events` with `affected_object` reads `transactions(filter:
+{affectedObject})` and pages each transaction's decoded events. The transaction
+connection supplies per-row cursors: an event limit in the middle of a
+transaction resumes from the preceding row and an offset into that
+transaction's events. Newest order reverses both the transaction and event
+pages. The object filter belongs on transactions; `event_type` and `module`
+narrow events after the read and may leave short or empty pages. `sender`
+cannot be combined with `affected_object`; the transaction filter does not
+support that combination. `names_object` checks top-level decoded fields for
+the object ID, to distinguish a pool's own events from other legs in the same
+transaction. Continuation reads share `OBJECT_EVENTS_MAX_READS`; any
+transaction with incomplete event pagination is listed under
+`incomplete_transactions` for a `get_transaction` follow-up. A short page is
+not evidence of absent events while `has_next_page` is true.
 
 ## Time windows go into the filter
 

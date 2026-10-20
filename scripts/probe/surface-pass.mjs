@@ -28,6 +28,7 @@ const KIOSK_WALLET = "0x7b2b3d0354c04e126a9faedd8becc8d02853b491060bd145b8964951
 const KIOSK = "0x993ca6e7e5dba21b613f7e5df86ab65d75552150a59dd29e181e7ce87a9074d9";
 const TURBOS_QUIET_POOL = "0xbf20413c194a4cdf944dbb56f57999f94f78bfec66134f2911ab2df7549b3f6e";
 const CETUS_SUI_USDC = "0x51e883ba7c0b566a26cbc8a94cd33eb0abd418a77cc1e60ad22fd9b1f29cd2ab";
+const GOBBLE_CETUS_POOL = "0xb2614af81a47f9e7a423db5ae7a0b69165c268cd8032cb0d56c3a6273bc6fd2d";
 const TURBOS_POOL_CONFIG = "0xc294552b2765353bcafa7c359cd28fd6bc237662e5db8f09877558d81669170c";
 const VALIDATOR = "0x8f8ea04f3b751533db8b8da0a40eba1ca8332a92680f058d83b9459d061aaa54";
 const pad = (h) => `0x${h.replace(/^0x/, "").padStart(64, "0")}`;
@@ -301,6 +302,17 @@ try {
   const suiPerUsdc = (Number(BigInt(cStats.extra?.current_sqrt_price ?? 0)) / 2 ** 64) ** 2 * 1e-3;
   const priceSui = cStats.prices?.[SUI_FULL];
   ck("get_pool_stats (Cetus): the pool's own price agrees with the quoted SUI price within 3%", priceSui > 0 && Math.abs(1 / suiPerUsdc / priceSui - 1) < 0.03, `${(1 / suiPerUsdc).toFixed(4)} vs ${priceSui}`);
+  const objectWindow = { affected_object: GOBBLE_CETUS_POOL, after_checkpoint: 67311100, before_checkpoint: 67311227, limit: 2 };
+  const objectFirst = await call("query_events", objectWindow);
+  const objectNext = await call("query_events", { ...objectWindow, cursor: objectFirst.next_cursor });
+  const objectAll = await call("query_events", { ...objectWindow, limit: 4 });
+  const compact = (r) => (r.events ?? []).map((e) => JSON.stringify([e.tx_digest, e.type, e.data]));
+  ck("query_events object pages preserve every decoded event in order",
+    objectFirst.events?.length === 2 && objectNext.events?.length === 2 &&
+    sameSet([...compact(objectFirst), ...compact(objectNext)], compact(objectAll)) &&
+    [...compact(objectFirst), ...compact(objectNext)].join() === compact(objectAll).join() &&
+    (objectAll.events ?? []).every((e) => e.names_object === true && e.checkpoint && e.timestamp),
+    `${objectFirst.events?.length}/${objectNext.events?.length}/${objectAll.events?.length}`);
 
   // ======================================================================
   // Names, chain, checkpoints, validators

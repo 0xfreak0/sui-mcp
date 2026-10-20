@@ -24,6 +24,11 @@ export function oracleDrawState(id, options, checked) {
   return id === "i" && options.stakeBoundReached ? "drawn_but_unverifiable" : "unchecked";
 }
 
+/* The stake draw ran out of its bound only when it stopped short of `wanted` subjects. */
+export function stakeDrawExhausted({ found, wanted, reads, maxReads, lastPage, more }) {
+  return found < wanted && (reads >= maxReads || (lastPage && more));
+}
+
 const stakeType = (type) => String(type).replace(/(^|[<,\s])(?:0x)?([0-9a-fA-F]{1,64})(?=::)/g, (_, pre, hex) => `${pre}0x${hex.toLowerCase().padStart(64, "0")}`);
 const STAKED_SUI = stakeType("0x3::staking_pool::StakedSui");
 const UNSTAKING_EVENT = stakeType("0x3::validator::UnstakingRequestEvent");

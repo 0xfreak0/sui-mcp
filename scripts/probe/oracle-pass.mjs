@@ -157,7 +157,7 @@ import { GrpcTransport } from "@protobuf-ts/grpc-transport";
 import { ChannelCredentials } from "@grpc/grpc-js";
 import { startServer, gql as gqlOnce, ROOT } from "./lib/mcp-client.mjs";
 import { extraOracles } from "./lib/oracle-extra.mjs";
-import { checkableStakeWithdrawal, oracleDrawState } from "./lib/oracle-draws.mjs";
+import { checkableStakeWithdrawal, oracleDrawState, stakeDrawExhausted } from "./lib/oracle-draws.mjs";
 
 /** The fullnode over gRPC: the second transport truth is read through where the tool uses GraphQL. */
 const grpc = new SuiGrpcClient({ network: "mainnet", baseUrl: "https://fullnode.mainnet.sui.io" });
@@ -1357,7 +1357,7 @@ async function drawExtra(txs, coins, eras) {
       if (checkableStakeWithdrawal(tx)) stake.push(n.digest);
     }
     const more = d.transactions.pageInfo.hasPreviousPage;
-    if (stake.length < 3 && (stakeReads >= maxStakeReads || (page === 5 && more))) stakeBoundReached = true;
+    if (stakeDrawExhausted({ found: stake.length, wanted: 3, reads: stakeReads, maxReads: maxStakeReads, lastPage: page === 5, more })) stakeBoundReached = true;
     if (!more || stake.length >= 3 || stakeReads >= maxStakeReads || page === 5) break;
     before = d.transactions.pageInfo.startCursor;
     if (!before) throw new Error("staking transaction range has more rows but no cursor");

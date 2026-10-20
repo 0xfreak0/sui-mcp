@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkableStakeWithdrawal, oracleDrawState, oracleRequested } from "../scripts/probe/lib/oracle-draws.mjs";
+import { checkableStakeWithdrawal, oracleDrawState, oracleRequested, stakeDrawExhausted } from "../scripts/probe/lib/oracle-draws.mjs";
 
 const defaults = { pinned: null, txs: 4, ends: 6, router: 6, coins: 6 };
 
@@ -15,6 +15,13 @@ describe("oracle draw policy", () => {
     expect(oracleDrawState("k", disabled, 0)).toBe("unchecked");
   });
 
+  it("requests every oracle under the default bounds and only the chain-wide ones with every source off", () => {
+    const ids = "abcdefghijkl".split("");
+    expect(ids.filter((id) => oracleRequested(id, defaults))).toEqual(ids);
+    const off = { pinned: null, txs: 0, ends: 0, router: 0, coins: 0 };
+    expect(ids.filter((id) => oracleRequested(id, off))).toEqual(["i", "j", "k", "l"]);
+  });
+
   it("still requires an enabled oracle to check at least one subject", () => {
     expect(oracleRequested("h", defaults)).toBe(true);
     expect(oracleRequested("k", defaults)).toBe(true);
@@ -28,6 +35,20 @@ describe("oracle draw policy", () => {
     expect(oracleDrawState("i", { ...defaults, stakeBoundReached: true }, 0)).toBe("drawn_but_unverifiable");
     expect(oracleDrawState("i", { ...defaults, stakeBoundReached: true }, 1)).toBe("checked");
     expect(oracleDrawState("i", defaults, 0)).toBe("unchecked");
+  });
+});
+
+describe("stake draw bound", () => {
+  const base = { wanted: 3, maxReads: 60, lastPage: false, more: true };
+  it("is exhausted only when the bound stopped it short of its subjects", () => {
+    expect(stakeDrawExhausted({ ...base, found: 1, reads: 60 })).toBe(true);
+    expect(stakeDrawExhausted({ ...base, found: 0, reads: 12, lastPage: true })).toBe(true);
+    // Three subjects found on the last read or page: the bound did not cut the draw.
+    expect(stakeDrawExhausted({ ...base, found: 3, reads: 60 })).toBe(false);
+    expect(stakeDrawExhausted({ ...base, found: 3, reads: 9, lastPage: true })).toBe(false);
+    // The range ended before the bound: nothing left to read.
+    expect(stakeDrawExhausted({ ...base, found: 0, reads: 12, lastPage: true, more: false })).toBe(false);
+    expect(stakeDrawExhausted({ ...base, found: 2, reads: 30 })).toBe(false);
   });
 });
 

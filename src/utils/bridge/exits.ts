@@ -37,6 +37,7 @@ import {
 } from "./sui-native.js";
 import { celerBurns, type CelerBurn } from "./celer.js";
 import { crossChainLeads, type CrossChainLead } from "./cross-chain.js";
+import { hashiTransfers, type HashiCancellation, type HashiDeposit, type HashiWithdrawal, type HashiWithdrawalRequest } from "./hashi.js";
 import { layerZeroTransfers, type LayerZeroTransfer } from "./layerzero.js";
 import { tokenBridgeRedemptions, type WormholeInbound } from "./wormhole-inbound.js";
 import { extractWormholeMessages, type SuiEventNode, type WormholeMessage } from "./wormhole.js";
@@ -60,6 +61,14 @@ export interface BridgeEventReading {
   celer: CelerBurn[];
   /** Token Bridge redemptions: value ARRIVING on Sui. NTT redemptions need the inputs; see `nttRedemptions`. */
   wormholeInbound: WormholeInbound[];
+  /** Withdrawal requests: the requester's hBTC handed to Hashi with a Bitcoin destination, cancellable until committed. */
+  hashiRequests: HashiWithdrawalRequest[];
+  /** Cancelled requests: hBTC returned to the requester on Sui. */
+  hashiCancellations: HashiCancellation[];
+  /** Committee commitments: the requests' hBTC burned for these Bitcoin outputs; not proof of Bitcoin delivery. */
+  hashiWithdrawals: HashiWithdrawal[];
+  /** BTC deposit confirmed and hBTC minted on Sui. */
+  hashiInbound: HashiDeposit[];
   /** Every far-side recipient read from chain data. */
   beneficiaries: Beneficiary[];
   /** Events no curated reader covers that carry a cross-chain message's shape. Heuristic; see `cross-chain.ts`. */
@@ -135,12 +144,14 @@ export function readBridgeEvents(events: SuiEventNode[], qualify: boolean): Brid
   const axelar = axelarTransfers(events);
   const allbridge = allbridgeTransfers(events);
   const celer = celerBurns(events);
+  const hashi = hashiTransfers(events);
   // Allbridge's live route burns through CCTP with its own nonce. The burn's
   // mint recipient is where USDC lands (on Solana, the wallet's token
   // account); Allbridge's event names the wallet, so that is the beneficiary.
   const allbridgeNonces = new Set(allbridge.filter((a) => a.route === "cctp").map((a) => a.nonce));
   const carriesAllbridge = (cctpNonce: string | null) => cctpNonce !== null && allbridgeNonces.has(cctpNonce);
   const beneficiaries: Beneficiary[] = [
+    ...hashi.beneficiaries,
     ...mayan,
     ...decodedMessages.flatMap((d) => (d?.beneficiary ? [d.beneficiary] : [])),
     ...layerZero.flatMap((l) => (l.beneficiary ? [l.beneficiary] : [])),
@@ -188,6 +199,10 @@ export function readBridgeEvents(events: SuiEventNode[], qualify: boolean): Brid
     carriesAllbridge,
     celer,
     wormholeInbound: tokenBridgeRedemptions(events, qualify),
+    hashiRequests: hashi.requests,
+    hashiCancellations: hashi.cancellations,
+    hashiWithdrawals: hashi.withdrawals,
+    hashiInbound: hashi.deposits,
     beneficiaries,
     crossChainLeads: crossChainLeads(
       events,

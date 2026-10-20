@@ -7,6 +7,7 @@ import { errorResult } from "../utils/errors.js";
 import { readBridgeEvents, sameForeignAddress } from "../utils/bridge/exits.js";
 import { CROSS_CHAIN_LEAD_MEANING } from "../utils/bridge/cross-chain.js";
 import { detectBridges, exitCarrier, type CallSite } from "../utils/bridge/detect.js";
+import { readHashiRequestStates, type HashiRequestState } from "../utils/bridge/hashi-status.js";
 import { bridgeCarriers, carrierPackages, CARRIER_MEANING } from "../utils/bridge/carrier.js";
 import { inboundFulfilments, inputVaas, INBOUND_FULFIL_MEANING, type BalanceChangeRow } from "../utils/bridge/inbound-fulfil.js";
 import { nameBridgePackage } from "../utils/bridge/labeled-package.js";
@@ -93,6 +94,7 @@ interface TxEventsResponse {
 
 /** Protocols this tool reports in a section of their own; anything else detected goes to `other_bridge_activity`. */
 const SECTIONED: Record<string, true> = {
+  Hashi: true,
   Wormhole: true,
   "Sui Bridge": true,
   "Circle CCTP": true,
@@ -272,10 +274,19 @@ export function registerBridgeTools(server: McpServer) {
         carriesAllbridge,
         celer,
         wormholeInbound: tokenBridgeInbound,
+        hashiRequests,
+        hashiCancellations,
+        hashiWithdrawals,
+        hashiInbound,
         beneficiaries,
         crossChainLeads,
       } = readBridgeEvents(events, qualify);
       const wormholeInbound = [...tokenBridgeInbound, ...nttRedemptions(inputs?.nodes ?? [], qualify)];
+      // A request's status and a commitment's requesters come from the
+      // request objects' own transactions.
+      const hashiIds = [...hashiRequests.map((r) => r.request_id), ...hashiWithdrawals.flatMap((w) => w.request_ids)];
+      const hashiStates = hashiIds.length ? await readHashiRequestStates(hashiIds) : new Map<string, HashiRequestState>();
+      const stateOf = (id: string) => hashiStates.get(id.toLowerCase()) ?? null;
       // Mayan has no section: its order event only names the beneficiary.
       const mayanProtocols = [...new Set(mayan.map((b) => b.protocol))];
       const otherBridges = hits.filter((h) => !Object.hasOwn(SECTIONED, h.protocol) && !mayanProtocols.includes(h.protocol));
@@ -322,6 +333,48 @@ export function registerBridgeTools(server: McpServer) {
       }
 
       const bridgeSections = {
+        ...(hashiRequests.length
+          ? {
+            hashi_withdrawal_requests: hashiRequests.map((r) => {
+              const { request_id: _id, requester: _r, amount_sats: _a, bitcoin_address: _b, request_digest: _d, ...state } = stateOf(r.request_id) ?? {
+                status: null,
+                bitcoin_delivery: { evidence: null, note: "Not read: this transaction holds more requests than one call follows; pass one request id to query_transactions affected_object." },
+              };
+              return { ...r, ...state };
+            }),
+          }
+          : {}),
+        ...(hashiWithdrawals.length
+          ? {
+            hashi_withdrawals: hashiWithdrawals.map((w) => {
+              const states = w.request_ids.map(stateOf);
+              const confirmed = states.length > 0 && states.every((s) => s?.status === "confirmed");
+              return {
+                ...w,
+                status: confirmed ? ("confirmed" as const) : w.status,
+                ...(confirmed ? { confirm_digest: states[0]!.confirm_digest } : {}),
+                bitcoin_delivery: states.find((s) => s?.withdrawal_txn_id === w.withdrawal_txn_id)?.bitcoin_delivery ?? {
+                  evidence: "chain-derived" as const,
+                  note: "Hashi committed this Bitcoin transaction on Sui; whether the committee later confirmed it could not be read. Check the txid on Bitcoin.",
+                },
+                outputs: w.outputs.map((o) => {
+                  const s = stateOf(o.request_id);
+                  return { ...o, requester: s?.requester ?? null, request_digest: s?.request_digest ?? null };
+                }),
+              };
+            }),
+          }
+          : {}),
+        ...(hashiCancellations.length
+          ? {
+            hashi_cancellations: {
+              direction: "refund" as const,
+              requests: hashiCancellations,
+              note: "The requester cancelled these Hashi withdrawal requests before any Bitcoin transaction was committed for them. The hBTC went back to the requester on Sui.",
+            },
+          }
+          : {}),
+        ...(hashiInbound.length ? { hashi_inbound: { direction: "inbound" as const, deposits: hashiInbound } } : {}),
         ...(cctpTransfers.length
           ? {
               circle_cctp: cctpTransfers.map((t) => ({
@@ -558,7 +611,12 @@ export function registerBridgeTools(server: McpServer) {
         ),
       ];
 
+      // Every request cancelled and no other exit: nothing crossed.
+      const hashiCancelledOnly =
+        hashiRequests.length > 0 && hashiRequests.every((r) => stateOf(r.request_id)?.status === "cancelled") && hits.every((h) => h.protocol === "Hashi") && !hashiWithdrawals.length;
       const exits = [
+        hashiRequests.length ? "Hashi (hashi_withdrawal_requests: the requester's withdrawal request; its status says whether a Bitcoin transaction was committed)" : null,
+        hashiWithdrawals.length ? "Hashi (hashi_withdrawals: the committee's Bitcoin commitment, paying the requesters named in its outputs)" : null,
         messages.length ? "Wormhole (wormhole_messages)" : null,
         nativeTransfers.length ? "Sui's native bridge (sui_native_bridge)" : null,
         cctpTransfers.length ? "Circle CCTP (circle_cctp)" : null,
@@ -585,7 +643,7 @@ export function registerBridgeTools(server: McpServer) {
         : settledExit?.carrier.protocol === "Allbridge Core" && settledExit.route.includes("Wormhole")
           ? ALLBRIDGE_MESSAGE_NOT_REDEEMED
           : null;
-      const inbound = nativeInboundClaims.length > 0 || wormholeInbound.length > 0 || fulfils.length > 0;
+      const inbound = nativeInboundClaims.length > 0 || wormholeInbound.length > 0 || fulfils.length > 0 || hashiInbound.length > 0;
       // Who made the bridge call, named once after the exit note.
       const carrierNote = carriers.length
         ? ` The bridge call was made by ${carriers.map((c) => `${c.package}::${c.functions[0] ?? c.module}`).join(" and ")} on the sender's behalf (carriers).`
@@ -595,7 +653,7 @@ export function registerBridgeTools(server: McpServer) {
         digest,
         network,
         source_chain: caip2ForSuiNetwork(network),
-        ...(exits.length || inbound || crossChainLeads.length ? { evidence_tiers: EVIDENCE_TIER_MEANING } : {}),
+        ...(exits.length || inbound || hashiCancellations.length || crossChainLeads.length ? { evidence_tiers: EVIDENCE_TIER_MEANING } : {}),
         ...(eventsIncomplete ? { events_incomplete: EVENTS_INCOMPLETE } : {}),
         ...(commands.truncated ? { commands_incomplete: COMMANDS_INCOMPLETE } : {}),
         ...(balanceChanges.truncated ? { balance_changes_incomplete: BALANCE_CHANGES_INCOMPLETE } : {}),
@@ -672,7 +730,9 @@ export function registerBridgeTools(server: McpServer) {
         ...(exits.length
           ? {
               note: (!settledExit
-                ? `This transaction exited through ${exits.join(", ")}.`
+              ? hashiCancelledOnly
+                ? "This transaction requested a Hashi withdrawal that the requester later cancelled, so nothing crossed to Bitcoin (hashi_withdrawal_requests)."
+                : `This transaction exited through ${exits.join(", ")}.`
                 : settledExit.alsoExited.length
                   ? `This transaction made a transfer through ${settledExit.carrier.protocol}, which settled over ${settledExit.route.join(" and ")}, and a separate transfer through ${settledExit.alsoExited.join(" and ")} (sections: ${exits.join(", ")}). The ${settledExit.route.join(" and ")} legs belong to the ${settledExit.carrier.protocol} transfer; each transfer's recipient is in beneficiaries.`
                   : `This transaction made one transfer, through ${settledExit.carrier.protocol}, which settled over ${settledExit.route.join(" and ")} in the same transaction (sections: ${exits.join(", ")}). Those legs belong to that transfer, whose recipient is in beneficiaries.`) + carrierNote,
@@ -684,6 +744,10 @@ export function registerBridgeTools(server: McpServer) {
             ? {
                 note: "Another cross-chain protocol was used — see other_bridge_activity. The funds did leave, but this tool cannot read that protocol's destination.",
                 ...(allBeneficiaries.length ? { next_step: BENEFICIARY_NEXT_STEP } : {}),
+              }
+            : hashiCancellations.length
+              ? {
+                note: "No outbound transfer here. This transaction cancelled Hashi withdrawal requests and returned their hBTC to the requester (hashi_cancellations).",
               }
             : inbound
               ? {
@@ -704,7 +768,7 @@ export function registerBridgeTools(server: McpServer) {
 }
 
 const BENEFICIARY_NEXT_STEP =
-  "Record the beneficiary account with save_finding (`beneficiaries[].account` is already CAIP-10), and label it with manage_labels if you can attribute it. A `redeemed_via_contract`, a `destination_oapp`, a CCTP leg marked `settlement_intermediate` or a Wormhole message marked `settlement_message` belongs to the bridge, not the recipient. Confirm the destination transaction on that chain before treating it as established.";
+  "Use beneficiaries[].account with save_finding when a CAIP-10 account is available, or record beneficiaries[].address as a Bitcoin destination with its chain_label. Confirm the destination transaction on that chain before treating a request or commitment as delivered. A redeemed_via_contract, destination_oapp, CCTP settlement_intermediate or Wormhole settlement_message belongs to the bridge, not the recipient.";
 
 const MAYAN_MESSAGE_NOTE =
   "This is Mayan's own order message, not a token transfer, so it names no recipient. The order's beneficiary is in beneficiaries.";

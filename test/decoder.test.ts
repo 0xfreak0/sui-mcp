@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { addressFlow, decodeTransaction } from "../src/protocols/decoder.js";
 import { GrpcTypes } from "@mysten/sui/grpc";
+import { runWithNetwork } from "../src/config.js";
+import { HASHI_PACKAGES } from "../src/utils/bridge/hashi.js";
 
 function makeCommand(
   pkg: string,
@@ -98,6 +100,21 @@ describe("decodeTransaction", () => {
     expect(result.protocols).toHaveLength(0);
     expect(result.actions[0]).toContain("Call");
     expect(result.actions[0]).toContain("mymod::myfn");
+  });
+
+  it("does not describe a bridge's own deposit or withdrawal as liquidity", () => {
+    const mainnet = runWithNetwork("mainnet", () => decodeTransaction(
+      [makeCommand(HASHI_PACKAGES.mainnet!, "withdraw", "request_withdrawal"), makeCommand(HASHI_PACKAGES.mainnet!, "deposit", "deposit")], [], "0xsender",
+    ));
+    expect(mainnet.protocols).toContain("Hashi");
+    expect(mainnet.actions).toEqual(["Call withdraw::request_withdrawal on Hashi", "Call deposit::deposit on Hashi"]);
+    const testnet = runWithNetwork("testnet", () => decodeTransaction(
+      [makeCommand(HASHI_PACKAGES.testnet!, "withdraw", "request_withdrawal"), makeCommand(HASHI_PACKAGES.testnet!, "deposit", "deposit")], [], "0xsender",
+    ));
+    expect(testnet.actions).toHaveLength(2);
+    expect(testnet.actions.join(" ")).not.toMatch(/liquidity/i);
+    expect(decodeTransaction([makeCommand("0xabcd", "withdraw", "withdraw")], [], "0xsender").actions).toEqual(["Remove liquidity"]);
+    expect(decodeTransaction([makeCommand("0xabcd", "deposit", "deposit")], [], "0xsender").actions).toEqual(["Add liquidity"]);
   });
 
   it("reads Cetus's add, its pay-amount getter and its repayment as one add, and a flash swap's getter as no swap", () => {

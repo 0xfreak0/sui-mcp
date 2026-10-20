@@ -150,7 +150,7 @@ export async function bridgeExitCalls(modules: Array<{ name: string; bytes: Uint
       continue;
     }
     for (const f of imports) {
-      const bridge = bridgeExitEntry(f.module, f.function);
+      const bridge = bridgeExitEntry(f.module, f.function, f.address);
       if (bridge) matched.push({ module: m.name, bridge: bridge.name, address: f.address, target: `${f.address}::${f.module}::${f.function}` });
     }
   }

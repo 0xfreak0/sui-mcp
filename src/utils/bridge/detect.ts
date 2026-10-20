@@ -24,6 +24,8 @@
  * and never becomes a hit here.
  */
 
+import { getNetwork, type SuiNetwork } from "../../config.js";
+import { HASHI_PACKAGES } from "./hashi.js";
 import { lookupProtocol } from "../../protocols/registry.js";
 import { ALLBRIDGE_CCTP_EVENT, ALLBRIDGE_POOL_EVENT } from "./allbridge.js";
 import { AXELAR_TRANSFER_EVENT } from "./axelar.js";
@@ -65,6 +67,8 @@ export interface BridgeProtocol {
    * `0xpkg::module::Name` pinned to the defining package (see `matchesEvent`).
    */
   eventMarkers: string[];
+  /** Restrict generic function names and event types to this protocol's deployment on each network. */
+  packages?: Partial<Record<SuiNetwork, string>>;
   resolution: BridgeResolution;
   /** What the caller can do next. */
   note: string;
@@ -79,10 +83,10 @@ export interface BridgeProtocol {
 /**
  * Bridges with hand-verified markers.
  *
- * Entries are added only after their marker has been seen on a real mainnet
- * transaction — an unverified marker either never fires (useless) or fires on
- * the wrong call (worse than useless). Everything else is still caught by the
- * registry tier below, which needs no marker at all.
+ * Markers are confirmed by real transactions: mainnet for live bridges,
+ * testnet for Hashi while its mainnet deployment is still in registration.
+ * A false marker turns an unrelated call into a bridge exit. Protocols
+ * without verified markers are caught by the registry tier instead.
  */
 export const BRIDGE_PROTOCOLS: BridgeProtocol[] = [
   {
@@ -92,6 +96,23 @@ export const BRIDGE_PROTOCOLS: BridgeProtocol[] = [
     eventMarkers: ["publish_message::WormholeMessage"],
     resolution: "identifier",
     note: "Run resolve_bridge_transfer on this transaction to read the VAA identity and, where it has been redeemed, the destination chain and account.",
+  },
+  {
+    id: "hashi",
+    name: "Hashi",
+    packages: HASHI_PACKAGES,
+    // The requester's transaction hands its hBTC to Hashi with a Bitcoin
+    // destination; the committee's commitment that burns it is sent by an
+    // operator and is not that operator's exit. The requester can cancel
+    // until the commitment, and resolve_bridge_transfer reports which.
+    callMarkers: [],
+    exactCallMarkers: ["withdraw::request_withdrawal"],
+    eventMarkers: [
+      `${HASHI_PACKAGES.mainnet}::withdrawal_queue::WithdrawalRequested`,
+      `${HASHI_PACKAGES.testnet}::withdrawal_queue::WithdrawalRequested`,
+    ],
+    resolution: "identifier",
+    note: "Run resolve_bridge_transfer to read the requested Bitcoin destination and whether Hashi committed, confirmed or the requester cancelled it.",
   },
   {
     id: "sui-native",
@@ -244,13 +265,15 @@ function matchesCall(marker: string, signature: string): boolean {
  * module (a fee calculator) that identifies the protocol, and a call into it
  * sends nothing.
  */
-export function bridgeExitEntry(module: string, fn: string): BridgeProtocol | null {
+export function bridgeExitEntry(module: string, fn: string, packageId: string): BridgeProtocol | null {
   const signature = `${module}::${fn}`;
   return (
     BRIDGE_PROTOCOLS.find(
       (p) =>
-        p.callMarkers.some((m) => !m.endsWith("::") && matchesCall(m, signature)) ||
-        (p.exactCallMarkers ?? []).includes(signature),
+        (!p.packages || p.packages[getNetwork()] === packageId ||
+          (getNetwork() === "mainnet" && lookupProtocol(packageId)?.name === p.name)) &&
+        (p.callMarkers.some((m) => !m.endsWith("::") && matchesCall(m, signature)) ||
+          (p.exactCallMarkers ?? []).includes(signature)),
     ) ?? null
   );
 }
@@ -274,11 +297,19 @@ export function detectBridges(calls: CallSite[], eventTypes: string[] = []): Bri
   const signatures = calls.map(callSignature);
 
   for (const proto of BRIDGE_PROTOCOLS) {
+    const packageId = proto.packages?.[getNetwork()];
+    if (proto.packages && !packageId) continue;
+    const scopedCalls = packageId
+      ? calls.filter((c) => c.packageId === packageId || (getNetwork() === "mainnet" && lookupProtocol(c.packageId)?.name === proto.name)).map(callSignature)
+      : signatures;
+    const scopedEvents = packageId
+      ? eventTypes.filter((t) => t.startsWith(`${packageId}::`))
+      : eventTypes;
     const firedCalls = [
-      ...proto.callMarkers.filter((m) => signatures.some((sig) => matchesCall(m, sig))),
-      ...(proto.exactCallMarkers ?? []).filter((m) => signatures.includes(m)),
+      ...proto.callMarkers.filter((m) => scopedCalls.some((sig) => matchesCall(m, sig))),
+      ...(proto.exactCallMarkers ?? []).filter((m) => scopedCalls.includes(m)),
     ];
-    const firedEvents = proto.eventMarkers.filter((m) => eventTypes.some((t) => matchesEvent(m, t)));
+    const firedEvents = proto.eventMarkers.filter((m) => scopedEvents.some((t) => matchesEvent(m, t)));
     if (firedCalls.length || firedEvents.length) {
       const fired = new Set([...firedCalls, ...firedEvents]);
       const settlesOver = [

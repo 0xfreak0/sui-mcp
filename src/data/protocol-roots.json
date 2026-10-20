@@ -190,6 +190,10 @@
       "name": "Haedal",
       "type": "liquid_staking"
     },
+    "0xd30fb3f8914efdbeb7b8e85fae1d65dc584b44a1281f66737b92bb9f03a59d06": {
+      "name": "Hashi",
+      "type": "bridge"
+    },
     "0x07cb654d8ae22bd18fff08f322d99fdf9d1673712812329b127430b155dc44ff": {
       "name": "Interest Protocol",
       "type": "launchpad"
@@ -335,6 +339,14 @@
       "type": "oracle"
     },
     "0x000000000000000000000000000000000000000000000000000000000000000b": {
+      "name": "Sui Bridge",
+      "type": "bridge"
+    },
+    "0xaafb102dd0902f5055cadecd687fb5b71ca82ef0e0285d90afde828ec58ca96b": {
+      "name": "Sui Bridge",
+      "type": "bridge"
+    },
+    "0xc6d1cb347faf61fb743d09cf91be7280960052374a3e894342ce947b2de3e56f": {
       "name": "Sui Bridge",
       "type": "bridge"
     },
@@ -701,6 +713,11 @@
         "0x8f0a9c4d3017b1b9ab9e1dd38cd0dfd94135c980eaf103b22bfabfb548c152ab"
       ]
     },
+    "0xd30fb3f8914efdbeb7b8e85fae1d65dc584b44a1281f66737b92bb9f03a59d06": {
+      "signers": [
+        "0x3b5482f8fcfcd73a4aade259e15235d50eb418dde6cf344b7b10aa68b9d9b37e"
+      ]
+    },
     "0x07cb654d8ae22bd18fff08f322d99fdf9d1673712812329b127430b155dc44ff": {
       "signers": [
         "0xbbf31f4075625942aa967daebcafe0b1c90e6fa9305c9064983b5052ec442ef7"
@@ -903,6 +920,16 @@
     },
     "0x000000000000000000000000000000000000000000000000000000000000000b": {
       "signers": []
+    },
+    "0xaafb102dd0902f5055cadecd687fb5b71ca82ef0e0285d90afde828ec58ca96b": {
+      "signers": [
+        "0x3b5482f8fcfcd73a4aade259e15235d50eb418dde6cf344b7b10aa68b9d9b37e"
+      ]
+    },
+    "0xc6d1cb347faf61fb743d09cf91be7280960052374a3e894342ce947b2de3e56f": {
+      "signers": [
+        "0x3b5482f8fcfcd73a4aade259e15235d50eb418dde6cf344b7b10aa68b9d9b37e"
+      ]
     },
     "0x0000000000000000000000000000000000000000000000000000000000000002": {
       "signers": []

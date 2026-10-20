@@ -1,11 +1,14 @@
 import { describe, it, expect } from "vitest";
 import {
   detectBridges,
+  bridgeExitEntry,
   exitCarrier,
   resolvableHit,
   type BridgeHit,
   type CallSite,
 } from "../src/utils/bridge/detect.js";
+import { runWithNetwork } from "../src/config.js";
+import { HASHI_PACKAGES } from "../src/utils/bridge/hashi.js";
 
 /**
  * Move calls captured from mainnet transaction
@@ -111,6 +114,50 @@ describe("detectBridges", () => {
       ],
     );
     expect(hits.map((h) => h.protocol).sort()).toEqual(["Circle CCTP", "Mayan MCTP", "Wormhole"]);
+  });
+});
+
+describe("Hashi mainnet and signet detection", () => {
+  const mainnet = HASHI_PACKAGES.mainnet!;
+  const testnet = HASHI_PACKAGES.testnet!;
+  const requestType = (id: string) => `${id}::withdrawal_queue::WithdrawalRequested`;
+
+  it("files the exit under the requester's request, not the committee's commitment or registration", () => {
+    expect(detectBridges([{ packageId: mainnet, module: "withdraw", function: "request_withdrawal" }]).map((h) => h.protocol)).toEqual(["Hashi"]);
+    expect(bridgeExitEntry("withdraw", "request_withdrawal", mainnet)?.name).toBe("Hashi");
+    expect(bridgeExitEntry("withdraw", "request_withdrawal", "0xabcd")).toBeNull();
+    expect(detectBridges([], [requestType(mainnet)])[0]?.resolution).toBe("identifier");
+    // Every one of these is sent by a committee operator or is not a transfer.
+    for (const [module, fn] of [
+      ["withdraw", "commit_withdrawal_tx"],
+      ["withdraw", "approve_request"],
+      ["withdraw", "commit_input_signatures"],
+      ["withdraw", "finalize_withdrawal"],
+      ["withdraw", "confirm_withdrawal"],
+      ["withdraw", "cancel_withdrawal"],
+      ["deposit", "deposit"],
+      ["deposit", "confirm_deposit"],
+      ["validator", "register"],
+    ]) {
+      expect(detectBridges([{ packageId: mainnet, module, function: fn }])).toEqual([]);
+    }
+    expect(detectBridges([], [
+      `${mainnet}::deposit::DepositConfirmed`,
+      `${mainnet}::withdrawal_queue::WithdrawalPickedForProcessing`,
+      `${mainnet}::withdrawal_queue::WithdrawalCancelled`,
+      `${mainnet}::withdrawal_queue::WithdrawalConfirmed`,
+      `${mainnet}::validator::ValidatorRegistered`,
+    ])).toEqual([]);
+  });
+
+  it("uses the testnet deployment without accepting another package's identical names", () => {
+    expect(runWithNetwork("testnet", () => detectBridges([], [requestType(testnet)]))[0]?.protocol).toBe("Hashi");
+    expect(runWithNetwork("testnet", () => detectBridges([{ packageId: testnet, module: "withdraw", function: "request_withdrawal" }]))[0]?.protocol).toBe("Hashi");
+    expect(runWithNetwork("testnet", () => detectBridges([{ packageId: testnet, module: "withdraw", function: "commit_withdrawal_tx" }]))).toEqual([]);
+    expect(runWithNetwork("testnet", () => detectBridges([], [`${testnet}::deposit::DepositConfirmed`]))).toEqual([]);
+    expect(detectBridges([], [requestType(testnet)])).toEqual([]);
+    expect(detectBridges([{ packageId: "0xabcd", module: "withdraw", function: "request_withdrawal" }], [requestType("0xabcd")])).toEqual([]);
+    expect(runWithNetwork("devnet", () => detectBridges([{ packageId: "0xabcd", module: "withdraw", function: "request_withdrawal" }]))).toEqual([]);
   });
 });
 

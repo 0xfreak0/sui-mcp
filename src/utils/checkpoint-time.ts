@@ -304,11 +304,28 @@ export async function resolveWindow(
 ): Promise<ResolvedWindow> {
   // Both edges are parsed before any request, so a typo costs nothing.
   for (const v of [from, to]) if (v !== undefined && isTimeBound(v)) parseTimeBound(v);
+  // An inverted window matches nothing, and an empty result would read as
+  // no activity. Edges of one kind are compared before any request.
+  const given = (v: string | number | undefined) => v !== undefined && v !== null && String(v).trim() !== "";
+  if (given(from) && given(to)) {
+    if (isTimeBound(from) && isTimeBound(to) && parseTimeBound(from!) > parseTimeBound(to!)) {
+      throw new Error(`The window ends before it starts: its start ${from} is later than its end ${to}.`);
+    }
+    if (!isTimeBound(from) && !isTimeBound(to) && Number(String(from).trim()) >= Number(String(to).trim())) {
+      throw new Error(`The window holds no checkpoint: checkpoint bounds are exclusive, so its start ${from} must be below its end ${to}.`);
+    }
+  }
   const latest = isTimeBound(from) || isTimeBound(to) ? await latestCheckpoint() : undefined;
   const [after, before] = await Promise.all([
     toFilterBound(from, "after", latest),
     toFilterBound(to, "before", latest),
   ]);
+  // A time edge against a checkpoint edge can only be compared once resolved.
+  if (after?.checkpoint != null && before?.checkpoint != null && after.checkpoint >= before.checkpoint) {
+    throw new Error(
+      `The window ends before it starts: its start ${from} resolves to after checkpoint ${after.checkpoint} and its end ${to} to before checkpoint ${before.checkpoint}.`,
+    );
+  }
   return { after, before };
 }
 

@@ -139,7 +139,7 @@ export function registerMonitorTools(server: McpServer) {
           ...orderedPageArgs(direction, limit ?? 20, cursor),
           afterCheckpoint,
         });
-        const page = orderedPage(data.transactions.nodes, data.transactions.pageInfo, direction);
+        const page = orderedPage(data.transactions.nodes, data.transactions.pageInfo, direction, cursor);
 
         const transactions = page.nodes
           .map((n) => ({

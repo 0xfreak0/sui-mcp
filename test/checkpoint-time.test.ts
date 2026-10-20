@@ -114,4 +114,20 @@ describe("resolveWindow", () => {
     expect(window.before?.checkpoint).toBe(3_001_001);
     expect(mockGqlQuery.mock.calls.filter(([query]) => query.includes("checkpoints(last: 1)"))).toHaveLength(1);
   });
+  it("rejects an inverted window of one kind before making any request", async () => {
+    await expect(resolveWindow("2026-10-20T12:10:00Z", "2026-10-20T12:00:00Z")).rejects.toThrow(/ends before it starts/);
+    await expect(resolveWindow("200", "100")).rejects.toThrow(/holds no checkpoint/);
+    await expect(resolveWindow("100", "100")).rejects.toThrow(/holds no checkpoint/);
+    expect(mockGqlQuery).not.toHaveBeenCalled();
+  });
+  it("rejects a time start that resolves past a checkpoint end", async () => {
+    const start = new Date(uneven(3_000_000)).toISOString();
+    await expect(resolveWindow(start, "2000000")).rejects.toThrow(/after checkpoint 2999999 and its end 2000000 to before checkpoint 2000000/);
+  });
+  it("keeps a time window of one instant", async () => {
+    const at = new Date(uneven(3_000_000)).toISOString();
+    const window = await resolveWindow(at, at);
+    expect(window.after?.checkpoint).toBe(2_999_999);
+    expect(window.before?.checkpoint).toBe(3_000_001);
+  });
 });

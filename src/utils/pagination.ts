@@ -43,22 +43,32 @@ export function orderedPageArgs(
  * Walking oldest-first, the cursor is returned at the end of the list too: it
  * marks the newest row read, so a later call with it returns only what came
  * after.
+ *
+ * `cursor` is the one the read was made with. Read from a list's last cursor,
+ * or from a cursor outside the filter's checkpoint window, the service
+ * returns no rows, claims another page and hands the same cursor back, so a
+ * caller following it would read the same empty page forever. A read that
+ * returned nothing and did not move the cursor is the end of the list.
  */
 export function orderedPage<T>(
   nodes: T[],
   pageInfo: BothWaysPageInfo,
   order: ListOrder,
+  cursor?: string | null,
 ): { nodes: T[]; has_next_page: boolean; next_cursor: string | null } {
+  const returned = order === "newest" ? pageInfo.startCursor : pageInfo.endCursor;
+  const stuck = cursor != null && nodes.length === 0 && returned === cursor;
   if (order === "newest") {
+    const more = pageInfo.hasPreviousPage && !stuck;
     return {
       nodes: [...nodes].reverse(),
-      has_next_page: pageInfo.hasPreviousPage,
-      next_cursor: pageInfo.hasPreviousPage ? (pageInfo.startCursor ?? null) : null,
+      has_next_page: more,
+      next_cursor: more ? (pageInfo.startCursor ?? null) : null,
     };
   }
   return {
     nodes,
-    has_next_page: pageInfo.hasNextPage,
+    has_next_page: pageInfo.hasNextPage && !stuck,
     next_cursor: pageInfo.endCursor ?? null,
   };
 }

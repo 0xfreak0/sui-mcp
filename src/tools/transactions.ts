@@ -1194,6 +1194,7 @@ export function registerTransactionTools(server: McpServer) {
           nextCursor = cursor ?? null;
           functionScope = fn && !all_versions ? await versionScopeNote(fn, "function") : null;
           while (hasNextPage && nodes.length < size && reads < QUERY_TRANSACTIONS_MAX_READS) {
+            const readCursor = nextCursor ?? undefined;
             const data = await gqlQuery<{ transactions: { nodes: QueriedTx[]; pageInfo: BothWaysPageInfo } }>(
               `query($filter: TransactionFilter, $first: Int, $after: String, $last: Int, $before: String) {
                 transactions(filter: $filter, first: $first, after: $after, last: $last, before: $before) {
@@ -1203,11 +1204,11 @@ export function registerTransactionTools(server: McpServer) {
               } ${queriedTxFragment(!!include_functions)}`,
               {
                 filter: Object.keys(filterParts).length > 0 ? filterParts : undefined,
-                ...orderedPageArgs(direction, size - nodes.length, nextCursor ?? undefined),
+                ...orderedPageArgs(direction, size - nodes.length, readCursor),
               },
             );
             reads += 1;
-            const page = orderedPage(data.transactions.nodes, data.transactions.pageInfo, direction);
+            const page = orderedPage(data.transactions.nodes, data.transactions.pageInfo, direction, readCursor);
             nodes.push(...page.nodes);
             hasNextPage = page.has_next_page;
             nextCursor = page.next_cursor;

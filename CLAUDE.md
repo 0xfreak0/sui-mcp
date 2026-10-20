@@ -2485,12 +2485,13 @@ Notes for extending it:
   be linked from chain data; that is a subpoena, not a query.
 ### Chain-derived destinations
 
-Sui's native bridge, CCTP, Axelar ITS, Allbridge Core and Celer cBridge need
-**no indexer for the destination**: the destination chain and recipient are in
-their events, so the far side is `chain-derived`. A Wormhole VAA's identity
-names an emitter and a sequence, never a recipient, so its redemption is
-`indexer-attested`; the same holds for LayerZero delivery. The recipient is
-often in the message payload, though. `src/utils/bridge/exits.ts`
+Sui's native bridge, CCTP, Axelar ITS, Allbridge Core, Celer cBridge and
+Hashi need **no indexer for the destination**: their outbound events name
+the recipient, so the far side is `chain-derived`. Hashi's Bitcoin output
+still needs confirmation on Bitcoin before it is treated as delivered.
+A Wormhole VAA names an emitter and a sequence rather than a recipient, so
+its redemption is `indexer-attested`; the same holds for LayerZero delivery.
+The recipient is often in the message payload. `src/utils/bridge/exits.ts`
 (`readBridgeEvents`) collects every decoder into `beneficiaries`, and
 `resolve_bridge_transfer` and `screen_address` both read it:
 
@@ -2534,6 +2535,27 @@ often in the message payload, though. `src/utils/bridge/exits.ts`
   Celer numbers non-EVM chains in the same space (Sui is 12370001), so
   `eip155:N` is claimed only for a chain `chain-id.ts` knows.
 
+- Hashi: the first-party [node operator runbook](https://mystenlabs.github.io/hashi/design/node-operator-runbook/#networks)
+  names mainnet package `0xd30fb3f8914efdbeb7b8e85fae1d65dc584b44a1281f66737b92bb9f03a59d06`.
+  The mainnet Hashi object `0x8d110642d9b5133bd661cda4873edf135ab6b91ff6918601015880874b950e5d`
+  had reached validator registration but not BTC issuance as of 2026-10-20.
+  Testnet package `0x5e0b99c31f691742acea5de4ca1bf53c398d5639fed6503a51ffe8035dc68485`
+  runs on Bitcoin Signet. Only `withdraw::commit_withdrawal_tx` and
+  `withdrawal_queue::WithdrawalPickedForProcessing` detect outbound value:
+  `request_withdrawal` is cancellable and deposits, registration and signatures
+  are not exits. `readBridgeEvents` decodes committed `withdrawal_outputs`
+  only, never `change_outputs`; amounts are satoshis after Bitcoin fees.
+  `bitcoin_address` is a 20-byte P2WPKH or 32-byte P2TR witness program, encoded
+  as Bech32 or Bech32m for the right network. The 32-byte `txid` stored on Sui
+  is reversed for Bitcoin explorers; the testnet commitment `6mnmYUk6…`
+  resolves to Signet tx `d731a322f0af…`, whose output matches the event.
+  `DepositConfirmed` with a Sui derivation path and a matching `Minted<BTC>`
+  event is `hashi_inbound`, never an exit.
+  Bitcoin has no CAIP-2/CAIP-10 namespace here, so do not invent
+  `beneficiaries[].account`. Mainnet's `::btc::BTC` has neither CoinMetadata
+  nor a registry Currency yet; do not curate or price it as BTC until issuance
+  and the backing relation have been verified.
+
 **The redemption names the contract, not the recipient.** Wormholescan's
 `targetChain.to` is the Token Bridge, the NTT manager or the relayer that the
 redemption called; it is reported as `redeemed_via_contract` and never as the
@@ -2567,6 +2589,7 @@ Each has its own chain numbering:
 | Allbridge Core | `nonce` (shared with the CCTP burn) | Allbridge ids; 4 = Solana, 6 = Arbitrum | tx `AyApNXU7…` |
 | Celer cBridge | `burn_id` | EIP-155 ids | tx `AkW2h1WQ…` |
 | Mayan Swift | order `hash` | Wormhole chain ids | tx `3aVcL3mh…` |
+| Hashi | Bitcoin transaction ID and each withdrawal request's committed output | Bitcoin mainnet / Signet, Bitcoin witness address; no CAIP-2 account | testnet `6mnmYUk6…`; mainnet registration only |
 
 Wormhole's, Circle's and the native bridge's numberings are **reused across
 environments**, so a CAIP-2 claim derived from them is withheld off mainnet

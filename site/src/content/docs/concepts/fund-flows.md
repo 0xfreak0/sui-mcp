@@ -217,12 +217,13 @@ amounts and timing.
 | Circle CCTP | Source domain and nonce identify the transfer; beneficiary decoded from Sui data |
 | LayerZero V2 | Destination endpoint, GUID and destination OApp; LayerZero Scan's delivery transaction |
 | Axelar ITS, Allbridge Core, Celer cBridge | Chain-derived transfer data and beneficiaries |
+| Hashi | `hashi_withdrawals` lists committed Bitcoin outputs, their Bech32 addresses and the Bitcoin transaction ID; `hashi_inbound` lists BTC deposits confirmed and minted as hBTC on Sui. Bitcoin delivery must be checked on Bitcoin. |
 | Meson | Recognized, but its destination is not in Sui data |
 
 `beneficiaries` names who is paid on the far side, decoded from the Sui
 transaction for Wormhole Token Bridge (including Token Bridge Relayer),
 Wormhole NTT, Mayan MCTP and Swift, Circle CCTP, Sui's native bridge,
-LayerZero OFT, Axelar ITS, Allbridge Core and Celer cBridge. A contract
+LayerZero OFT, Axelar ITS, Allbridge Core, Celer cBridge and Hashi. A contract
 receiving a redemption or message is separate: `redeemed_via_contract`
 or `destination_oapp`.
 
@@ -233,6 +234,25 @@ nonce or a VAA passed in, while the transaction credits an address. It lists
 origin chain, CCTP transfer ID and VAA ID, amounts, and a beneficiary only
 when the credited amount exactly matches an event amount. The package name
 comes from the registry or a bridge label on the package or an object it defines.
+
+Hashi's `withdraw::request_withdrawal` is cancellable. The BTC output is
+recorded only when `commit_withdrawal_tx` burns hBTC and emits
+`WithdrawalPickedForProcessing`. The output amount is in satoshis, after the
+Bitcoin miner fee. `change_outputs` belong to Hashi's custody, not the
+withdrawal recipients. `hashi_withdrawals[].status: "committed"` means signing,
+broadcast and Bitcoin confirmation may still be pending. Bitcoin accounts do
+not have CAIP-10 identifiers in this server; use the Bech32
+`beneficiaries[].address` and `chain_label` to check the destination chain.
+A `DepositConfirmed` event produces `hashi_inbound`, never an exit.
+As of 2026-10-20, Hashi's mainnet deployment is in validator registration
+and has no mainnet deposits or withdrawals; testnet uses Bitcoin Signet.
+
+```json
+{ "tool": "resolve_bridge_transfer", "args": { "digest": "<commit-tx>", "network": "testnet" } }
+```
+
+The result's `hashi_withdrawals[0].bitcoin_txid` identifies the Bitcoin
+transaction, and `beneficiaries[0].address` is its Bitcoin Signet recipient.
 
 `carriers` names a package outside a bridge's lineage whose PTB call emitted
 that bridge's event, with its function and its own events, such as an adapter

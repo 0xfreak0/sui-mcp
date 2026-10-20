@@ -65,7 +65,8 @@ export type BeneficiarySource =
   | "layerzero-oft-send-to"
   | "axelar-its-destination"
   | "allbridge-recipient-wallet"
-  | "celer-burn-recipient";
+  | "celer-burn-recipient"
+  | "hashi-bitcoin-withdrawal";
 
 /** A far-side recipient read from the Sui transaction. Always chain-derived. */
 export interface Beneficiary {
@@ -87,7 +88,7 @@ export interface Beneficiary {
   transfer_id?: string;
   /** In the destination chain's own format, when the padding decodes. */
   address: string | null;
-  /** The 32-byte value exactly as the chain holds it. */
+  /** Raw address bytes or the event's original address representation (base64 for Hashi). */
   address_raw: string;
   account: string | null;
   /** Amount as the message states it; `amount_note` says in what units. */

@@ -5,6 +5,8 @@ import { coinScale, displayCoin, type CoinScale } from "../utils/valuation.js";
 import { lookupProtocolDisplay, lookupOperation, type OperationInfo } from "./registry.js";
 import { isVerifiedCoin } from "../utils/coin-registry.js";
 import { poolSwapsByCommand, type SwapEvidence } from "../utils/pool-swap-events.js";
+import { getNetwork } from "../config.js";
+import { HASHI_PACKAGES } from "../utils/bridge/hashi.js";
 
 export interface DecodedTransaction {
   protocols: string[];
@@ -595,7 +597,11 @@ export function decodeTransaction(
         // truncated 0x address, and nothing downstream of the decoder makes a
         // trust decision on it.
         const proto = lookupProtocolDisplay(pkg, { custody: opts.custodyFor?.has(normalizeSuiAddress(pkg)) ?? false });
-        const named = lookupOperation(mod, fn);
+        // Hashi's `withdraw` module burns hBTC for Bitcoin. The generic
+        // Aftermath `withdraw` pattern must not call that a liquidity removal.
+        const named = (proto?.name === "Hashi" || (pkg === HASHI_PACKAGES.testnet && getNetwork() === "testnet")) && mod === "withdraw"
+          ? null
+          : lookupOperation(mod, fn);
         // A flash swap whose pool states the swap and whose repay the PTB
         // carries took one coin in and paid the other out: it is a swap.
         const stated =

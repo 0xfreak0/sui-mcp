@@ -93,6 +93,7 @@ interface TxEventsResponse {
 
 /** Protocols this tool reports in a section of their own; anything else detected goes to `other_bridge_activity`. */
 const SECTIONED: Record<string, true> = {
+  Hashi: true,
   Wormhole: true,
   "Sui Bridge": true,
   "Circle CCTP": true,
@@ -272,6 +273,8 @@ export function registerBridgeTools(server: McpServer) {
         carriesAllbridge,
         celer,
         wormholeInbound: tokenBridgeInbound,
+        hashiWithdrawals,
+        hashiInbound,
         beneficiaries,
         crossChainLeads,
       } = readBridgeEvents(events, qualify);
@@ -322,6 +325,8 @@ export function registerBridgeTools(server: McpServer) {
       }
 
       const bridgeSections = {
+        ...(hashiWithdrawals.length ? { hashi_withdrawals: hashiWithdrawals } : {}),
+        ...(hashiInbound.length ? { hashi_inbound: { direction: "inbound" as const, deposits: hashiInbound } } : {}),
         ...(cctpTransfers.length
           ? {
               circle_cctp: cctpTransfers.map((t) => ({
@@ -559,6 +564,7 @@ export function registerBridgeTools(server: McpServer) {
       ];
 
       const exits = [
+        hashiWithdrawals.length ? "Hashi (hashi_withdrawals; Bitcoin confirmation not checked)" : null,
         messages.length ? "Wormhole (wormhole_messages)" : null,
         nativeTransfers.length ? "Sui's native bridge (sui_native_bridge)" : null,
         cctpTransfers.length ? "Circle CCTP (circle_cctp)" : null,
@@ -585,7 +591,7 @@ export function registerBridgeTools(server: McpServer) {
         : settledExit?.carrier.protocol === "Allbridge Core" && settledExit.route.includes("Wormhole")
           ? ALLBRIDGE_MESSAGE_NOT_REDEEMED
           : null;
-      const inbound = nativeInboundClaims.length > 0 || wormholeInbound.length > 0 || fulfils.length > 0;
+      const inbound = nativeInboundClaims.length > 0 || wormholeInbound.length > 0 || fulfils.length > 0 || hashiInbound.length > 0;
       // Who made the bridge call, named once after the exit note.
       const carrierNote = carriers.length
         ? ` The bridge call was made by ${carriers.map((c) => `${c.package}::${c.functions[0] ?? c.module}`).join(" and ")} on the sender's behalf (carriers).`
@@ -704,7 +710,7 @@ export function registerBridgeTools(server: McpServer) {
 }
 
 const BENEFICIARY_NEXT_STEP =
-  "Record the beneficiary account with save_finding (`beneficiaries[].account` is already CAIP-10), and label it with manage_labels if you can attribute it. A `redeemed_via_contract`, a `destination_oapp`, a CCTP leg marked `settlement_intermediate` or a Wormhole message marked `settlement_message` belongs to the bridge, not the recipient. Confirm the destination transaction on that chain before treating it as established.";
+  "Use beneficiaries[].account with save_finding when a CAIP-10 account is available, or record beneficiaries[].address as a Bitcoin destination with its chain_label. Confirm the destination transaction on that chain before treating a commitment as delivered. A redeemed_via_contract, destination_oapp, CCTP settlement_intermediate or Wormhole settlement_message belongs to the bridge, not the recipient.";
 
 const MAYAN_MESSAGE_NOTE =
   "This is Mayan's own order message, not a token transfer, so it names no recipient. The order's beneficiary is in beneficiaries.";

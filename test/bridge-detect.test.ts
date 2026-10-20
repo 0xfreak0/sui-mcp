@@ -1,11 +1,14 @@
 import { describe, it, expect } from "vitest";
 import {
   detectBridges,
+  bridgeExitEntry,
   exitCarrier,
   resolvableHit,
   type BridgeHit,
   type CallSite,
 } from "../src/utils/bridge/detect.js";
+import { runWithNetwork } from "../src/config.js";
+import { HASHI_PACKAGES } from "../src/utils/bridge/hashi.js";
 
 /**
  * Move calls captured from mainnet transaction
@@ -111,6 +114,42 @@ describe("detectBridges", () => {
       ],
     );
     expect(hits.map((h) => h.protocol).sort()).toEqual(["Circle CCTP", "Mayan MCTP", "Wormhole"]);
+  });
+});
+
+describe("Hashi mainnet and signet detection", () => {
+  const mainnet = HASHI_PACKAGES.mainnet!;
+  const testnet = HASHI_PACKAGES.testnet!;
+  const withdrawalType = (id: string) => `${id}::withdrawal_queue::WithdrawalPickedForProcessing`;
+
+  it("recognizes the outbound commitment and its event, not a request or registration", () => {
+    expect(detectBridges([{ packageId: mainnet, module: "withdraw", function: "commit_withdrawal_tx" }]).map((h) => h.protocol)).toEqual(["Hashi"]);
+    expect(bridgeExitEntry("withdraw", "commit_withdrawal_tx", mainnet)?.name).toBe("Hashi");
+    expect(bridgeExitEntry("withdraw", "commit_withdrawal_tx", "0xabcd")).toBeNull();
+    expect(detectBridges([], [withdrawalType(mainnet)])[0]?.resolution).toBe("identifier");
+    for (const [module, fn] of [
+      ["withdraw", "request_withdrawal"],
+      ["withdraw", "cancel_withdrawal"],
+      ["deposit", "confirm_deposit"],
+      ["hashi", "register_validator"],
+    ]) {
+      expect(detectBridges([{ packageId: mainnet, module, function: fn }])).toEqual([]);
+    }
+    expect(detectBridges([], [
+      `${mainnet}::deposit::DepositConfirmed`,
+      `${mainnet}::withdrawal_queue::WithdrawalRequested`,
+      `${mainnet}::withdrawal_queue::WithdrawalSigned`,
+      `${mainnet}::validator::ValidatorRegistered`,
+    ])).toEqual([]);
+  });
+
+  it("uses the testnet deployment without accepting another package's identical names", () => {
+    expect(runWithNetwork("testnet", () => detectBridges([], [withdrawalType(testnet)]))[0]?.protocol).toBe("Hashi");
+    expect(runWithNetwork("testnet", () => detectBridges([{ packageId: testnet, module: "withdraw", function: "commit_withdrawal_tx" }]))[0]?.protocol).toBe("Hashi");
+    expect(runWithNetwork("testnet", () => detectBridges([], [`${testnet}::deposit::DepositConfirmed`]))).toEqual([]);
+    expect(detectBridges([], [withdrawalType(testnet)])).toEqual([]);
+    expect(detectBridges([{ packageId: "0xabcd", module: "withdraw", function: "commit_withdrawal_tx" }], [withdrawalType("0xabcd")])).toEqual([]);
+    expect(runWithNetwork("devnet", () => detectBridges([{ packageId: "0xabcd", module: "withdraw", function: "commit_withdrawal_tx" }]))).toEqual([]);
   });
 });
 

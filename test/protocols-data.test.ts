@@ -73,6 +73,13 @@ describe("protocols.json integrity", () => {
     const inconsistent = [...byLowerName.values()].filter((s) => s.size > 1).map((s) => [...s]);
     expect(inconsistent).toEqual([]);
   });
+  it("recognizes Hashi's first-party mainnet deployment as a bridge", () => {
+    // https://mystenlabs.github.io/hashi/design/node-operator-runbook/#networks
+    const root = "0xd30fb3f8914efdbeb7b8e85fae1d65dc584b44a1281f66737b92bb9f03a59d06";
+    expect(protocols[root]).toEqual({ name: "Hashi", type: "bridge" });
+    expect(lookupProtocol(root)?.name).toBe("Hashi");
+  });
+
 });
 
 describe("protocol-roots.json integrity", () => {

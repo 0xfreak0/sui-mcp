@@ -584,6 +584,14 @@
       "name": "Hashi",
       "type": "bridge"
     },
+    "0xaafb102dd0902f5055cadecd687fb5b71ca82ef0e0285d90afde828ec58ca96b": {
+      "name": "Sui Bridge",
+      "type": "bridge"
+    },
+    "0xc6d1cb347faf61fb743d09cf91be7280960052374a3e894342ce947b2de3e56f": {
+      "name": "Sui Bridge",
+      "type": "bridge"
+    },
     "0x853e125caee695cfc9916adb4302df8913aae1ab1ad9ee2c277d43acf5491924": {
       "name": "yolo.casa",
       "type": "dex"

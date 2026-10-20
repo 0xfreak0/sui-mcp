@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { lookupProtocol, type ProtocolType } from "../src/protocols/registry.js";
+import { protocolsSignedBy } from "../src/protocols/package-custody.js";
 
 const require = createRequire(import.meta.url);
 const { protocols } = require("../src/data/protocols.json") as {
@@ -78,6 +79,15 @@ describe("protocols.json integrity", () => {
     const root = "0xd30fb3f8914efdbeb7b8e85fae1d65dc584b44a1281f66737b92bb9f03a59d06";
     expect(protocols[root]).toEqual({ name: "Hashi", type: "bridge" });
     expect(lookupProtocol(root)?.name).toBe("Hashi");
+  });
+
+  it("names Hashi's deployer key for both lineages it signed, so custody names neither", () => {
+    // The key that published Hashi also published the Sui Bridge's BTC and
+    // LBTC tokens (registered by 0xb::treasury::TokenRegistrationEvent).
+    const deployer = "0x3b5482f8fcfcd73a4aade259e15235d50eb418dde6cf344b7b10aa68b9d9b37e";
+    expect(lookupProtocol("0xaafb102dd0902f5055cadecd687fb5b71ca82ef0e0285d90afde828ec58ca96b")?.name).toBe("Sui Bridge");
+    expect(lookupProtocol("0xc6d1cb347faf61fb743d09cf91be7280960052374a3e894342ce947b2de3e56f")?.name).toBe("Sui Bridge");
+    expect(protocolsSignedBy(deployer).sort()).toEqual(["Hashi", "Sui Bridge"]);
   });
 
 });

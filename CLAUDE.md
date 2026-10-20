@@ -2540,21 +2540,46 @@ The recipient is often in the message payload. `src/utils/bridge/exits.ts`
   The mainnet Hashi object `0x8d110642d9b5133bd661cda4873edf135ab6b91ff6918601015880874b950e5d`
   had reached validator registration but not BTC issuance as of 2026-10-20.
   Testnet package `0x5e0b99c31f691742acea5de4ca1bf53c398d5639fed6503a51ffe8035dc68485`
-  runs on Bitcoin Signet. Only `withdraw::commit_withdrawal_tx` and
-  `withdrawal_queue::WithdrawalPickedForProcessing` detect outbound value:
-  `request_withdrawal` is cancellable and deposits, registration and signatures
-  are not exits. `readBridgeEvents` decodes committed `withdrawal_outputs`
-  only, never `change_outputs`; amounts are satoshis after Bitcoin fees.
-  `bitcoin_address` is a 20-byte P2WPKH or 32-byte P2TR witness program, encoded
-  as Bech32 or Bech32m for the right network. The 32-byte `txid` stored on Sui
+  runs on Bitcoin Signet.
+  **The exit is the requester's `withdraw::request_withdrawal`** (and its
+  `withdrawal_queue::WithdrawalRequested`, which names `requester_address`,
+  the Bitcoin witness program and the hBTC amount). Every later step is sent
+  by a committee operator: `approve_request`, `commit_withdrawal_tx` (burns
+  the hBTC, emits `WithdrawalPickedForProcessing` with the Bitcoin txid and
+  outputs), `commit_input_signatures`, `finalize_withdrawal`,
+  `confirm_withdrawal` (`WithdrawalConfirmed`). Detecting the commitment
+  filed every user's withdrawal under the operator that sent it (33 exits for
+  one testnet operator in eleven hours) and none under the requester. Deposits,
+  registration, signatures and `cancel_withdrawal` (`WithdrawalCancelled`,
+  reported as `hashi_cancellations`) are not exits.
+  A request can be cancelled until it is committed, so its Bitcoin delivery is
+  `heuristic` until then. `hashi-status.ts` reads where each request stands
+  from the transactions that touched its `WithdrawalRequest` object
+  (`affectedObject`: request, approval, cancellation or commitment) and, once
+  committed, from those that touched the withdrawal record named by
+  `withdrawal_txn_id` (`confirm_withdrawal` writes only the record).
+  `resolve_bridge_transfer` reports the status on the request and the
+  requester per output on the commitment; `summarize_address_flows` and
+  `screen_address` leave a fully cancelled request out of `sent`. A
+  committee confirmation is Hashi's certificate on Sui, not a Bitcoin read.
+  `readBridgeEvents` decodes committed `withdrawal_outputs` only, never
+  `change_outputs`; output amounts are satoshis after Bitcoin fees, request
+  amounts before them.
+  `bitcoin_address` is a 20-byte P2WPKH or 32-byte P2TR witness program
+  (Hashi pays every 32-byte program as P2TR, so no P2WSH), encoded as Bech32
+  or Bech32m with `bc` or `tb`. The 32-byte `txid` stored on Sui
   is reversed for Bitcoin explorers; the testnet commitment `6mnmYUk6…`
-  resolves to Signet tx `d731a322f0af…`, whose output matches the event.
+  resolves to Signet tx `d731a322f0af…`, whose outputs match the event.
   `DepositConfirmed` with a Sui derivation path and a matching `Minted<BTC>`
   event is `hashi_inbound`, never an exit.
   Bitcoin has no CAIP-2/CAIP-10 namespace here, so do not invent
   `beneficiaries[].account`. Mainnet's `::btc::BTC` has neither CoinMetadata
   nor a registry Currency yet; do not curate or price it as BTC until issuance
   and the backing relation have been verified.
+  Hashi's deployer key `0x3b5482f8…` also published the Sui Bridge's BTC and
+  LBTC token packages, which are curated as Sui Bridge so that the key is
+  shared and custody names neither. Without them, custody named the Sui
+  Bridge wBTC package Hashi.
 
 **The redemption names the contract, not the recipient.** Wormholescan's
 `targetChain.to` is the Token Bridge, the NTT manager or the relayer that the
@@ -2589,7 +2614,7 @@ Each has its own chain numbering:
 | Allbridge Core | `nonce` (shared with the CCTP burn) | Allbridge ids; 4 = Solana, 6 = Arbitrum | tx `AyApNXU7…` |
 | Celer cBridge | `burn_id` | EIP-155 ids | tx `AkW2h1WQ…` |
 | Mayan Swift | order `hash` | Wormhole chain ids | tx `3aVcL3mh…` |
-| Hashi | Bitcoin transaction ID and each withdrawal request's committed output | Bitcoin mainnet / Signet, Bitcoin witness address; no CAIP-2 account | testnet `6mnmYUk6…`; mainnet registration only |
+| Hashi | withdrawal `request_id`; the Bitcoin transaction ID once committed | Bitcoin mainnet / Signet, Bitcoin witness address; no CAIP-2 account | testnet request `HVWncNgM…`, commitment `6mnmYUk6…`; mainnet registration only |
 
 Wormhole's, Circle's and the native bridge's numberings are **reused across
 environments**, so a CAIP-2 claim derived from them is withheld off mainnet

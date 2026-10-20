@@ -37,7 +37,7 @@ import {
 } from "./sui-native.js";
 import { celerBurns, type CelerBurn } from "./celer.js";
 import { crossChainLeads, type CrossChainLead } from "./cross-chain.js";
-import { hashiTransfers, type HashiDeposit, type HashiWithdrawal } from "./hashi.js";
+import { hashiTransfers, type HashiCancellation, type HashiDeposit, type HashiWithdrawal, type HashiWithdrawalRequest } from "./hashi.js";
 import { layerZeroTransfers, type LayerZeroTransfer } from "./layerzero.js";
 import { tokenBridgeRedemptions, type WormholeInbound } from "./wormhole-inbound.js";
 import { extractWormholeMessages, type SuiEventNode, type WormholeMessage } from "./wormhole.js";
@@ -61,7 +61,11 @@ export interface BridgeEventReading {
   celer: CelerBurn[];
   /** Token Bridge redemptions: value ARRIVING on Sui. NTT redemptions need the inputs; see `nttRedemptions`. */
   wormholeInbound: WormholeInbound[];
-  /** hBTC burned for Bitcoin outputs; commitment alone does not prove Bitcoin delivery. */
+  /** Withdrawal requests: the requester's hBTC handed to Hashi with a Bitcoin destination, cancellable until committed. */
+  hashiRequests: HashiWithdrawalRequest[];
+  /** Cancelled requests: hBTC returned to the requester on Sui. */
+  hashiCancellations: HashiCancellation[];
+  /** Committee commitments: the requests' hBTC burned for these Bitcoin outputs; not proof of Bitcoin delivery. */
   hashiWithdrawals: HashiWithdrawal[];
   /** BTC deposit confirmed and hBTC minted on Sui. */
   hashiInbound: HashiDeposit[];
@@ -195,6 +199,8 @@ export function readBridgeEvents(events: SuiEventNode[], qualify: boolean): Brid
     carriesAllbridge,
     celer,
     wormholeInbound: tokenBridgeRedemptions(events, qualify),
+    hashiRequests: hashi.requests,
+    hashiCancellations: hashi.cancellations,
     hashiWithdrawals: hashi.withdrawals,
     hashiInbound: hashi.deposits,
     beneficiaries,

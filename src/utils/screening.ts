@@ -3,6 +3,7 @@ import { gqlQuery } from "../clients/graphql.js";
 import { getNetwork } from "../config.js";
 import { detectBridges, exitCarrier, type CallSite } from "./bridge/detect.js";
 import { readBridgeEvents } from "./bridge/exits.js";
+import { readHashiRequestStates } from "./bridge/hashi-status.js";
 import { fetchEventJson } from "./event-json.js";
 import { disclosedLabelSources, getLabel, inferredLabelCoverage, labelProvenance, validatorLabelSources, type InferredFrom, type LabelCategory } from "./labels.js";
 import { sanctions } from "./sanctions.js";
@@ -359,10 +360,14 @@ interface EventsResult {
 
 /**
  * Chain-derived beneficiaries of a bridge exit, the same ones
- * resolve_bridge_transfer reports. No indexer is asked, so a Wormhole
- * transfer whose payload this server cannot attribute yields none.
+ * resolve_bridge_transfer reports, and the Hashi withdrawal requests it made.
+ * No indexer is asked, so a Wormhole transfer whose payload this server
+ * cannot attribute yields none.
  */
-async function bridgeDestinations(digest: string): Promise<Array<{ protocol: string; account: string | null; chain_label: string; raw: string | null }>> {
+async function bridgeDestinations(digest: string): Promise<{
+  destinations: Array<{ protocol: string; account: string | null; chain_label: string; raw: string | null }>;
+  hashiRequestIds: string[];
+}> {
   const res = await gqlQuery<EventsResult>(EVENTS_QUERY, { digest });
   const page = res.transaction?.effects?.events;
   let events = page?.nodes ?? [];
@@ -370,12 +375,16 @@ async function bridgeDestinations(digest: string): Promise<Array<{ protocol: str
     const all = await fetchEventJson(digest);
     if (all) events = all.map((e) => ({ contents: { type: e.type ? { repr: e.type } : undefined, json: e.json } }));
   }
-  return readBridgeEvents(events, getNetwork() === "mainnet").beneficiaries.map((b) => ({
+  const reading = readBridgeEvents(events, getNetwork() === "mainnet");
+  return {
+    destinations: reading.beneficiaries.map((b) => ({
     protocol: b.protocol,
     account: b.account,
     chain_label: b.chain_label,
     raw: b.address ?? b.address_raw,
-  }));
+    })),
+    hashiRequestIds: reading.hashiRequests.map((r) => r.request_id),
+  };
 }
 
 export interface ScreenOptions {
@@ -525,6 +534,8 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
     route: Set<string>;
     alsoExited: Set<string>;
     destinations: Map<string, Record<string, unknown>>;
+    /** Exits whose Hashi requests were all cancelled: nothing crossed. */
+    cancelled: string[];
   }>();
   for (const e of exits) {
     const key = `${e.protocol}|${e.path.join(">")}`;
@@ -546,6 +557,7 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
         route: new Set(),
         alsoExited: new Set(),
         destinations: new Map(),
+        cancelled: [],
       };
       groups.set(key, g);
     }
@@ -570,13 +582,15 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
     }
   }
   const viaBridge = new Map<string, Exposure & { digests: string[] }>();
+  const hashiReads: Array<{ g: (typeof groupList)[number]; e: (typeof exits)[number]; ids: string[] }> = [];
   for (const { g, e } of toRead) {
     // Every beneficiary the transaction's events name is a destination, the
     // carrier's and any bridge in also_exited alike. readBridgeEvents already
     // leaves out a settlement leg's recipient (the CCTP mint to Mayan's
     // contract, the burn that carries an Allbridge transfer).
-    const dests = await bridgeDestinations(e.tx.digest).catch(() => null);
-    for (const d of dests ?? []) {
+    const read = await bridgeDestinations(e.tx.digest).catch(() => null);
+    if (read?.hashiRequestIds.length) hashiReads.push({ g, e, ids: read.hashiRequestIds });
+    for (const d of read?.destinations ?? []) {
       g.destinations.set(d.account ?? d.raw ?? d.chain_label, { ...d, tier: "chain-derived" });
       if (!d.account) continue;
       for (const h of hitsFor(d.account)) {
@@ -599,6 +613,16 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
       }
     }
   }
+  // A Hashi request the requester cancelled never crossed: its destination
+  // stays listed, and its value leaves `sent`, as summarize_address_flows does.
+  if (hashiReads.length) {
+    const states = await readHashiRequestStates(hashiReads.flatMap((r) => r.ids)).catch(() => null);
+    for (const { g, e, ids } of hashiReads) {
+      if (!states || !ids.every((id) => states.get(id.toLowerCase())?.status === "cancelled")) continue;
+      g.cancelled.push(e.tx.digest);
+      for (const [coin, amount] of bridgeSentPerCoin(e.tx)) g.sent.set(coin, (g.sent.get(coin) ?? 0n) - amount);
+    }
+  }
 
   const bridgeExposures = groupList.map((g): Exposure => {
     const times = g.times.sort();
@@ -616,6 +640,12 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
       digests: digests.slice(0, 20),
       ...(digests.length > 20 ? { more_digests: digests.length - 20 } : {}),
       ...(g.destinations.size ? { destinations: [...g.destinations.values()] } : {}),
+      ...(g.cancelled.length
+        ? {
+          cancelled_transactions: g.cancelled,
+          cancelled_note: "Every Hashi withdrawal request in these transactions was cancelled and its hBTC returned, so their value is left out of sent.",
+        }
+        : {}),
     };
   });
 

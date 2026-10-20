@@ -102,18 +102,19 @@ describe("decodeTransaction", () => {
     expect(result.actions[0]).toContain("mymod::myfn");
   });
 
-  it("does not describe a Hashi Bitcoin withdrawal as liquidity removal", () => {
+  it("does not describe a bridge's own deposit or withdrawal as liquidity", () => {
     const mainnet = runWithNetwork("mainnet", () => decodeTransaction(
-      [makeCommand(HASHI_PACKAGES.mainnet!, "withdraw", "commit_withdrawal_tx")], [], "0xsender",
+      [makeCommand(HASHI_PACKAGES.mainnet!, "withdraw", "request_withdrawal"), makeCommand(HASHI_PACKAGES.mainnet!, "deposit", "deposit")], [], "0xsender",
     ));
     expect(mainnet.protocols).toContain("Hashi");
-    expect(mainnet.actions).toEqual(["Call withdraw::commit_withdrawal_tx on Hashi"]);
+    expect(mainnet.actions).toEqual(["Call withdraw::request_withdrawal on Hashi", "Call deposit::deposit on Hashi"]);
     const testnet = runWithNetwork("testnet", () => decodeTransaction(
-      [makeCommand(HASHI_PACKAGES.testnet!, "withdraw", "commit_withdrawal_tx")], [], "0xsender",
+      [makeCommand(HASHI_PACKAGES.testnet!, "withdraw", "request_withdrawal"), makeCommand(HASHI_PACKAGES.testnet!, "deposit", "deposit")], [], "0xsender",
     ));
-    expect(testnet.actions[0]).toContain("withdraw::commit_withdrawal_tx");
-    expect(testnet.actions[0]).not.toContain("liquidity");
+    expect(testnet.actions).toHaveLength(2);
+    expect(testnet.actions.join(" ")).not.toMatch(/liquidity/i);
     expect(decodeTransaction([makeCommand("0xabcd", "withdraw", "withdraw")], [], "0xsender").actions).toEqual(["Remove liquidity"]);
+    expect(decodeTransaction([makeCommand("0xabcd", "deposit", "deposit")], [], "0xsender").actions).toEqual(["Add liquidity"]);
   });
 
   it("reads Cetus's add, its pay-amount getter and its repayment as one add, and a flash swap's getter as no swap", () => {

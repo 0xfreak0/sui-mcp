@@ -342,6 +342,14 @@
       "name": "Sui Bridge",
       "type": "bridge"
     },
+    "0xaafb102dd0902f5055cadecd687fb5b71ca82ef0e0285d90afde828ec58ca96b": {
+      "name": "Sui Bridge",
+      "type": "bridge"
+    },
+    "0xc6d1cb347faf61fb743d09cf91be7280960052374a3e894342ce947b2de3e56f": {
+      "name": "Sui Bridge",
+      "type": "bridge"
+    },
     "0x0000000000000000000000000000000000000000000000000000000000000002": {
       "name": "Sui Framework",
       "type": "system"
@@ -912,6 +920,16 @@
     },
     "0x000000000000000000000000000000000000000000000000000000000000000b": {
       "signers": []
+    },
+    "0xaafb102dd0902f5055cadecd687fb5b71ca82ef0e0285d90afde828ec58ca96b": {
+      "signers": [
+        "0x3b5482f8fcfcd73a4aade259e15235d50eb418dde6cf344b7b10aa68b9d9b37e"
+      ]
+    },
+    "0xc6d1cb347faf61fb743d09cf91be7280960052374a3e894342ce947b2de3e56f": {
+      "signers": [
+        "0x3b5482f8fcfcd73a4aade259e15235d50eb418dde6cf344b7b10aa68b9d9b37e"
+      ]
     },
     "0x0000000000000000000000000000000000000000000000000000000000000002": {
       "signers": []

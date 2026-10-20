@@ -101,16 +101,18 @@ export const BRIDGE_PROTOCOLS: BridgeProtocol[] = [
     id: "hashi",
     name: "Hashi",
     packages: HASHI_PACKAGES,
-    // A request can be cancelled; the commitment burns hBTC and records the
-    // Bitcoin outputs. Signing and broadcast happen in later transactions.
+    // The requester's transaction hands its hBTC to Hashi with a Bitcoin
+    // destination; the committee's commitment that burns it is sent by an
+    // operator and is not that operator's exit. The requester can cancel
+    // until the commitment, and resolve_bridge_transfer reports which.
     callMarkers: [],
-    exactCallMarkers: ["withdraw::commit_withdrawal_tx"],
+    exactCallMarkers: ["withdraw::request_withdrawal"],
     eventMarkers: [
-      `${HASHI_PACKAGES.mainnet}::withdrawal_queue::WithdrawalPickedForProcessing`,
-      `${HASHI_PACKAGES.testnet}::withdrawal_queue::WithdrawalPickedForProcessing`,
+      `${HASHI_PACKAGES.mainnet}::withdrawal_queue::WithdrawalRequested`,
+      `${HASHI_PACKAGES.testnet}::withdrawal_queue::WithdrawalRequested`,
     ],
     resolution: "identifier",
-    note: "Run resolve_bridge_transfer to read the committed Bitcoin transaction and its destination outputs from Hashi's on-chain event. A commitment is pending until Bitcoin confirms it.",
+    note: "Run resolve_bridge_transfer to read the requested Bitcoin destination and whether Hashi committed, confirmed or the requester cancelled it.",
   },
   {
     id: "sui-native",

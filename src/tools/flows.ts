@@ -9,6 +9,7 @@ import { BALANCE_CHANGES_SELECTION, COMMANDS_SELECTION, completeTxConnections, t
 import type { GqlBalanceChangeNode, GqlCommandNode } from "../utils/gql-adapters.js";
 import { fetchEventJson } from "../utils/event-json.js";
 import { readBridgeEvents } from "../utils/bridge/exits.js";
+import { readHashiRequestStates, type HashiRequestState } from "../utils/bridge/hashi-status.js";
 import { CROSS_CHAIN_LEAD_MEANING, crossChainLeads } from "../utils/bridge/cross-chain.js";
 import { EVIDENCE_TIER_MEANING, type SuiEventNode } from "../utils/bridge/wormhole.js";
 import { describeAddresses, fetchKinds, identityNote, type AddressIdentity } from "../utils/identity.js";
@@ -273,6 +274,29 @@ export function registerFlowTools(server: McpServer) {
         const exits = candidates
           .map((tx) => readExit(address, tx, events.get(tx.digest) ?? null, qualify))
           .filter((e): e is ExitRecord => e !== null);
+        // A Hashi request is an exit until the requester cancels it; whether
+        // it was cancelled, committed or confirmed is read from the request.
+        const hashiIds = exits.flatMap((e) => e.hashiRequestIds);
+        const hashiStates = hashiIds.length ? await readHashiRequestStates(hashiIds) : new Map<string, HashiRequestState>();
+        const hashiRows = new Map(
+          exits.map((e) => [
+            e,
+            e.hashiRequestIds.map((id) => {
+              const s = hashiStates.get(id.toLowerCase());
+              return {
+                request_id: id,
+                status: s?.status ?? null,
+                ...(s?.cancel_digest ? { cancel_digest: s.cancel_digest } : {}),
+                ...(s?.commit_digest ? { commit_digest: s.commit_digest, bitcoin_txid: s.bitcoin_txid } : {}),
+                ...(s?.confirm_digest ? { confirm_digest: s.confirm_digest } : {}),
+              };
+            }),
+          ]),
+        );
+        for (const e of exits) {
+          const rows = hashiRows.get(e)!;
+          if (rows.length && rows.every((r) => r.status === "cancelled")) e.cancelled = true;
+        }
         const inbound = entries.flatMap((tx) => {
           const ev = events.get(tx.digest);
           const claims = ev ? readBridgeEvents(ev, qualify).nativeInboundClaims : [];
@@ -515,13 +539,15 @@ export function registerFlowTools(server: McpServer) {
         const bridgeGroups = groupExits(exits);
         for (const e of exits) {
           const at = e.timestamp ? Date.parse(e.timestamp) / 1000 : null;
+          // A cancelled request never crossed, so its value is in no total.
+          const sent = e.cancelled ? new Map<string, bigint>() : e.sent;
           add(e.sent, e.sent, at);
           add(e.retained, e.retained, at);
           const group = bridgeGroups.find((g) => g.bridge === e.bridge)!;
-          add(group.sent, e.sent, at);
+          add(group.sent, sent, at);
           add(group.retained, e.retained, at);
           const keys = [...new Set(e.beneficiaries.map(destinationKey))];
-          if (keys.length === 1) add(group.destinations.find((d) => d.key === keys[0])!.sent, e.sent, at);
+          if (keys.length === 1) add(group.destinations.find((d) => d.key === keys[0])!.sent, sent, at);
         }
         const unresolvedVaas = exits.flatMap((e) => e.unresolvedVaas);
         // An exit's beneficiary drops what the output already says once: its
@@ -666,6 +692,12 @@ export function registerFlowTools(server: McpServer) {
                 ...digestList(d.digests),
               })),
               ...(g.unresolvedDigests.length ? { no_recipient_read: g.unresolvedDigests } : {}),
+              ...(g.cancelledDigests.length
+                ? {
+                  cancelled_transactions: g.cancelledDigests,
+                  cancelled_note: "Every Hashi withdrawal request in these transactions was cancelled and its hBTC returned, so their value is left out of sent.",
+                }
+                : {}),
             })),
             transactions: exits.map((e, i) => ({
               digest: e.digest,
@@ -678,6 +710,8 @@ export function registerFlowTools(server: McpServer) {
               beneficiaries: exitBeneficiaries[i],
               ...(e.unresolvedVaas.length ? { unresolved_vaas: e.unresolvedVaas } : {}),
               ...(e.eventsIncomplete ? { events_incomplete: true } : {}),
+              ...(hashiRows.get(e)!.length ? { hashi_requests: hashiRows.get(e) } : {}),
+              ...(e.cancelled ? { cancelled: true } : {}),
               ...(e.beneficiaries.length === 0
                 ? { next_step: e.hits.find((h) => h.resolution === "identifier") ? "resolve_bridge_transfer" : e.hits[0]?.note }
                 : {}),
@@ -757,9 +791,11 @@ export function registerFlowTools(server: McpServer) {
                     ...(common.singleCoin ? {} : { coin_type: coin.coin_type }),
                     amount: coin.amount, usd: coin.usd,
                   })),
-                  ...(row.retained_on_sui ? { retained_on_sui: row.retained_on_sui.map((coin) => ({
+                  ...(row.retained_on_sui ? {
+                    retained_on_sui: row.retained_on_sui.map((coin) => ({
                     coin_type: coin.coin_type, amount: coin.amount, usd: coin.usd,
-                  })) } : {}),
+                    }))
+                  } : {}),
                   beneficiaries: row.beneficiaries.map(({ source, chain, ...rest }) => ({
                     ...(source === common.source ? {} : { source }),
                     ...(chain === common.chain ? {} : { chain }),

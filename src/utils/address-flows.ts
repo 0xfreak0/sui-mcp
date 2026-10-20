@@ -303,6 +303,13 @@ export interface ExitRecord {
   /** Wormhole messages whose recipient is not in the payload this server reads. */
   unresolvedVaas: string[];
   eventsIncomplete: boolean;
+  /** Hashi withdrawal requests this transaction made. */
+  hashiRequestIds: string[];
+  /**
+   * Every request this transaction made was later cancelled, so nothing
+   * crossed: its `sent` stays listed and is left out of every total.
+   */
+  cancelled?: boolean;
 }
 
 /**
@@ -350,6 +357,7 @@ export function readExit(
         ? reading.messages.filter((_, i) => !reading.decodedMessages[i]?.beneficiary).map((m) => m.vaaId)
         : [],
     eventsIncomplete: events === null,
+    hashiRequestIds: reading?.hashiRequests.map((r) => r.request_id) ?? [],
   };
 }
 
@@ -372,6 +380,8 @@ export interface BridgeTotal {
   destinations: DestinationTotal[];
   /** Exits with no recipient read from chain data. */
   unresolvedDigests: string[];
+  /** Exits whose requests were all cancelled; their value is in no total. */
+  cancelledDigests: string[];
 }
 
 /** One destination's identity: its CAIP-10 account, or the address as the chain holds it. */
@@ -390,10 +400,13 @@ export function groupExits(exits: ExitRecord[]): BridgeTotal[] {
       retained: new Map(),
       destinations: [],
       unresolvedDigests: [],
+      cancelledDigests: [],
     };
     byBridge.set(e.bridge, g);
     g.digests.push(e.digest);
-    for (const [coin, v] of e.sent) g.sent.set(coin, (g.sent.get(coin) ?? 0n) + v);
+    if (e.cancelled) g.cancelledDigests.push(e.digest);
+    const sent = e.cancelled ? new Map<string, bigint>() : e.sent;
+    for (const [coin, v] of sent) g.sent.set(coin, (g.sent.get(coin) ?? 0n) + v);
     for (const [coin, v] of e.retained) g.retained.set(coin, (g.retained.get(coin) ?? 0n) + v);
     const keys = [...new Set(e.beneficiaries.map(destinationKey))];
     if (keys.length === 0) g.unresolvedDigests.push(e.digest);
@@ -404,7 +417,7 @@ export function groupExits(exits: ExitRecord[]): BridgeTotal[] {
         g.destinations.push(d);
       }
       d.digests.push(e.digest);
-      if (keys.length === 1) for (const [coin, v] of e.sent) d.sent.set(coin, (d.sent.get(coin) ?? 0n) + v);
+      if (keys.length === 1) for (const [coin, v] of sent) d.sent.set(coin, (d.sent.get(coin) ?? 0n) + v);
       else d.sharedDigests.push(e.digest);
     }
   }

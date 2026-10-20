@@ -217,7 +217,7 @@ amounts and timing.
 | Circle CCTP | Source domain and nonce identify the transfer; beneficiary decoded from Sui data |
 | LayerZero V2 | Destination endpoint, GUID and destination OApp; LayerZero Scan's delivery transaction |
 | Axelar ITS, Allbridge Core, Celer cBridge | Chain-derived transfer data and beneficiaries |
-| Hashi | `hashi_withdrawals` lists committed Bitcoin outputs, their Bech32 addresses and the Bitcoin transaction ID; `hashi_inbound` lists BTC deposits confirmed and minted as hBTC on Sui. Bitcoin delivery must be checked on Bitcoin. |
+| Hashi | `hashi_withdrawal_requests` lists a requester's Bitcoin destination and the request's status; `hashi_withdrawals` lists a committed Bitcoin transaction's outputs and requesters; `hashi_cancellations` lists refunds; `hashi_inbound` lists BTC deposits confirmed and minted as hBTC on Sui. Bitcoin delivery must be checked on Bitcoin. |
 | Meson | Recognized, but its destination is not in Sui data |
 
 `beneficiaries` names who is paid on the far side, decoded from the Sui
@@ -235,24 +235,55 @@ origin chain, CCTP transfer ID and VAA ID, amounts, and a beneficiary only
 when the credited amount exactly matches an event amount. The package name
 comes from the registry or a bridge label on the package or an object it defines.
 
-Hashi's `withdraw::request_withdrawal` is cancellable. The BTC output is
-recorded only when `commit_withdrawal_tx` burns hBTC and emits
-`WithdrawalPickedForProcessing`. The output amount is in satoshis, after the
-Bitcoin miner fee. `change_outputs` belong to Hashi's custody, not the
-withdrawal recipients. `hashi_withdrawals[].status: "committed"` means signing,
-broadcast and Bitcoin confirmation may still be pending. Bitcoin accounts do
-not have CAIP-10 identifiers in this server; use the Bech32
-`beneficiaries[].address` and `chain_label` to check the destination chain.
+A Hashi withdrawal leaves its requester in `withdraw::request_withdrawal`,
+which hands hBTC to Hashi with a Bitcoin witness program as the destination.
+That transaction is the bridge exit in `trace_funds`,
+`summarize_address_flows` and `screen_address`. The committee's later
+transactions (`approve_request`, `commit_withdrawal_tx`, signatures,
+`confirm_withdrawal`) are sent by an operator and are not that operator's
+exits. The requester can cancel until a Bitcoin transaction is committed for
+the request; a fully cancelled request stays listed with `cancelled: true` and
+is left out of `sent`.
+
+`hashi_withdrawal_requests[].status` is read from the request object's own
+transactions:
+
+| Status | Meaning | `bitcoin_delivery.evidence` |
+|---|---|---|
+| `requested` | No Bitcoin transaction committed yet; the requester can still cancel | `heuristic` |
+| `cancelled` | Cancelled in `cancel_digest`; the hBTC went back to the requester | `chain-derived` |
+| `committed` | `commit_digest` burned the hBTC and committed `bitcoin_txid` with output `output_sats` | `chain-derived` |
+| `confirmed` | Hashi's committee certified Bitcoin confirmation on Sui in `confirm_digest`; this server did not read Bitcoin | `chain-derived` |
+
+Request amounts are satoshis of hBTC before the Bitcoin miner fee; committed
+output amounts are after it. `change_outputs` belong to Hashi's custody, not
+the withdrawal recipients. Bitcoin accounts do not have CAIP-10 identifiers in
+this server; use the Bech32 `beneficiaries[].address` and `chain_label`.
 A `DepositConfirmed` event produces `hashi_inbound`, never an exit.
 As of 2026-10-20, Hashi's mainnet deployment is in validator registration
 and has no mainnet deposits or withdrawals; testnet uses Bitcoin Signet.
 
 ```json
-{ "tool": "resolve_bridge_transfer", "args": { "digest": "<commit-tx>", "network": "testnet" } }
+{ "tool": "resolve_bridge_transfer", "args": { "digest": "<request-tx>", "network": "testnet" } }
 ```
 
-The result's `hashi_withdrawals[0].bitcoin_txid` identifies the Bitcoin
-transaction, and `beneficiaries[0].address` is its Bitcoin Signet recipient.
+```json
+{
+  "hashi_withdrawal_requests": [{
+    "status": "confirmed",
+    "requester": "0xa3fa…f48f",
+    "amount_sats": "101412570",
+    "bitcoin_address": "tb1qes3z5fu0f436wmr06svkxsk0h0pacv9vcsn3m7",
+    "commit_digest": "6mnmYUk6…",
+    "bitcoin_txid": "0xd731a322…6227",
+    "output_sats": "101411668",
+    "confirm_digest": "GkFcUgwm…"
+  }]
+}
+```
+
+On the commitment digest, `hashi_withdrawals[].outputs[]` names each
+output's `requester` and `request_digest`.
 
 `carriers` names a package outside a bridge's lineage whose PTB call emitted
 that bridge's event, with its function and its own events, such as an adapter

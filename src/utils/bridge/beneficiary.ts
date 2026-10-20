@@ -66,7 +66,8 @@ export type BeneficiarySource =
   | "axelar-its-destination"
   | "allbridge-recipient-wallet"
   | "celer-burn-recipient"
-  | "hashi-bitcoin-withdrawal";
+  | "hashi-bitcoin-withdrawal"
+  | "hashi-withdrawal-request";
 
 /** A far-side recipient read from the Sui transaction. Always chain-derived. */
 export interface Beneficiary {

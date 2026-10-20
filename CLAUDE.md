@@ -504,15 +504,26 @@ leg of a PTB, so the guess read Astros, 7k and FlowX routes backwards.
   direction and a later call into the same package and module starts with
   `repay`. Bluefin's `FlashSwap` events are read as swaps for the same
   reason (`readSwap` with `flash`).
-- **A one-coin LST redemption reads its issuer's event.** The issuer's
-  `events::Event<liquid_staking::RedeemEvent>` names the LST in `typename`,
-  `lst_amount_in` and `sui_amount_out`. Match the defining event type, both
-  positive amounts, the emitting call and its sole coin type before
-  labelling LST → SUI; the first or last FlowX route leg lacks a pool
-  swap event on one side. A one-coin swap with no such event still takes
-  its coins from the two event-read swaps on either side of its shared route
-  result when its sole type names one of them (`oneCoinSwaps`). Otherwise
-  it keeps the coinless `Swap on X` label.
+- **An LST mint or redemption reads its issuer's event.** `ISSUER_EVENTS`
+  (`pool-swap-events.ts`) lists the defining event types that state both
+  amounts: the SpringSui framework's and its stSUI fork's
+  `events::Event<liquid_staking::MintEvent>` and `RedeemEvent` (the LST in
+  `typename`), Haedal's `staking::UserStaked` and `UserInstantUnstaked`
+  (haSUI), and Volo's `stake_pool::StakeEventExt` and `UnstakeEventExt`
+  (vSUI; its `native_pool` events restate the same unstake and are not
+  read). Both amounts must be positive. The leg goes on the emitting call
+  when the emitter and event order leave exactly one call, it is named
+  `swap…`, and its type argument, if it has one, is the LST (FlowX's Haedal
+  and Volo adapters take none). When several such calls could have emitted
+  it, each keeps its fallback reading. A route's first or last leg has a
+  pool swap on one side only, so the neighbour rule below cannot read it.
+  A pool or router event of the same call, next to the issuer event and
+  stating the same coins, is the same swap (Cetus aggregator's
+  `router::SwapEvent` after `UserInstantUnstaked`).
+- **A one-coin leg is read from its neighbours.** A one-coin swap with no
+  issuer event takes its coins from the two event-read swaps on either side
+  of its shared route result when its sole type names one of them
+  (`oneCoinSwaps`). Otherwise it keeps the coinless `Swap on X` label.
 - **Swap contexts read events first.** A context call with events reads as
   those swaps, which also settles a context whose type arguments read two
   ways; the remaining calls use the holding rule. A context whose calls are

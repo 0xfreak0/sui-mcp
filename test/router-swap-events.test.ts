@@ -67,6 +67,17 @@ describe("swap labels read from the pools' own events", () => {
     ["BvkmeokA27CSwN1c44woDukBcjzwBGSNYXGHTig9AJsZ", ["stSUI → SUI", "SUI → USDC", "USDC → BUCK", "stSUI → BUCK", "stSUI → SUI", "SUI → USDC", "USDC → BUCK"]],
     // FlowX: the final stSUI redemption has no following pool swap.
     ["7bDSn7wuLC8VqFooWArSTbR1dTdGT9sSZp7BedX4kG6F", ["USDC → BUCK", "BUCK → stSUI", "stSUI → SUI"]],
+    // FlowX: each of three paths ends in a SpringSui mint; the framework's
+    // MintEvent names sSUI, SUI in and sSUI out.
+    ["4AsWs7y8UGXXCGuJccwEZC9R6T5JUj6goHjY1VHick7p", ["USDSUI → USDC", "USDC → SUI", "SUI → sSUI", "USDSUI → SUI", "SUI → sSUI", "USDSUI → SUI", "SUI → sSUI"]],
+    // FlowX: Haedal's swap_exact_x_to_y has no type arguments; UserInstantUnstaked names haSUI by its type
+    ["2Mv5FsuYnRqLd56YERePhvodKG7Xxj64Qf4oovM5489E", ["haSUI → SUI"]],
+    // FlowX: Volo's stake_pool UnstakeEventExt beside native_pool's UnstakedEvent is one redemption
+    ["GjJyadVtxLLjD1X1NDJgGvwdWadgfh8XNzESUpQuDnvM", ["vSUI → SUI"]],
+    // FlowX: a haSUI redemption then a vSUI mint in one path
+    ["6WhsDCgHBsUDCnHyeyRR3Kmub9JQFuKe8xMfdKRERkLr", ["haSUI → SUI", "SUI → vSUI"]],
+    // Cetus v3 context: the aggregator's router::SwapEvent after Haedal's UserInstantUnstaked states the same swap
+    ["FwcAmAQh464VErNQAJjUJZQyPitjdUkSduDj25GdGzL3", ["USDC → HAEDAL", "HAEDAL → haSUI", "haSUI → SUI"]],
   ];
   it.each(cases)("%s", (digest, expected) => {
     const f = FIXTURES[digest];
@@ -97,6 +108,22 @@ describe("swap labels read from the pools' own events", () => {
     const redeem = commands.findIndex((c) => c.command.oneofKind === "moveCall" && c.command.moveCall.typeArguments?.length === 1 && c.command.moveCall.function?.startsWith("swap"));
     commands.splice(redeem, 0, commands[redeem]);
     expect(swaps(decodeTransaction(commands, f.balanceChanges, f.sender, { swapEvidence: evidenceOf(f) }).actions)).toEqual(["USDC → BUCK", "BUCK → stSUI"]);
+  });
+
+  it("reads an issuer event only on a call named swap whose type argument is the LST", () => {
+    const f = FIXTURES["7bDSn7wuLC8VqFooWArSTbR1dTdGT9sSZp7BedX4kG6F"];
+    const decode = (change: (call: { function?: string; typeArguments?: string[] }) => void) => {
+      const commands = commandsOf(f);
+      const redeem = commands.findIndex((c) => c.command.oneofKind === "moveCall" && c.command.moveCall.typeArguments?.length === 1 && c.command.moveCall.function?.startsWith("swap"));
+      const call = commands[redeem].command;
+      if (call.oneofKind !== "moveCall") throw new Error("Fixture has no redeem call");
+      const copy = { ...call.moveCall };
+      change(copy);
+      commands[redeem] = { ...commands[redeem], command: { oneofKind: "moveCall", moveCall: copy } };
+      return swaps(decodeTransaction(commands, f.balanceChanges, f.sender, { swapEvidence: evidenceOf(f) }).actions);
+    };
+    expect(decode((c) => (c.function = "redeem"))).toEqual(["USDC → BUCK", "BUCK → stSUI"]);
+    expect(decode((c) => (c.typeArguments = ["0x2::sui::SUI"]))).not.toContain("stSUI → SUI");
   });
 });
 

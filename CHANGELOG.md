@@ -94,11 +94,15 @@
   candidate's own.
 
 ### Fixed
-- **FlowX liquid-staking legs use their issuer's redeem events.** A
-  one-coin `swap_router` call can be the first or last leg of a route, with
-  no pair of neighbouring pool swaps. `get_transaction` now labels that
-  call stSUI → SUI when the issuer's redemption event names both coins
-  and is attributable to that call; ambiguous events stay unlabelled.
+- **Liquid-staking legs read their issuer's mint and redeem events.** A
+  swap call that mints or redeems an LST can be the first or last leg of a
+  route, with no pool swap beside it. `get_transaction` now labels it
+  SUI → LST or LST → SUI from the issuer's own event: SpringSui-framework
+  LSTs and stSUI (`MintEvent`, `RedeemEvent`), haSUI (`UserStaked`,
+  `UserInstantUnstaked`) and vSUI (`StakeEventExt`, `UnstakeEventExt`). The
+  event must come from exactly one call named `swap…` whose type argument,
+  if it has one, is that LST. A router event restating the same swap beside
+  it is counted once.
 - **Swap labels read the pools' own swap events.** `get_transaction` takes
   each swap's coins in and out from the event of the pool that ran it,
   placed on the call that takes that pool, instead of from the call's type

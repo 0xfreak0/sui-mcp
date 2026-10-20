@@ -80,22 +80,52 @@ export function readPoolSwap(event: SwapEventInput, index: number, targets: Even
   return swap.a_to_b ? { pool, coinIn: a, coinOut: b } : { pool, coinIn: b, coinOut: a };
 }
 
-// The issuer's redemption event states both sides of an LST → SUI swap.
-// A generic name or framework stake event alone cannot identify the LST:
-// this event's defining type and its embedded coin type must both match.
-const LST_REDEEM_EVENT = /^0xc35ee7fee75782806890cf8ed8536b52b4ba0ace0fb46b944f1155cc5945baa3::events::Event<0xc35ee7fee75782806890cf8ed8536b52b4ba0ace0fb46b944f1155cc5945baa3::liquid_staking::RedeemEvent>$/;
+// Liquid-staking issuers' own mint and redeem events state both sides of a
+// SUI <-> LST swap. Each key is the event's defining type, which an upgrade
+// does not change. The SpringSui framework and the stSUI fork of it name the
+// LST in `typename`; Haedal and Volo issue one LST each, so the event type
+// names it. Volo's older `native_pool` event beside `stake_pool`'s states the
+// same unstake again, so only `stake_pool`'s is read.
+interface IssuerEvent {
+  coin: string | null;
+  suiField: string;
+  lstField: string;
+  mint: boolean;
+}
 const SUI_TYPE = normalizeStructTag("0x2::sui::SUI");
+const SPRINGSUI = "0xb0575765166030556a6eafd3b1b970eba8183ff748860680245b9edd41c716e7";
+const STSUI_FORK = "0xc35ee7fee75782806890cf8ed8536b52b4ba0ace0fb46b944f1155cc5945baa3";
+const HAEDAL = "0xbde4ba4c2e274a60ce15c1cfff9e5c42e41654ac8b6d906a57efa4bd3c29f47d";
+const HASUI = normalizeStructTag(`${HAEDAL}::hasui::HASUI`);
+const VOLO = "0x68d22cf8bdbcd11ecba1e094922873e4080d4d11133e2443fddda0bfd11dae20";
+const VSUI = normalizeStructTag("0x549e8b69270defbfafd4f94e17ec44cdbdd99820b33bda2278dea3b9a32d3f55::cert::CERT");
+const LST_MINT = { coin: null, suiField: "sui_amount_in", lstField: "lst_amount_out", mint: true };
+const LST_REDEEM = { coin: null, suiField: "sui_amount_out", lstField: "lst_amount_in", mint: false };
+const ISSUER_EVENTS: Record<string, IssuerEvent> = {
+  [`${SPRINGSUI}::events::Event<${SPRINGSUI}::liquid_staking::MintEvent>`]: LST_MINT,
+  [`${SPRINGSUI}::events::Event<${SPRINGSUI}::liquid_staking::RedeemEvent>`]: LST_REDEEM,
+  [`${STSUI_FORK}::events::Event<${STSUI_FORK}::liquid_staking::MintEvent>`]: LST_MINT,
+  [`${STSUI_FORK}::events::Event<${STSUI_FORK}::liquid_staking::RedeemEvent>`]: LST_REDEEM,
+  [`${HAEDAL}::staking::UserStaked`]: { coin: HASUI, suiField: "sui_amount", lstField: "st_amount", mint: true },
+  [`${HAEDAL}::staking::UserInstantUnstaked`]: { coin: HASUI, suiField: "sui_amount", lstField: "st_amount", mint: false },
+  [`${VOLO}::stake_pool::StakeEventExt`]: { coin: VSUI, suiField: "sui_amount_in", lstField: "lst_amount_out", mint: true },
+  [`${VOLO}::stake_pool::UnstakeEventExt`]: { coin: VSUI, suiField: "sui_amount_out", lstField: "lst_amount_in", mint: false },
+};
 
-function issuerRedeem(event: SwapEventInput): [string, string] | null {
-  if (!LST_REDEEM_EVENT.test(event.type)) return null;
-  const wrapper = event.json;
-  if (!wrapper || typeof wrapper !== "object" || !("event" in wrapper) ||
-      !wrapper.event || typeof wrapper.event !== "object") return null;
-  const fields = wrapper.event;
-  if (!("lst_amount_in" in fields) || typeof fields.lst_amount_in !== "string" || !/^[1-9]\d*$/.test(fields.lst_amount_in) ||
-      !("sui_amount_out" in fields) || typeof fields.sui_amount_out !== "string" || !/^[1-9]\d*$/.test(fields.sui_amount_out)) return null;
-  const coin = canonicalType("typename" in fields && typeof fields.typename === "string" ? fields.typename : null);
-  return coin && coin !== SUI_TYPE ? [coin, SUI_TYPE] : null;
+/** The coins an issuer's mint or redeem event says went in and out, when it states both amounts. */
+function issuerSwap(event: SwapEventInput): [string, string] | null {
+  const type = canonicalType(event.type);
+  const spec = type ? ISSUER_EVENTS[type] : undefined;
+  if (!spec) return null;
+  const j = event.json as Record<string, unknown> | null;
+  const fields = (spec.coin ? j : j?.event) as Record<string, unknown> | null | undefined;
+  if (!fields || typeof fields !== "object") return null;
+  const sui = fields[spec.suiField];
+  const lst = fields[spec.lstField];
+  if (typeof sui !== "string" || typeof lst !== "string" || !/^[1-9]\d*$/.test(sui) || !/^[1-9]\d*$/.test(lst)) return null;
+  const coin = spec.coin ?? canonicalType(typeof fields.typename === "string" ? fields.typename : null);
+  if (!coin || coin === SUI_TYPE) return null;
+  return spec.mint ? [SUI_TYPE, coin] : [coin, SUI_TYPE];
 }
 
 /**
@@ -197,28 +227,39 @@ export function poolSwapsByCommand(commands: GrpcTypes.Command[], evidence: Swap
   // A call that may have run a swap left unread or unplaced would be
   // labelled with only some of its swaps, so it keeps the fallback reading.
   const incomplete = new Set([...unread.flatMap(candidatesOf), ...swaps.flatMap((_, k) => (placed[k] === null ? candidates[k] : []))]);
+  // An issuer's mint or redeem event is a swap of the call that emitted it
+  // when the emitter and the event's order leave one call, named `swap…`,
+  // whose type argument, if it has one, is the LST. Several calls that could
+  // have emitted it keep the fallback reading, as an unplaced pool swap does.
+  // Each call's legs, pool swaps and issuer swaps, are listed in event order.
+  // A router event beside an issuer event of its call, stating the same coins
+  // with no other leg of the call between them, echoes that swap (Cetus
+  // aggregator's `router::SwapEvent`): the two are one leg.
+  const legs: { index: number; command: number; pair: [string, string]; issuer: boolean }[] = [];
   swaps.forEach((s, k) => {
     const command = placed[k];
-    if (command !== null && !incomplete.has(command)) out.set(command, [...(out.get(command) ?? []), [s.coinIn, s.coinOut]]);
+    if (command !== null) legs.push({ index: s.index, command, pair: [s.coinIn, s.coinOut], issuer: false });
   });
-  // An issuer can redeem an LST without a pool swap event. The emitter and
-  // the event's order identify its call, and the issuer's own event names
-  // the LST and the SUI it paid. Do not infer a leg when several calls could
-  // have emitted the event or another pool swap of this call is unread.
-  let issuerHops: Map<number, [string, string][]> | null = null;
-  for (let i = 0; i < evidence.events.length; i++) {
-    const pair = issuerRedeem(evidence.events[i]);
-    const possible = emitters?.[i];
-    if (!pair || possible?.length !== 1) continue;
-    const at = possible[0];
-    const call = commands[at].command;
-    if (call.oneofKind !== "moveCall" || !call.moveCall.function?.startsWith("swap") ||
-        call.moveCall.typeArguments?.length !== 1 || canonicalType(call.moveCall.typeArguments[0]) !== pair[0]) continue;
-    issuerHops ??= new Map();
-    const pairs = issuerHops.get(at);
-    if (pairs) pairs.push(pair);
-    else issuerHops.set(at, [pair]);
+  evidence.events.forEach((event, index) => {
+    const pair = issuerSwap(event);
+    const possible = emitters?.[index];
+    if (!pair || !possible) return;
+    const lst = pair[0] === SUI_TYPE ? pair[1] : pair[0];
+    const fits = possible.filter((i) => {
+      const c = commands[i].command;
+      if (c.oneofKind !== "moveCall" || !c.moveCall.function?.startsWith("swap")) return false;
+      const types = c.moveCall.typeArguments ?? [];
+      return types.length === 0 || (types.length === 1 && canonicalType(types[0]) === lst);
+    });
+    if (possible.length === 1 && fits.length === 1) legs.push({ index, command: fits[0], pair, issuer: true });
+    else for (const i of fits) incomplete.add(i);
+  });
+  legs.sort((a, b) => a.index - b.index);
+  const byCommand = new Map<number, typeof legs>();
+  for (const leg of legs) if (!incomplete.has(leg.command)) byCommand.set(leg.command, [...(byCommand.get(leg.command) ?? []), leg]);
+  for (const [command, list] of byCommand) {
+    const kept = list.filter((leg, n) => !leg.issuer || ![list[n - 1], list[n + 1]].some((o) => o && !o.issuer && o.pair[0] === leg.pair[0] && o.pair[1] === leg.pair[1]));
+    out.set(command, kept.map((leg) => leg.pair));
   }
-  if (issuerHops) for (const [at, pairs] of issuerHops) if (!out.has(at) && !incomplete.has(at)) out.set(at, pairs);
   return out;
 }

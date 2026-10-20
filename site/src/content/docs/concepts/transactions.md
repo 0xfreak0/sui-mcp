@@ -59,10 +59,11 @@ real hop, for example USDC to USDT to USDC. It lists the loop's action indices,
 coins and round-trip cost from the pools' own swap events, or null with a reason.
 
 `get_transaction` reads each pool swap's coins from the pool's event on
-the call that took that pool. It also reads a liquid-staking redemption
-from its issuer's event when the issuer names both coins and the event
-belongs to one swap call, including a route's first or last hop. A router
-hop, a two-pool call and a flash swap the transaction repays get
+the call that took that pool. It also reads a liquid-staking mint or
+redemption (SpringSui-framework LSTs, stSUI, haSUI and vSUI) from the
+issuer's own event when that event states both amounts and belongs to one
+swap call, including a route's first or last hop. A router hop, a two-pool
+call, a flash swap the transaction repays and an LST mint or redemption get
 `Swap X → Y` labels with the coins the transaction states:
 
 ```

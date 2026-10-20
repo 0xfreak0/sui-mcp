@@ -84,8 +84,7 @@ function render(engines: FlowEngine[], ids: Map<string, AddressIdentity>): Rende
     for (const p of [...engine.pruned].sort((a, b) => b.share - a.share).slice(0, 10)) {
       pruned.push({
         address: p.address,
-        coin: displayCoin(p.coin_type).symbol,
-        coin_type: p.coin_type,
+    ...(p.object_id ? { object_id: p.object_id, object_type: p.object_type } : { coin: displayCoin(p.coin_type).symbol, coin_type: p.coin_type }),
         share: round4(p.share),
         usd: p.usd === null ? null : Number(p.usd.toFixed(2)),
         digest: p.digest,
@@ -130,7 +129,7 @@ function labelOfNode(n: GraphNode | undefined, id: string, ids: Map<string, Addr
     const [address] = id.split("|");
     return canonicalSuiAddress(address) ? displayName(address, ids) : id;
   }
-  if (n.address) return `${displayName(n.address, ids)}${n.coin_type ? ` (${displayCoin(n.coin_type).symbol})` : ""}`;
+ if (n.address) return `${displayName(n.address, ids)}${n.object_id ? ` (${shortAddress(n.object_id)} ${n.object_type?.split("::").at(-1) ?? "object"})` : n.coin_type ? ` (${displayCoin(n.coin_type).symbol})` : ""}`;
   if (n.kind === "origin_tx") return `tx ${n.id.slice(3)}`;
   if (n.kind === "bridge_exit") {
     const to = (n.beneficiaries ?? []).map((b) => `${b.chain_label} ${b.address ? shortAddress(b.address) : "?"}`);
@@ -163,13 +162,16 @@ function renderNode(engine: FlowEngine, n: GraphNode, ids: Map<string, AddressId
         }
       : { label: labelOfNode(n, n.id, ids) }),
     ...(n.coin_type ? { coin: displayCoin(n.coin_type).symbol, coin_type: n.coin_type } : {}),
+  ...(n.object_id ? { object_id: n.object_id, object_type: n.object_type, object_tier: n.object_tier, object_estimate: n.object_estimate } : {}),
     ...(n.kind === "address" ? { depth: n.depth, expanded: n.expanded } : {}),
     traced_share: round4(n.share),
     ...(n.coin_type && n.traced > 0n ? { traced_amount: n.traced.toString(), traced_formatted: human(n.traced, n.coin_type) } : {}),
+  ...(n.object_id && n.traced > 0n ? { traced_objects: n.traced.toString() } : {}),
     ...(n.usd !== null ? { traced_usd: Number(n.usd.toFixed(2)) } : {}),
     ...(n.stop ? { stop_reason: n.stop } : {}),
     ...(ends.length ? { ends } : {}),
     ...(n.unspent && n.coin_type ? { unspent: n.unspent.toString(), unspent_formatted: human(n.unspent, n.coin_type) } : {}),
+  ...(n.unspent && n.object_id ? { unspent_objects: n.unspent.toString() } : {}),
     ...(n.protocols ? { protocols: n.protocols } : {}),
     ...(n.beneficiaries?.length ? { beneficiaries: n.beneficiaries } : {}),
     ...(n.beneficiaries_unavailable ? { beneficiaries_unavailable: n.beneficiaries_unavailable } : {}),
@@ -185,6 +187,7 @@ function renderEdge(e: GraphEdge): Record<string, unknown> {
     from: e.from,
     to: e.to,
     ...(coin ? { coin: displayCoin(coin).symbol, coin_type: coin } : {}),
+  ...(e.object_id ? { object_id: e.object_id, object_type: e.object_type, object_tier: e.object_tier, object_estimate: e.object_estimate } : {}),
     amount: e.amount.toString(),
     ...(coin ? { amount_formatted: human(e.amount, coin) } : {}),
     ...(e.traced !== e.amount ? { traced_amount: e.traced.toString() } : {}),
@@ -223,6 +226,7 @@ function exportGraph(engines: FlowEngine[], ids: Map<string, AddressIdentity>, o
       const name = n.address ? displayName(n.address, ids) : labelOfNode(n, n.id, ids);
       const lines = [name];
       if (n.address && name !== shortAddress(n.address)) lines.push(shortAddress(n.address));
+   if (n.object_id) lines.push(`${n.object_type?.split("::").at(-1) ?? "object"} ${shortAddress(n.object_id)}`);
       if (n.coin_type && n.traced > 0n) lines.push(human(n.traced, n.coin_type));
       if (n.unspent && n.coin_type) lines.push(`holds ${human(n.unspent, n.coin_type)}`);
       const code = n.stop?.code;
@@ -234,6 +238,7 @@ function exportGraph(engines: FlowEngine[], ids: Map<string, AddressIdentity>, o
         attrs: {
           ...(n.address ? { address: n.address } : {}),
           ...(n.coin_type ? { coin_type: n.coin_type } : {}),
+     ...(n.object_id ? { object_id: n.object_id, object_type: n.object_type, object_tier: n.object_tier } : {}),
           traced_share: round4(n.share),
           ...(n.beneficiaries?.length ? { beneficiaries: n.beneficiaries.map((b) => b.account ?? b.address) } : {}),
           ...(n.shared_objects?.length ? { shared_objects: n.shared_objects.map((o) => o.object_id) } : {}),
@@ -243,7 +248,7 @@ function exportGraph(engines: FlowEngine[], ids: Map<string, AddressIdentity>, o
     }
     for (const e of engine.edges.values()) {
       if (only && (!only.has(e.from) || !only.has(e.to))) continue;
-      const amount = e.coin_type ? human(e.amount, e.coin_type) : e.amount.toString();
+   const amount = e.object_id ? `${e.object_type?.split("::").at(-1) ?? "object"} ${shortAddress(e.object_id)}` : e.coin_type ? human(e.amount, e.coin_type) : e.amount.toString();
       const usd = e.usd !== null && e.usd > 0 ? ` (${formatUsd(e.usd)})` : "";
       const count = e.digests.length > 1 ? `, ${e.digests.length} txs` : "";
       g.edges.push({
@@ -252,6 +257,7 @@ function exportGraph(engines: FlowEngine[], ids: Map<string, AddressIdentity>, o
         label: `${amount}${usd}${count}`,
         attrs: {
           coin_type: e.coin_type,
+     ...(e.object_id ? { object_id: e.object_id, object_type: e.object_type, object_tier: e.object_tier, object_estimate: e.object_estimate } : {}),
           amount: e.amount.toString(),
           usd: e.usd,
           traced_share: round4(e.share),
@@ -277,6 +283,9 @@ function edgeCsv(engines: FlowEngine[], ids: Map<string, AddressIdentity>): stri
         to_label: labelOfNode(to, e.to, ids),
         coin: e.coin_type ? displayCoin(e.coin_type).symbol : "",
         coin_type: e.coin_type,
+    object_id: e.object_id ?? "",
+    object_type: e.object_type ?? "",
+    object_tier: e.object_tier ?? "",
         amount_raw: e.amount.toString(),
         amount: e.coin_type ? human(e.amount, e.coin_type).split(" ")[0] : "",
         traced_raw: e.traced.toString(),
@@ -290,7 +299,7 @@ function edgeCsv(engines: FlowEngine[], ids: Map<string, AddressIdentity>): stri
     }
   }
   return toCsv(
-    ["from", "from_label", "to", "to_label", "coin", "coin_type", "amount", "amount_raw", "traced_raw", "usd", "traced_share", "basis", "first_time", "digest_count", "digests"],
+  ["from", "from_label", "to", "to_label", "coin", "coin_type", "object_id", "object_type", "object_tier", "amount", "amount_raw", "traced_raw", "usd", "traced_share", "basis", "first_time", "digest_count", "digests"],
     rows,
   );
 }
@@ -424,12 +433,12 @@ function parseTarget(raw: string): Target {
 export function registerFlowGraphTools(server: McpServer) {
   server.tool(
     "trace_flow_graph",
-    "(Incident investigation) Trace every branch of funds forward or backward from a transaction or a time-bounded address, rather than the single branch trace_funds follows. Each recipient gets a proportional share of traced value. The walk follows the coin through swaps, self-credits and value released from objects; it stops at sinks, hubs, protocols, bridge exits with decoded beneficiaries, and transactions signed by someone other than the sender. An address's swap counts once: later spending carries its proceeds forward, earlier inflows carry its input backward. The rest ends as unspent or source, or budget if the move limit stopped the search. coverage.partial marks a start-address move limit; coverage.truncated marks other limits. Terminals report where each share ended. address_poisoning covers only reached addresses: empty pairs clear nothing beyond them, lookalike branches are never pruned, and every format's summary names the pairs. Consumed or retained terminals may carry heuristic cross_chain_leads from messages no bridge reader covers. Formats include Mermaid, graph JSON and CSV. A 40-node graph typically costs 100–300 requests.",
+  "(Incident investigation) Trace every branch of value forward or backward from a transaction or time-bounded address. Priced coin movements and objects changing custody receive proportional shares; object edges name their id, type, checkpoint USD value and valuation tier. The walk follows an object by id through later transfers or redemption into coins. Unvalued objects are listed separately and receive no share. Coins continue through swaps and self-credits. The walk stops at sinks, hubs, protocols, bridge exits with decoded beneficiaries, and transactions signed by someone other than the sender. An address's swap counts once: later spending carries its proceeds forward, earlier inflows carry its input backward. The rest ends as unspent or source, or budget if the move limit stopped the search. coverage.partial marks incomplete address histories; coverage.truncated marks other limits. Terminals report where each share ended. address_poisoning covers only reached addresses: empty pairs clear nothing beyond them, lookalike branches are never pruned, and every format's summary names the pairs. Consumed or retained terminals may carry heuristic cross_chain_leads from messages no bridge reader covers. Formats include Mermaid, graph JSON and CSV.",
     {
       digest: z.string().optional().describe("Starting transaction (Base58). Give this or `address`."),
-      address: addressArg().optional().describe("Start from this address's payouts after from (forward), or receipts before to (backward), instead of a digest."),
+   address: addressArg().optional().describe("Start from this address's coin and object movements after from (forward), or before to (backward), instead of a digest."),
       direction: z.enum(["forward", "backward"]).optional().describe("forward (default) follows where the value went; backward follows who paid it in."),
-      coin_type: coinTypeArg().optional().describe("Starting coin filter; omitted follows every coin moved. Value is still followed across swaps."),
+   coin_type: coinTypeArg().optional().describe("Starting coin filter; omitted follows priced coins and custody-changing objects. Swaps remain followed."),
       from: timePointArg().optional().describe("Window start: ISO date or checkpoint. With `address` and forward, where the walk starts. Bounds every search."),
       to: timePointArg().optional().describe("Window end: ISO date or checkpoint. With `address` and backward, where the walk starts. Bounds every search."),
       max_depth: numArg().int().min(1).max(8).optional().describe("Hops to follow from the start (default 4, max 8)."),
@@ -505,8 +514,9 @@ export function registerFlowGraphTools(server: McpServer) {
         nodes: r.nodes,
         edges: r.edges,
         ...(engine.unpriced.size ? { unpriced_coins: unpricedByReason(engine.unpriced) } : {}),
+    ...(engine.unvaluedObjects.length ? { unvalued_objects: engine.unvaluedObjects, object_valuation_incomplete: true } : {}),
         method:
-          "Each node is an (address, coin) pair. A node's traced amount is allocated to the transactions that moved it, first in first out, and each transaction's share to the parties it paid, in proportion to the amounts. traced_share is the fraction of the value at the start. USD is at each transaction's hour (Pyth for verified coins with PYTH_API_KEY, DefiLlama otherwise). A bridge_exit's beneficiaries are chain-derived from the transaction's events; confirm the destination on that chain.",
+     "Each node is an (address, coin) or (address, object id) pair. A coin's traced amount is allocated first in first out; an object's custody is followed by id, with redemption proceeds allocated against its checkpoint value. Each transaction's share goes to the receiving parties in proportion to priced value. Unvalued objects take no share and are listed separately. USD uses historical provider quotes, except NFT estimates, which carry tier heuristic. A bridge exit's beneficiaries come from the transaction's events; confirm delivery on the destination chain.",
         next_steps:
           "resolve_bridge_transfer on an exit's digests to follow it on the destination chain; classify_deposit_address or screen_address on a sink or hub; trace_flow_graph again from a `budget` node's address to go further.",
       };
@@ -537,6 +547,11 @@ export function registerFlowGraphTools(server: McpServer) {
             usd: (e: Record<string, unknown>) => (typeof e.usd === "number" ? e.usd : null),
             brief: (e: Record<string, unknown>) => ({ from: e.from, to: e.to, traced_share: e.traced_share, usd: e.usd }),
           } satisfies ListCap<Record<string, unknown>>,
+     unvalued_objects: {
+      budget: 4_000,
+      keepOrder: true,
+      brief: (o: Record<string, unknown>) => ({ object_id: o.object_id, type: o.type, reason: o.reason }),
+     } satisfies ListCap<Record<string, unknown>>,
         },
         { full: detail === "full", next_call: { tool: "trace_flow_graph", repeat_with: { detail: "full" } } },
       );
@@ -546,7 +561,7 @@ export function registerFlowGraphTools(server: McpServer) {
 
   server.tool(
     "find_flow_path",
-    "(Incident investigation) Find value paths from one address to another. Searches forward from `from` and backward from `to` using trace_flow_graph's engine, expanding by depth while queued nodes fit the limit and prioritizing larger shares once they do not. Returns paths with each hop's transaction digests and amounts in time order. `to` may be an account on another chain (EVM, Solana or CAIP-10); a path then ends at a Sui bridge exit whose chain-derived beneficiary is that account. When nothing is found, `explored` says what was searched, and `explored.node_limited` names, per side, the nodes the node limit left unexpanded and the share of value they carry. A missing path does not show that none exists: every search is bounded, and value can move off-chain or through a hub.",
+  "(Incident investigation) Find value paths from one address to another through priced coins and custody-changing objects. Searches forward from `from` and backward from `to` using trace_flow_graph's engine, expanding by depth while queued nodes fit the limit and prioritizing larger shares once they do not. Object paths show each object id, type and USD value at its transaction's checkpoint. Returns paths with each hop's transaction digests and amounts in time order. `to` may be an account on another chain (EVM, Solana or CAIP-10); a path then ends at a Sui bridge exit whose chain-derived beneficiary is that account. When nothing is found, `explored` says what was searched, and `explored.node_limited` names, per side, the nodes the node limit left unexpanded and the share of value they carry. A missing path does not show that none exists: every search is bounded, and value can move off-chain or through a hub.",
     {
       from: addressArg().describe("Address the value starts at."),
       to: z.string().describe("Target: a Sui address, an EVM (0x + 40 hex) or Solana (base58) address a bridge exit pays, or a CAIP-10 account."),
@@ -557,8 +572,9 @@ export function registerFlowGraphTools(server: McpServer) {
       max_nodes: numArg().int().min(1).max(100).optional().describe("Address nodes to expand on each side (default 30, max 100); larger shares take priority when the queued nodes exceed the remaining limit."),
       min_share: numArg().min(0).max(1).optional().describe("Skip branches below this fraction of each side's value (default 0.001), except those to a lookalike of a reached address."),
       format: FORMAT_ARG,
+   detail: z.enum(["summary", "full"]).optional().describe("summary (default) caps the unvalued-object list; full lists every unvalued object."),
     },
-    async ({ from, to, max_hops, coin_type, window_start, window_end, max_nodes, min_share, format }) => {
+  async ({ from, to, max_hops, coin_type, window_start, window_end, max_nodes, min_share, format, detail }) => {
       let target: Target;
       let window;
       try {
@@ -630,6 +646,7 @@ export function registerFlowGraphTools(server: McpServer) {
             to: b?.address ?? step.to,
             to_label: labelOfNode(b, step.to, ids),
             ...(b?.beneficiaries?.length ? { beneficiaries: b.beneficiaries } : {}),
+      ...(e.object_id ? { object_id: e.object_id, object_type: e.object_type, object_tier: e.object_tier, object_estimate: e.object_estimate } : {}),
             ...(e.coin_type ? { coin: displayCoin(e.coin_type).symbol, coin_type: e.coin_type, amount_formatted: human(e.amount, e.coin_type) } : {}),
             amount: e.amount.toString(),
             usd: e.usd === null ? null : Number(e.usd.toFixed(2)),
@@ -643,11 +660,12 @@ export function registerFlowGraphTools(server: McpServer) {
       const toAccount = "sui" in target ? target.account : (target.account ?? target.foreign);
       const found = rendered.length > 0;
       const unread = engines.flatMap((engine) => engine.ledger.summary().find((group) => group.code === "read_failed")?.entries ?? []);
+   const unvalued = engines.flatMap((engine) => engine.unvaluedObjects);
       const lines = [
         found
           ? `PATH FOUND — ${shortAddress(from)} → ${toAccount}: ${rendered.length} path(s), shortest ${Math.min(...rendered.map((p) => p.hops))} transfer(s).`
-          : unread.length
-            ? `SEARCH INCOMPLETE from ${shortAddress(from)} to ${toAccount}: no path established; some branches are unread.`
+     : unread.length || unvalued.length
+      ? `SEARCH INCOMPLETE from ${shortAddress(from)} to ${toAccount}: no path established; some value is unread or unvalued.`
             : `NO PATH within budget from ${shortAddress(from)} to ${toAccount}.`,
       ];
       for (const [i, p] of rendered.entries()) {
@@ -663,6 +681,7 @@ export function registerFlowGraphTools(server: McpServer) {
       for (const reason of backward?.partial ?? []) lines.push(`Partial (the \`to\` address): ${reason} Narrow the window to read the rest.`);
       for (const entry of unread.slice(0, 5)) lines.push(`Unread: ${entry.detail ?? labelOfNode(undefined, entry.node, ids)}`);
       if (unread.length > 5) lines.push(`${unread.length - 5} more unread stops; see explored.terminals.`);
+   if (unvalued.length) lines.push(`${unvalued.length} object movement(s) had no established value; see explored.unvalued_objects.`);
       // The node limit is the bound a caller can raise, so a search that found
       // nothing says how much of the value it left unread and where. Per side:
       // a forward share is a fraction of what `from` moved, a backward one of
@@ -708,8 +727,8 @@ export function registerFlowGraphTools(server: McpServer) {
           );
         }
         lines.push(
-          unread.length
-            ? "Unread branches prevent a complete search. See the read_failed terminal reasons; increasing limits does not repair a failed read."
+     unread.length || unvalued.length
+      ? "Unread or unvalued branches prevent a complete search. See explored.terminals and explored.unvalued_objects; raising limits does not value missing objects."
             : "Absence is not evidence: the search is bounded by max_hops, max_nodes and min_share, stops at hubs and sinks, and cannot see value that leaves through an exchange or another chain. Widen the window or the limits, or trace_flow_graph from either end.",
         );
       }
@@ -724,9 +743,9 @@ export function registerFlowGraphTools(server: McpServer) {
         ...(found
           ? { paths: rendered }
           : {
-              result: unread.length ? "search incomplete" : "no path within budget",
-              note: unread.length
-                ? "Some branches could not be read; see explored.terminals for their reasons. No path was established from the readable evidence."
+      result: unread.length || unvalued.length ? "search incomplete" : "no path within budget",
+      note: unread.length || unvalued.length
+       ? "Some branches could not be valued or read; see explored.terminals and explored.unvalued_objects. No path was established from the priced evidence."
                 : "Absence is not evidence that no path exists. The search is bounded (max_hops, max_nodes, min_share), stops at hubs, sinks and protocol addresses, and cannot see value that leaves through an exchange or another chain.",
             }),
         explored: {
@@ -734,17 +753,31 @@ export function registerFlowGraphTools(server: McpServer) {
           backward_levels: bLevels,
           coverage: r.coverage,
           terminals: r.terminals,
+     ...(unvalued.length ? { unvalued_objects: unvalued, object_valuation_incomplete: true } : {}),
           ...(nodeLimited ? { node_limited: nodeLimited } : {}),
         },
         method:
           "Forward from `from` and backward from `to` on the trace_flow_graph engine, one node at a time, expanding whichever side has the smaller frontier and, on each side, the queued node carrying the most value first. A path joins at an address both sides reached, where the forward side arrived no later than the backward side paid on toward `to`. Each step is a transfer with its digests.",
       };
-      if ((format ?? "json") === "json") return { content: [{ type: "text" as const, text: summary }, { type: "text" as const, text: JSON.stringify(json) }] };
+   const { payload } = capPayload(
+    "find_flow_path",
+    { from, to, max_hops, coin_type, window_start, window_end, max_nodes, min_share },
+    json,
+    {
+     "explored.unvalued_objects": {
+      budget: 4_000,
+      keepOrder: true,
+      brief: (o: Record<string, unknown>) => ({ object_id: o.object_id, type: o.type, reason: o.reason }),
+     } satisfies ListCap<Record<string, unknown>>
+    },
+    { full: detail === "full", next_call: { tool: "find_flow_path", repeat_with: { detail: "full" } } },
+   );
+   if ((format ?? "json") === "json") return { content: [{ type: "text" as const, text: summary }, { type: "text" as const, text: JSON.stringify(payload) }] };
       // Diagrams draw the paths only: the explored graph is in the JSON.
       const onPath = new Set(paths.slice(0, 5).flatMap((p) => p.steps.flatMap((s) => [s.step.from, s.step.to])));
       const g = exportGraph(engines, ids, onPath.size ? onPath : undefined);
       if (format === "mermaid") return { content: [{ type: "text" as const, text: summary }, { type: "text" as const, text: toMermaid(g) }] };
-      if (format === "graph_json") return { content: [{ type: "text" as const, text: JSON.stringify({ ...toGraphJson(g), found, explored: json.explored }) }] };
+   if (format === "graph_json") return { content: [{ type: "text" as const, text: JSON.stringify({ ...toGraphJson(g), found, explored: payload.explored }) }] };
       return { content: [{ type: "text" as const, text: summary }, { type: "text" as const, text: edgeCsv(engines, ids) }] };
     },
   );

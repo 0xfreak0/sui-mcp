@@ -40,6 +40,7 @@ import {
 import { commandInputIndices, eventCommands, objectMatcher } from "../utils/command-attribution.js";
 import { gasSource, readAddressBalanceOps, readFundsWithdrawals } from "../utils/address-balance.js";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
+import { protoValueToJson } from "../utils/proto.js";
 import { describeWindow, resolveWindow } from "../utils/checkpoint-time.js";
 import { COMMANDS_SELECTION, completeTxConnections, type GqlConnection } from "../utils/tx-connections.js";
 import type { GqlCommandNode } from "../utils/gql-adapters.js";
@@ -376,7 +377,17 @@ export function registerTransactionTools(server: McpServer) {
         await prefetchProtocolNames([...calledPackages, ...eventPackages]);
         publishers = await readProtocolCustody([...calledPackages, ...eventPackages]);
         await prefetchCoinScale((tx?.balanceChanges ?? []).map((bc) => bc.coinType).filter((t): t is string => !!t));
-        decoded = decodeTransaction(ptb.commands, tx?.balanceChanges, sender, { custodyFor: publishers.custodyFor });
+        // The pools a swap event names, by the effects' own types, so each
+        // swap is labelled with the coins its pool took in and paid out.
+        const objectTypes = new Map<string, string | null>();
+        for (const o of effects?.changedObjects ?? [])
+          if (o.objectId && o.objectType && !/^0x0*2::(coin::Coin|dynamic_field::Field)</.test(o.objectType)) objectTypes.set(normalizeSuiAddress(o.objectId), o.objectType);
+        const swapEvidence = {
+          events: (tx?.events?.events ?? []).map((e: GrpcTypes.Event) => ({ packageId: e.packageId, module: e.module, type: e.eventType ?? "", json: protoValueToJson(e.json) })),
+          inputObjectIds: (ptb.inputs ?? []).map((i) => i.objectId ?? null),
+          objectTypes,
+        };
+        decoded = decodeTransaction(ptb.commands, tx?.balanceChanges, sender, { custodyFor: publishers.custodyFor, swapEvidence });
       } else if (kind?.data.oneofKind) {
         decoded = {
           protocols: [] as string[],
@@ -1069,7 +1080,7 @@ export function registerTransactionTools(server: McpServer) {
 
   server.tool(
     "query_transactions",
-    "Query raw transactions by sender, affected address or object, Move function, or time/checkpoint range. Only one of affected_address, affected_object and function is allowed. Prefer get_transaction_history for readable wallet activity. Pages default to newest first and report order, timestamp bounds and resolved window; pass next_cursor as cursor with the same order and filters. Short service pages are filled to limit within a read budget; scan reports exhaustion and the continuation call. Continue while has_next_page, even with no transactions. A function filter covers only the named package version; function_scope names other versions and all_versions:true merges the whole lineage. Rows wait for each stream's next rows or exhaustion to establish global order. It matches any PTB containing the call, even one leg among several protocols. Whole-PTB balance changes therefore over-attribute protocol volume. Use include_functions to inspect every Move call, and query_events for a protocol's own flow.",
+    "Query raw transactions by sender, affected address or object, Move function, or time/checkpoint range. Pass ISO 8601 times directly in after_checkpoint and before_checkpoint, e.g. \"2026-08-07T00:00:00Z\"; checkpoint numbers are optional. Only one of affected_address, affected_object and function is allowed. Prefer get_transaction_history for readable wallet activity. Pages default to newest first and report order, timestamp bounds and resolved window; pass next_cursor as cursor with the same order and filters. Short service pages are filled to limit within a read budget; scan reports exhaustion and the continuation call. Continue while has_next_page, even with no transactions. A function filter covers only the named package version; function_scope names other versions and all_versions:true merges the whole lineage. Rows wait for each stream's next rows or exhaustion to establish global order. It matches any PTB containing the call, even one leg among several protocols. Whole-PTB balance changes therefore over-attribute protocol volume. Use include_functions to inspect every Move call, and query_events for a protocol's own flow.",
     {
       sender: addressArg().optional().describe("Filter by sender address"),
       affected_address: addressArg()
@@ -1086,12 +1097,12 @@ export function registerTransactionTools(server: McpServer) {
         .union([z.string(), z.number()])
         .superRefine(refinePoint)
         .optional()
-        .describe("Transactions after this checkpoint number (exclusive), or at/after this ISO 8601 time (inclusive)."),
+        .describe("Window start: ISO 8601 time such as 2026-08-07T00:00:00Z (inclusive), or checkpoint number (exclusive). No checkpoint lookup is needed."),
       before_checkpoint: z
         .union([z.string(), z.number()])
         .superRefine(refinePoint)
         .optional()
-        .describe("Transactions before this checkpoint number (exclusive), or at/before this ISO 8601 time (inclusive)."),
+        .describe("Window end: ISO 8601 time such as 2026-08-08T00:00:00Z (inclusive), or checkpoint number (exclusive)."),
       order: z
         .enum(["newest", "oldest"])
         .optional()

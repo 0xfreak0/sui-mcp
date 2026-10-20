@@ -58,10 +58,26 @@ follow `events_page.next_call` for the next offset.
 real hop, for example USDC to USDT to USDC. It lists the loop's action indices,
 coins and round-trip cost from the pools' own swap events, or null with a reason.
 
-Two-pool `router::swap_ab_bc`, `swap_ab_cb`, `swap_ba_bc` and `swap_ba_cb`
-actions name the first and third type arguments as input and output. The
-middle type is the route's intermediate coin; the function suffix describes
-the pools' coin ordering.
+`get_transaction` reads each swap's coins from the swap event of the pool
+that ran it, on the call that takes that pool, so a router hop, a two-pool
+call and a flash swap the transaction repays each get a `Swap X → Y` label
+with the coins the pool took in and paid out:
+
+```
+get_transaction(8W2fZYFV2JaZfT2zrRgEZPuzNTtgAjj7qsxquem2F2M3)
+  actions:
+    Swap wBTC → LBTC on Cetus
+    Swap LBTC → SUI on Cetus
+    Call router::check_coin_threshold on Cetus
+```
+
+A call with no swap event, or with a swap event that cannot be read or tied
+to one call, is labelled from its function name, its type arguments and the
+sender's balance changes. So is every call in `get_transaction_history`,
+`build_timeline` and `trace_funds`, which decode without events. There a
+two-pool `router::swap_ab_bc`, `swap_ab_cb`, `swap_ba_bc` or `swap_ba_cb`
+names the first and third type arguments as input and output, and a swap's
+direction is a lead to check against `get_transaction`.
 
 
 ## Why a transaction failed
@@ -354,15 +370,36 @@ other protocols' activity. For events from one known transaction, use
 
 Newest-first is the default. Each page reports its order, oldest and newest
 timestamps, and resolved window. Preserve order and filters when passing
-`next_cursor` as `cursor`. The tool fills short service pages up to `limit`;
-if its read budget stops first, `scan` names the continuation. Checkpoint
-bounds are exclusive; ISO 8601 bounds include events at the stated time.
-For example, `after_checkpoint: "2026-08-07T00:00:00Z"` includes that instant.
+`next_cursor` as `cursor`. Both `query_events` and `query_transactions` accept
+ISO 8601 dates directly in `after_checkpoint` and `before_checkpoint`; no
+checkpoint search is needed. For example:
 
-An event type carries the package ID that defined its struct.
-`event_type: "0x2::coin::CoinBalanceChange"` is a full type filter. If an
-upgraded package ID is supplied, the tool resolves it to the defining version
-and reports `event_type_resolution`.
+```json
+{ "event_type": "0x…::module::ActionEvent", "after_checkpoint": "2026-08-07T00:00:00Z", "before_checkpoint": "2026-08-08T00:00:00Z" }
+```
+
+When events match, the reply includes `events` with decoded `data`, the
+`window`'s resolved checkpoints and `next_cursor` if more matches remain in
+the page order. An empty page reached through `cursor` covers only the rest of
+the list; its `no_results_hint` says so.
+
+The tool fills short service pages up to `limit`; if its read budget stops
+first, `scan` names the continuation. Checkpoint-number bounds are exclusive;
+ISO 8601 bounds include events at the stated time.
+
+An event type carries the package ID that defined its struct. The `event_type`
+filter accepts a package, module or full struct type; an upgraded package ID is
+resolved to the defining version and reported in `event_type_resolution`. A
+full struct name absent from a readable package lineage returns an error
+listing candidate structs, rather than a zero-match page. A module that
+defines no struct in the lineage returns an error listing the modules that
+do. An unread lineage is marked `unverified`; an empty page cannot establish
+absence in that case.
+The `module` filter names the call that emitted the event. That call can
+belong to a different package and module from the event struct.
+GraphQL rejects a request combining `event_type` and `module`; query the
+struct type alone or the emitting module alone. An event's `emitting_module`
+in a type-filtered result identifies which module to query.
 
 An emitting-module filter, such as `0x2::coin` or package-only `0x2`, follows
 the network's `relocate_event_module` cutover:

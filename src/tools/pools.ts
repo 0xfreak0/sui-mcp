@@ -1,12 +1,18 @@
 import { z } from "zod";
-import { addressArg } from "./args.js";
+import { addressArg, coinTypeArg, numArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { fetchAftermathPrices } from "./prices.js";
 import { lookupProtocol, prefetchProtocolNames } from "../protocols/registry.js";
 import { describeError, errorResult } from "../utils/errors.js";
+import { capPayload } from "../utils/output-cap.js";
+import type { ListCap, NextCall } from "../utils/output-cap.js";
 import { getNetwork } from "../config.js";
 import { resolveTokenType } from "../discovery.js";
+import { normalizeStructTag } from "@mysten/sui/utils";
+import {
+ AFTERMATH_AMM_PACKAGE, FLOWX_V2_CONTAINER, FLOWX_V2_PACKAGE, KRIYA_V2_PACKAGE, flowxPairFieldId,
+} from "../utils/valuers/amm-lp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 // Extract generic type parameters from a Move type string
@@ -240,167 +246,371 @@ export function registerPoolTools(server: McpServer) {
 
   server.tool(
     "find_pools",
-    "Find liquidity pools for a token pair across Cetus, DeepBook v2/v3, Turbos and BlueMove v1. Searches both token orders and every Turbos fee tier. Each result reports the pool's own token order. Use get_pool_stats for reserves, fees and prices.",
+  "Find pools for an exact token pair across Cetus, DeepBook v2/v3, Turbos, BlueMove v1, Bluefin, Momentum, FlowX CLMM/v2, Magma, Aftermath AMM and Kriya v2. Both token orders are searched. Venue statuses distinguish complete searches from failed or capped reads. The response includes pool IDs and coin types.",
     {
-      token_a: z.string().describe("First token: symbol (e.g. 'SUI') or full coin type"),
-      token_b: z.string().describe("Second token: symbol (e.g. 'USDC') or full coin type"),
-      protocol: z
-        .string()
-        .optional()
-        .describe("Filter by protocol: 'cetus', 'deepbook', 'turbos', or 'bluemove'. Searches all if omitted."),
+   token_a: z.string().describe("First token: verified symbol (e.g. 'SUI') or full coin type"),
+   token_b: z.string().describe("Second token: verified symbol (e.g. 'USDC') or full coin type"),
+   protocol: z.string().optional().describe(`Filter by venue: ${POOL_PROTOCOLS.join(", ")}. Searches all if omitted.`),
+   offset: numArg().int().min(0).optional().describe("Start the pool list at this index (default 0). A response that leaves pools out gives the next offset in omitted.next_call."),
     },
-    async ({ token_a, token_b, protocol: protocolFilter }) => {
-      const [typeA, typeB] = await Promise.all([
-        resolveTokenType(token_a),
-        resolveTokenType(token_b),
-      ]);
-
-      // Null covers every symbol the curated verified list does not name exactly once:
-      // shared, unverified or not found. None of those identifies a coin.
-      if (!typeA) return errorResult(`Could not resolve token: ${token_a}. Only symbols on the curated verified coin list resolve by name. Provide the full coin type (0x...::module::TYPE); search_token lists candidate coins for a symbol.`);
-      if (!typeB) return errorResult(`Could not resolve token: ${token_b}. Only symbols on the curated verified coin list resolve by name. Provide the full coin type (0x...::module::TYPE); search_token lists candidate coins for a symbol.`);
-
-      const wanted = protocolFilter?.toLowerCase();
+    async ({ token_a, token_b, protocol: protocolFilter, offset }) => {
+   const [resolvedA, resolvedB] = await Promise.all([resolveTokenType(token_a), resolveTokenType(token_b)]);
+   if (!resolvedA) return errorResult(`Could not resolve token: ${token_a}. Only curated verified symbols resolve by name; provide the full coin type or use search_token.`);
+   if (!resolvedB) return errorResult(`Could not resolve token: ${token_b}. Only curated verified symbols resolve by name; provide the full coin type or use search_token.`);
+   const typeA = canonicalPoolCoinType(resolvedA);
+   const typeB = canonicalPoolCoinType(resolvedB);
+   if (!typeA || !typeB) return errorResult("Both tokens must be valid Move coin types.");
+   const wanted = protocolFilter?.trim().toLowerCase();
       if (wanted && !POOL_PROTOCOLS.includes(wanted as PoolProtocol)) {
         return errorResult(`Unsupported protocol: ${protocolFilter}. Supported: ${POOL_PROTOCOLS.join(", ")}.`);
       }
-      const protocols = wanted ? [wanted as PoolProtocol] : [...POOL_PROTOCOLS];
-
-      const failures: Array<{ protocol: string; error: string }> = [];
-      const searches: Array<{ protocol: PoolProtocol; type: string }> = [];
-      for (const protocol of protocols) {
-        let templates: string[];
-        try {
-          templates = await poolTemplates(protocol);
-        } catch (err) {
-          failures.push({ protocol, error: describeError(err, getNetwork()) });
-          continue;
-        }
-        for (const t of templates) {
-          searches.push({ protocol, type: t.replace("{A}", typeA).replace("{B}", typeB) });
-          searches.push({ protocol, type: t.replace("{A}", typeB).replace("{B}", typeA) });
-        }
-      }
-
-      const found = await Promise.all(
-        searches.map(async ({ protocol, type }) => {
-          try {
-            return await allObjectsOfType(type);
-          } catch (err) {
-            failures.push({ protocol, error: describeError(err, getNetwork()) });
-            return [];
-          }
-        }),
-      );
-      if (searches.length === 0 || failures.length === searches.length) {
-        return errorResult(`Could not search for pools: ${failures.map((f) => `${f.protocol}: ${f.error}`).join("; ")}`);
-      }
-
-      const pools = found.flatMap((nodes, i) =>
-        nodes.map((n) => {
-          const objectType = n.asMoveObject?.contents?.type?.repr ?? searches[i].type;
-          const [poolA, poolB] = extractTypeParams(objectType);
+   const result = await searchPoolPairs([[typeA, typeB]], wanted ? [wanted as PoolProtocol] : [...POOL_PROTOCOLS]);
+   // A common pair has over a thousand pools on one venue; the list pages, the counts cover every pool.
+   const start = offset ?? 0;
+   const callArgs = { token_a, token_b, ...(protocolFilter ? { protocol: protocolFilter } : {}) };
+   const nextCall = (from: number): NextCall => ({ tool: "find_pools", args: { ...callArgs, offset: from } });
+   const page = result.pools.slice(start);
+   const indices = new Map(page.map((row, index) => [row, start + index]));
+   const { payload } = capPayload("find_pools", { ...callArgs, offset: start }, { pools: page }, {
+    pools: {
+     budget: FIND_POOLS_LIST_BUDGET, keepOrder: true,
+     covers: (row: PoolCandidate) => [indices.get(row)!],
+     next_call: nextCall(start + 1),
+    } satisfies ListCap<PoolCandidate>,
+   }, { full: false, stored: { pools: result.pools }, next_call: nextCall(start + 1) });
+   const omitted = payload.omitted as { next_call: NextCall; lists: { pools: { from: number; next_call?: NextCall } } } | undefined;
+   if (omitted) {
+    const next = nextCall(start + (payload.pools as PoolCandidate[]).length);
+    omitted.next_call = next;
+    omitted.lists.pools.next_call = next;
+    omitted.lists.pools.from += start;
+   }
           return {
-            pool_id: n.address,
-            protocol: searches[i].protocol,
-            object_type: objectType,
-            // The pool's own order. Reserves and prices from get_pool_stats
-            // are keyed a/b in this order, whichever way round the query was.
-            token_a: poolA ?? null,
-            token_b: poolB ?? null,
-          };
-        }),
-      );
-
-      return {
-        content: [
-          {
+    isError: result.pools.length === 0 && result.venues.every((venue) => venue.status === "failed" || venue.status === "unsupported"),
+    content: [{
             type: "text" as const,
             text: JSON.stringify({
-              query: { token_a: typeA, token_b: typeB, protocol: protocolFilter ?? "all" },
-              pools,
-              total: pools.length,
-              ...(failures.length
+      query: { token_a: typeA, token_b: typeB, protocol: wanted ?? "all" },
+      venues: result.venues,
+      pairs_searched: result.pairs_searched,
+      total: result.pools.length,
+      ...(start ? { offset: start } : {}),
+      ...payload,
+      ...(result.venues.some((venue) => venue.status !== "complete")
                 ? {
                     incomplete: true,
-                    failed_searches: failures,
-                    incomplete_note: "Some pool types could not be read, so pools of those protocols may be missing from this list.",
+        failed_searches: result.venues.filter((venue) => venue.status === "failed").map(({ venue, error }) => ({ protocol: venue, error })),
+        incomplete_note: "Only venues marked complete finished their search. A missing pool in any other venue is not evidence of absence.",
                   }
                 : {}),
-              hint: pools.length > 0
-                ? "Use get_pool_stats with a pool_id for detailed reserves, fees, and prices."
-                : "No pools found. Try different token pairs or check that the coin types are correct.",
+      hint: result.pools.length > 0
+       ? "Pool IDs and coin types come from verified Move pool objects or the FlowX v2 factory. get_pool_stats does not decode every venue's reserve layout."
+       : "No pools were found in the completed venue searches; inspect venue statuses before concluding that none exist. Venues not listed in venues were not searched.",
             }),
-          },
-        ],
+    }],
       };
-    }
+  },
   );
 }
 
-const POOL_PROTOCOLS = ["cetus", "deepbook", "turbos", "bluemove"] as const;
+const POOL_PROTOCOLS = [
+ "cetus", "deepbook", "turbos", "bluemove", "bluefin", "momentum",
+ "flowx_clmm", "flowx_v2", "magma", "aftermath", "kriya_v2",
+] as const;
 type PoolProtocol = (typeof POOL_PROTOCOLS)[number];
 
-/**
- * Turbos's PoolConfig. Its `fee_map` lists every fee tier a pool can be
- * created with, and a Turbos pool's type is `Pool<A, B, FeeTier>`: a filter
- * on `Pool<A, B>` matches none of them.
- */
+export interface PoolCandidate {
+ pool_id: string;
+ protocol: PoolProtocol;
+ object_type: string;
+ token_a: string | null;
+ token_b: string | null;
+ /** Present when the pool deterministically names the fungible LP type. */
+ lp_type?: string;
+ /** Aftermath pools can contain more than two coins. */
+ coin_types?: string[];
+}
+
+export interface PoolVenueStatus {
+ venue: PoolProtocol;
+ status: "complete" | "incomplete" | "failed" | "unsupported";
+ searched: number;
+ pages: number;
+ error?: string;
+}
+
+export interface PoolDiscovery {
+ pools: PoolCandidate[];
+ venues: PoolVenueStatus[];
+ /** This search covers only these exact coin pairs, not every pool containing the coin. */
+ pairs_searched: Array<{ token_a: string; token_b: string }>;
+}
+
+const SUI_COIN = "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
+const USDC_COIN = "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
 const TURBOS_POOL_CONFIG = "0xc294552b2765353bcafa7c359cd28fd6bc237662e5db8f09877558d81669170c";
 const TURBOS_POOL = "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::Pool";
+const AFTERMATH_POOL = `${AFTERMATH_AMM_PACKAGE}::pool::Pool`;
 
-/** Pool type templates per protocol, `{A}` and `{B}` standing for the coin types. */
-async function poolTemplates(protocol: PoolProtocol): Promise<string[]> {
-  switch (protocol) {
-    case "cetus":
-      return ["0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::Pool<{A}, {B}>"];
-    case "bluemove":
-      return ["0xb24b6789e088b876afabca733bed2299fbc9e2d6369be4d1acfa17d8145454d9::swap::Pool<{A}, {B}>"];
-    case "deepbook":
-      return [
-        // v3, where DeepBook trades today, and the retired v2 order books.
-        "0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809::pool::Pool<{A}, {B}>",
-        "0x158f2027f60c89bb91526d9bf08831d27f5a0fcb0f74e6698b9f0e1fb2be5d05::clob_v2::Pool<{A}, {B}>",
-      ];
-    case "turbos": {
+const POOL_COIN_ARG = coinTypeArg();
+
+function canonicalPoolCoinType(value: string): string | null {
+ const parsed = POOL_COIN_ARG.safeParse(value.startsWith("0x") ? value : `0x${value}`);
+ if (!parsed.success) return null;
+ try {
+  return normalizeStructTag(parsed.data);
+ } catch {
+  return null;
+ }
+}
+
+/** Defining versions, not the currently-called package versions: Move object types retain these addresses. */
+const EXACT_POOL_TYPES: Partial<Record<PoolProtocol, string[]>> = {
+ cetus: ["0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::Pool"],
+ deepbook: [
+  "0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809::pool::Pool",
+  "0x158f2027f60c89bb91526d9bf08831d27f5a0fcb0f74e6698b9f0e1fb2be5d05::clob_v2::Pool",
+ ],
+ bluemove: ["0xb24b6789e088b876afabca733bed2299fbc9e2d6369be4d1acfa17d8145454d9::swap::Pool"],
+ bluefin: ["0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267::pool::Pool"],
+ momentum: ["0x70285592c97965e811e0c6f98dccc3a9c2b4ad854b3594faab9597ada267b860::pool::Pool"],
+ flowx_clmm: ["0x25929e7f29e0a30eb4e692952ba1b5b65a3a4d65ab5f2a32e1ba3edcb587f26d::pool::Pool"],
+ magma: ["0x4a35d3dfef55ed3631b7158544c6322a23bc434fe4fca1234cb680ce0505f82d::pool::Pool"],
+ kriya_v2: [`${KRIYA_V2_PACKAGE}::spot_dex::Pool`],
+};
+
+/** Turbos's config names every fee marker used as Pool<A, B, FeeTier>. */
+async function poolBases(protocol: PoolProtocol): Promise<string[]> {
+ if (protocol !== "turbos") return EXACT_POOL_TYPES[protocol] ?? [];
       const data = await gqlQuery<{
         object: { asMoveObject?: { contents?: { json?: { fee_map?: { contents?: Array<{ key: string }> } } } } } | null;
       }>(`query($id: SuiAddress!) { object(address: $id) { asMoveObject { contents { json } } } }`, { id: TURBOS_POOL_CONFIG });
-      const tiers = data.object?.asMoveObject?.contents?.json?.fee_map?.contents?.map((e) => e.key) ?? [];
-      if (tiers.length === 0) throw new Error("Turbos's pool config listed no fee tiers");
-      return tiers.map((fee) => `${TURBOS_POOL}<{A}, {B}, ${fee.startsWith("0x") ? fee : `0x${fee}`}>`);
-    }
+ const tiers = data.object?.asMoveObject?.contents?.json?.fee_map?.contents?.map((entry) => entry.key) ?? [];
+ if (!tiers.length) throw new Error("Turbos pool config listed no fee tiers");
+ if (tiers.some((fee) => !/^(?:0x)?[0-9a-fA-F]{1,64}::[A-Za-z_][A-Za-z_0-9]*::[A-Za-z_][A-Za-z_0-9]*$/.test(fee))) {
+  throw new Error("Turbos pool config contains an invalid fee type");
   }
+ return [...new Set(tiers.map((fee) => `${TURBOS_POOL}<{A}, {B}, ${fee.startsWith("0x") ? fee : `0x${fee}`}>`))];
 }
 
-/** Pages a type filter holds, at 50 objects each, before it is reported as failed rather than cut short. */
 const MAX_POOL_PAGES = 20;
-
+/** Wall-clock budget for `discoverCoinPools`; a venue read stopped by it is `incomplete`. */
+export const DISCOVERY_TIME_BUDGET_MS = 30_000;
+/** Characters of pool rows per find_pools response. */
+const FIND_POOLS_LIST_BUDGET = 30_000;
 interface PoolNode {
   address: string;
-  asMoveObject?: { contents?: { type?: { repr?: string } } };
+ asMoveObject?: { contents?: { type?: { repr?: string }; json?: Record<string, unknown> } };
+}
+interface PoolPageRead {
+ nodes: PoolNode[];
+ pages: number;
+ complete: boolean;
+ error?: string;
 }
 
-/** Every object of one exact type, paged to the end. */
-async function allObjectsOfType(type: string): Promise<PoolNode[]> {
+/** A capped scan keeps its matching rows but cannot certify absence beyond its last cursor. */
+async function readPoolPages(type: string, withJson: boolean, deadline?: number): Promise<PoolPageRead> {
   const out: PoolNode[] = [];
   let after: string | null = null;
   for (let page = 0; page < MAX_POOL_PAGES; page++) {
-    const data: {
-      objects: { nodes: PoolNode[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
-    } = await gqlQuery(
+  if (deadline !== undefined && page > 0 && Date.now() > deadline) {
+   return { nodes: out, pages: page, complete: false, error: `Stopped at the ${DISCOVERY_TIME_BUDGET_MS / 1000} s time budget after ${page} page${page === 1 ? "" : "s"} (${out.length} objects); more pools may remain` };
+  }
+  let data: { objects: { nodes: PoolNode[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } };
+  try {
+   data = await gqlQuery(
       `query($type: String!, $after: String) {
         objects(filter: { type: $type }, first: 50, after: $after) {
-          nodes { address asMoveObject { contents { type { repr } } } }
+       nodes { address asMoveObject { contents { type { repr } ${withJson ? "json" : ""} } } }
           pageInfo { hasNextPage endCursor }
         }
       }`,
       { type, after },
     );
-    out.push(...data.objects.nodes);
-    if (!data.objects.pageInfo.hasNextPage) return out;
-    after = data.objects.pageInfo.endCursor;
-    if (!after) break;
+   if (!data.objects?.pageInfo || !Array.isArray(data.objects.nodes)) throw new Error("Pool list response was incomplete");
+  } catch (err) {
+   return { nodes: out, pages: page + 1, complete: false, error: describeError(err, getNetwork()) };
   }
-  throw new Error(`more than ${out.length} objects of ${type}; the list was not read to the end`);
+    out.push(...data.objects.nodes);
+  if (!data.objects.pageInfo.hasNextPage) return { nodes: out, pages: page + 1, complete: true };
+    after = data.objects.pageInfo.endCursor;
+  if (!after) return { nodes: out, pages: page + 1, complete: false, error: "Pool list has more rows but no continuation cursor" };
+  }
+ return { nodes: out, pages: MAX_POOL_PAGES, complete: false, error: `Stopped after ${MAX_POOL_PAGES} pages (${out.length} objects); more pools remain` };
+}
+
+function matchesPair(a: string, b: string, pairs: Array<[string, string]>): boolean {
+ return pairs.some(([x, y]) => (a === x && b === y) || (a === y && b === x));
+}
+
+function candidateOf(node: PoolNode, protocol: PoolProtocol, base: string, pairs: Array<[string, string]>): PoolCandidate | null {
+ const objectType = node.asMoveObject?.contents?.type?.repr;
+ if (!objectType?.startsWith(`${base}<`)) return null;
+ const args = extractTypeParams(objectType);
+ if (args.length !== (protocol === "turbos" ? 3 : 2)) return null;
+ const a = canonicalPoolCoinType(args[0]);
+ const b = canonicalPoolCoinType(args[1]);
+ if (!a || !b || !matchesPair(a, b, pairs)) return null;
+ return { pool_id: node.address, protocol, object_type: objectType, token_a: a, token_b: b };
+}
+
+function aftermathCandidates(read: PoolPageRead, pairs: Array<[string, string]>): { pools: PoolCandidate[]; unread: number } {
+ const pools: PoolCandidate[] = [];
+ let unread = 0;
+ for (const node of read.nodes) {
+  const objectType = node.asMoveObject?.contents?.type?.repr;
+  const args = objectType?.startsWith(`${AFTERMATH_POOL}<`) ? extractTypeParams(objectType) : [];
+  const names = node.asMoveObject?.contents?.json?.type_names;
+  if (args.length !== 1 || !Array.isArray(names) || names.length < 2) { unread++; continue; }
+  const coins = names.map((name) => typeof name === "string" ? canonicalPoolCoinType(name) : null);
+  if (coins.some((coin) => !coin)) { unread++; continue; }
+  const types = coins as string[];
+  if (!pairs.some(([a, b]) => types.includes(a) && types.includes(b))) continue;
+  pools.push({
+   pool_id: node.address, protocol: "aftermath", object_type: objectType!,
+   token_a: types[0], token_b: types[1], coin_types: types, lp_type: args[0],
+  });
+ }
+ return { pools, unread };
+}
+
+/** The FlowX v2 factory bag stores PairMetadata<X,Y> under the exact LP-X-Y string. */
+async function flowxPairs(pairs: Array<[string, string]>): Promise<{ pools: PoolCandidate[]; status: PoolVenueStatus }> {
+ const status: PoolVenueStatus = { venue: "flowx_v2", status: "complete", searched: 0, pages: 0 };
+ const pools: PoolCandidate[] = [];
+ try {
+  const factory = await gqlQuery<{
+   object: { asMoveObject?: { contents?: { type?: { repr?: string }; json?: { pairs?: { id?: string } } } } } | null;
+  }>(`query($id: SuiAddress!) { object(address: $id) { asMoveObject { contents { type { repr } json } } } }`, { id: FLOWX_V2_CONTAINER });
+  status.pages++;
+  const body = factory.object?.asMoveObject?.contents;
+  const bag = body?.type?.repr === `${FLOWX_V2_PACKAGE}::factory::Container` ? body.json?.pairs?.id : undefined;
+  if (!bag || !/^0x[0-9a-fA-F]{64}$/.test(bag)) throw new Error("FlowX v2 factory pair bag could not be read");
+  const orders = new Map<string, readonly [string, string]>();
+  for (const [a, b] of pairs) {
+   orders.set(`${a}|${b}`, [a, b]);
+   orders.set(`${b}|${a}`, [b, a]);
+  }
+  const results = await Promise.all([...orders.values()].map(async ([a, b]) => {
+   status.searched++;
+   const id = flowxPairFieldId(bag, a, b);
+   try {
+    const data = await gqlQuery<{ object: { asMoveObject?: { contents?: { type?: { repr?: string }; json?: Record<string, unknown> } } } | null }>(
+     `query($id: SuiAddress!) { object(address: $id) { asMoveObject { contents { type { repr } json } } } }`,
+     { id },
+    );
+    const contents = data.object?.asMoveObject?.contents;
+    if (!data.object) return null;
+    const fieldType = contents?.type?.repr;
+    const metadata = fieldType && extractTypeParams(fieldType)[1];
+    const coins = metadata?.startsWith(`${FLOWX_V2_PACKAGE}::pair::PairMetadata<`) ? extractTypeParams(metadata) : [];
+    const name = `LP-${a.replace(/0x([0-9a-f]{64})/g, "$1")}-${b.replace(/0x([0-9a-f]{64})/g, "$1")}`;
+    const value = contents?.json?.value;
+    if (!fieldType?.startsWith("0x0000000000000000000000000000000000000000000000000000000000000002::dynamic_field::Field<") ||
+     coins.length !== 2 || canonicalPoolCoinType(coins[0]) !== a || canonicalPoolCoinType(coins[1]) !== b ||
+     contents?.json?.name !== name || !value || typeof value !== "object") {
+     throw new Error(`FlowX pair field ${id} did not match its requested coin types`);
+    }
+    return {
+     pool_id: id, protocol: "flowx_v2" as const, object_type: fieldType, token_a: a, token_b: b,
+     lp_type: `${FLOWX_V2_PACKAGE}::pair::LP<${a}, ${b}>`
+    };
+   } catch (err) {
+    status.status = "failed";
+    status.error = [status.error, describeError(err, getNetwork())].filter(Boolean).join("; ");
+    return null;
+   }
+  }));
+  status.pages += orders.size;
+  pools.push(...results.filter((result): result is NonNullable<typeof result> => result !== null));
+ } catch (err) {
+  status.status = "failed";
+  status.error = describeError(err, getNetwork());
+ }
+ return { pools, status };
+}
+
+async function searchVenue(protocol: PoolProtocol, pairs: Array<[string, string]>, deadline?: number): Promise<{ pools: PoolCandidate[]; status: PoolVenueStatus }> {
+ if (protocol === "flowx_v2") return flowxPairs(pairs);
+ const status: PoolVenueStatus = { venue: protocol, status: "complete", searched: 0, pages: 0 };
+ if (protocol === "turbos") status.pages = 1; // PoolConfig fee-tier read.
+ const pools: PoolCandidate[] = [];
+ let bases: string[];
+ try {
+  bases = protocol === "aftermath" ? [AFTERMATH_POOL] : await poolBases(protocol);
+  if (!bases.length) throw new Error("No verified pool type for venue");
+ } catch (err) {
+  return { pools, status: { ...status, status: "failed", error: describeError(err, getNetwork()) } };
+ }
+ const selectors = protocol === "aftermath" ? bases.map((type) => ({ type, base: type })) :
+  bases.flatMap((base) => {
+   const orders = pairs.flatMap(([a, b]) => a === b ? [[a, b]] : [[a, b], [b, a]]);
+   return orders.map(([a, b]) => ({
+    base,
+    type: base.includes("{A}") ? base.replace("{A}", a).replace("{B}", b) : `${base}<${a}, ${b}>`,
+   }));
+  });
+ const unique = new Map<string, (typeof selectors)[number]>();
+ for (const selector of selectors) unique.set(selector.type, selector);
+ const reads = await Promise.all([...unique.values()].map(async ({ type, base }) => ({ type, base, read: await readPoolPages(type, protocol === "aftermath", deadline) })));
+ status.searched = unique.size;
+ for (const { type, base, read } of reads) {
+  status.pages += read.pages;
+  if (!read.complete) {
+   const capped = read.error?.startsWith("Stopped ") || read.error?.includes("no continuation cursor");
+   if (!capped || status.status !== "failed") status.status = capped ? "incomplete" : "failed";
+   status.error = [status.error, `${type}: ${read.error}`].filter(Boolean).join("; ");
+  }
+  if (protocol === "aftermath") {
+   const parsed = aftermathCandidates(read, pairs);
+   pools.push(...parsed.pools);
+   if (parsed.unread) {
+    if (status.status === "complete") status.status = "incomplete";
+    status.error = [status.error, `${parsed.unread} Aftermath pool objects lacked readable coin types`].filter(Boolean).join("; ");
+   }
+  } else {
+   let unread = 0;
+   let firstUnread: string | undefined;
+   for (const node of read.nodes) {
+    const candidate = candidateOf(node, protocol, base.split("<")[0], pairs);
+    if (candidate) pools.push(candidate);
+    else {
+     unread++;
+     firstUnread ??= node.address;
+    }
+   }
+   if (unread) {
+    if (status.status === "complete") status.status = "incomplete";
+    status.error = [status.error, `${unread} pool objects lacked matching types (first: ${firstUnread})`].filter(Boolean).join("; ");
+   }
+  }
+ }
+ return { pools, status };
+}
+
+async function searchPoolPairs(pairs: Array<[string, string]>, protocols: PoolProtocol[], deadline?: number): Promise<PoolDiscovery> {
+ const unique = new Map<string, [string, string]>();
+ for (const [a, b] of pairs) unique.set(a < b ? `${a}|${b}` : `${b}|${a}`, [a, b]);
+ const distinct = [...unique.values()];
+ const pairs_searched = distinct.map(([token_a, token_b]) => ({ token_a, token_b }));
+ if (getNetwork() !== "mainnet") return {
+  pools: [], pairs_searched,
+  venues: protocols.map((venue) => ({
+   venue, status: "unsupported", searched: 0, pages: 0,
+   error: "Verified pool packages and registry IDs are mainnet-only"
+  })),
+ };
+ const outcomes = await Promise.all(protocols.map((protocol) => searchVenue(protocol, distinct, deadline)));
+ const byId = new Map<string, PoolCandidate>();
+ for (const outcome of outcomes) for (const pool of outcome.pools) byId.set(pool.pool_id, pool);
+ return { pools: [...byId.values()], venues: outcomes.map((outcome) => outcome.status), pairs_searched };
+}
+
+/** Exact SUI/USDC counterpart discovery within `DISCOVERY_TIME_BUDGET_MS`; other pairs are intentionally outside this call's scope. */
+export async function discoverCoinPools(coinType: string): Promise<PoolDiscovery> {
+ const coin = canonicalPoolCoinType(coinType);
+ if (!coin) throw new Error(`Invalid coin type: ${coinType}`);
+ const counterparts = [SUI_COIN, USDC_COIN].filter((type) => type !== coin);
+ return searchPoolPairs(counterparts.map((other) => [coin, other]), [...POOL_PROTOCOLS], Date.now() + DISCOVERY_TIME_BUDGET_MS);
 }

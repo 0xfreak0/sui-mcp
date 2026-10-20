@@ -142,4 +142,18 @@ describe("sample_control_addresses", () => {
     const eventsCall = mockGqlQuery.mock.calls.find(([q]) => String(q).includes("events("))!;
     expect(eventsCall[1].filter.module).toBe(`${P2}::kiosk`);
   });
+
+  it("says an undersampled population's event type was not checked when its origins were unread", async () => {
+    mockGqlQuery.mockImplementation(async (q: string) => {
+      if (q.includes("typeOrigins")) throw new Error("rate limited");
+      return { events: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } };
+    });
+
+    const handler = tools.get("sample_control_addresses")!;
+    const result = await handler({ event_type: `0x${"6c".repeat(32)}::pool::SwapEvent`, size: 5, seed: 1 });
+    const data = JSON.parse(result.content[0].text);
+
+    expect(data.event_type_resolution?.unverified).toBe(true);
+    expect(data.warning).toMatch(/type origins could not be read/);
+  });
 });

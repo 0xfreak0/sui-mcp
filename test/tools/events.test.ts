@@ -84,6 +84,57 @@ describe("query_events", () => {
 
     expect(data.events).toHaveLength(0);
     expect(data.has_next_page).toBe(false);
+    expect(data.no_results_hint).toMatch(/No events matched/);
+  });
+
+  it("does not report a continuation's empty last page as a window with no matches", async () => {
+    mockGqlQuery.mockResolvedValue({
+      events: {
+        nodes: [],
+        pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null },
+      },
+    });
+
+    const result = await tools.get("query_events")!({ sender: "0xabc", cursor: "C1" });
+    const data = JSON.parse(result.content[0].text);
+
+    expect(data.events).toHaveLength(0);
+    expect(data.has_next_page).toBe(false);
+    expect(data.no_results_hint).toMatch(/past this cursor/);
+    expect(data.no_results_hint).not.toMatch(/No events matched/);
+  });
+
+  it("does not claim absence when a type's defining package could not be read", async () => {
+    mockGqlQuery.mockImplementation(async (q: string) => {
+      if (q.includes("typeOrigins")) throw new Error("rate limited");
+      return {
+        events: {
+          nodes: [],
+          pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null },
+        },
+      };
+    });
+
+    const result = await tools.get("query_events")!({ event_type: "0x8888::pool::BorrowEvent" });
+    const data = JSON.parse(result.content[0].text);
+    expect(data.events).toEqual([]);
+    expect(data.event_type_resolution.unverified).toBe(true);
+    expect(data.no_results_hint).toMatch(/cannot establish absence/);
+  });
+
+  it("rejects an absent event struct before sending an empty-result query", async () => {
+    mockGqlQuery.mockResolvedValue({
+      package: {
+        typeOrigins: [
+          { module: "margin_manager", struct: "LiquidationEvent", definingId: "0x7777" },
+          { module: "margin_manager", struct: "LoanBorrowedEvent", definingId: "0x7777" },
+        ],
+      },
+    });
+    const result = await tools.get("query_events")!({ event_type: "0x7777::margin_manager::AccountLiquidated" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("LiquidationEvent");
+    expect(mockGqlQuery.mock.calls.filter(([q]) => String(q).includes("events("))).toHaveLength(0);
   });
 
   it("pages newest first by default and hands back the older page's cursor", async () => {

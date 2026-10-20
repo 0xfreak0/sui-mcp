@@ -228,6 +228,13 @@ active since 2023 returned nothing, and its `activity_hours` described 2023.
   within a minute, which is fine for a point and wrong for an edge: a minute
   is a third of a three-minute incident window. Both edges are inclusive in
   time; they resolve concurrently against one latest-checkpoint anchor.
+- **The list tools take ISO dates directly.** `query_events` and
+  `query_transactions` call `resolveWindow` on their existing
+  `after_checkpoint` / `before_checkpoint` arguments. The names also accept
+  checkpoint numbers; descriptions must lead with dates so a caller does not
+  binary-search checkpoint numbers first. `aggregate_events` uses `from` /
+  `to`. Keep one pair of window arguments per tool so cursor continuations
+  cannot disagree about the window.
 - **Parse before probing.** An unparseable bound is an error before any
   request, never a silently unbounded read.
 - **A budget that stops a walk says where.** `build_timeline` reports per
@@ -271,6 +278,19 @@ TRANSACTION:
   `typeOrigins` and rewrites an `event_type` filter; a module- or
   package-level type spanning several defining IDs keeps one and lists the
   rest as `event_type_resolution`.
+  A readable lineage whose requested full struct name is absent is an input
+  error, with candidate structs from `typeOrigins`; so is a module-level
+  `event_type` naming a module that defines no struct in the lineage. Do not
+  query that name and present an empty page as chain evidence. The error
+  lists only whole candidates that fit `MAX_ERROR_CHARS`, since a cut inside
+  a type reads as a different type. A failed or unavailable origins
+  read is `event_type_resolution.unverified`, and a zero-match result cannot
+  establish absence. `typeOrigins` lists every struct and enum, emitted or
+  not, so suggestions must not claim each candidate was emitted. The
+  event's `transactionModule` is the module of the call that emitted it,
+  which can differ from the module defining its struct: DeepBook margin's
+  `margin_manager::LiquidationEvent` was emitted by
+  `liquidation_vault` through a separately published package.
 - **An event's emitting module carries whichever id the checkpoint's era
   used**, not a fixed rewrite. `relocate_event_module` turned on at a
   different checkpoint on each network, read from each epoch's protocol
@@ -435,6 +455,68 @@ pool of gas coins.
   note says so and `coins_delivered_to` names them: the Volo drain
   `7pTrudZb…` created its WBTC and XAUm for 0xd763…, not for the sender, and
   used to read as "no object changed custody".
+
+### Swap labels come from the pools' own events
+
+`get_transaction` passes the transaction's events, its inputs' object ids
+and its changed objects' types to `decodeTransaction` (`swapEvidence`), and
+`src/utils/pool-swap-events.ts` reads each pool swap from its event: the
+coins an event names (`types_in`/`types_out`, a router's `from`/`target`,
+`readSwap`'s coin-named shapes), else its direction flag (`atob`, `a2b`,
+`a_to_b`, `x_for_y`, or the side an amount went in on) against the pool
+object's first two type arguments. A call's type-argument order and the
+sender's net change are only the fallback. Calls into routers name their
+coins in whatever order the integration chose, and a sender's net nets every
+leg of a PTB, so the guess read Astros, 7k and FlowX routes backwards.
+
+- **An event goes to the call that ran it.** A swap is placed on the call
+  that takes its pool as an argument and whose package and module could have
+  emitted it (`eventCommands`), and never on a call whose function starts
+  with `repay`, since a flash swap's repay takes the same pool. When no call
+  that could have emitted it takes the pool (a router reaching the pool
+  through an object of its own), it goes to the one call that could have
+  emitted it. Several swaps of one pool that each fit several calls pair with
+  those calls in order only when there are as many calls as swaps; any other
+  swap labels nothing rather than a guessed call.
+- **A call whose swaps are not all read keeps the fallback.** A call that may
+  have run a swap left unplaced, or a swap-named event about a changed
+  object that does not read as a swap (Kriya's `spot_dex::SwapEvent<T>`
+  states amounts but no direction; Nemo's `market::SwapEvent` trades PT,
+  which is not a coin), takes no label from events, so a label never lists
+  only some of a call's swaps. An unread event with a readable event of
+  another type for the same pool right beside it is that swap's echo, and
+  the readable one labels it (Cetus aggregator's `KriyaSwapEvent` beside
+  Kriya's own).
+- **A router's echo is the same swap.** An event of another type after a
+  pool's event, naming the same pool and direction (Cetus aggregator's
+  `router::SwapEvent`, FlowX's `BluefinSwapEvent`), is one swap when no
+  swap-named event sits between them. The pool's own `Pay` or fee events
+  can come first: FlowX CLMM emits `Swap`, `Pay`, then the aggregator's
+  echo, and Full Sail emits an `UpdateFeeGrowthGlobalEvent` before it. Two
+  events of one type are two swaps. Oracle a applies the same rule.
+- **A call with events gets one label per swap, whatever its name**, unless
+  the registry names it as an operation other than a swap (a deposit, a
+  liquidity add): an unnamed wrapper (`bluefin::swap_b2a` of an arbitrage
+  bot, Momentum's `trade::flash_swap`) is labelled from its pool.
+- **A flash swap that the PTB repays is a swap.** The pool took one coin in
+  and paid the other out; the repay pays the input coin. A registry
+  `flash_swap` (`pool::flash_swap`) becomes `Swap` when the event states the
+  direction and a later call into the same package and module starts with
+  `repay`. Bluefin's `FlashSwap` events are read as swaps for the same
+  reason (`readSwap` with `flash`).
+- **A one-coin leg is read from its neighbours.** A swap call naming one
+  coin (`swap_exact_x_to_y<STSUI>`, its SUI side implicit) with no event of
+  its own, between two event-read swaps that take one of the same results,
+  takes in what the swap before it gave out and gives out what the swap
+  after it takes in, when the coin it names is one of the two
+  (`oneCoinSwaps`). Otherwise it keeps the coinless `Swap on X` label.
+- **Swap contexts read events first.** A context call with events reads as
+  those swaps, which also settles a context whose type arguments read two
+  ways; the remaining calls use the holding rule. A context whose calls are
+  all read hides its own route-wide label.
+- **Only `get_transaction` has the evidence.** `get_transaction_history`,
+  `build_timeline`, `trace_funds` and the flow graphs decode without events
+  and keep the fallback, so their swap direction is a lead, not a reading.
 
 ## Completeness beats payload size
 
@@ -880,6 +962,62 @@ profile and the `enable_tools` call. `explainDisabledTools` in `toolset.ts`
 wraps the SDK's `tools/call` handler as the SDK installs it, so it must run
 before the first tool registers.
 
+### Untrusted text in tool results
+
+`withNetworkParam` passes every registered tool result through
+`protectToolResult` before creating `structuredContent`. Human-readable names,
+descriptions, URLs, labels, display/content fields and decoded JSON strings
+are attacker-controlled data, even when a provider supplied them. One
+`untrusted_text` field per JSON result marks the boundary without wrapping
+every row. Do not copy those strings into tool guidance or interpret directions
+inside them. Preserve addresses, digests, numeric strings and Move type tags
+exactly; mutating a lookup key breaks follow-up calls. Code listings preserve
+lines and type tags, so they are marked but exempt from the per-field cut.
+Plain-text reports and diagrams preserve their line breaks. New text-bearing
+fields need to be covered by the boundary's field rules
+(`src/utils/untrusted-text.ts`). Rules a change is likely to break:
+
+- **Hidden characters are shown in every string and key**, whatever the key.
+  No identity contains one, so this costs nothing, and a server sentence that
+  quotes a label (`summary`, `stop_reason`) is covered by it. The set includes
+  the tag block (U+E0000 to U+E007F), which spells ASCII a reader does not
+  see, the variation selectors and every `Default_Ignorable_Code_Point`; a
+  ZWJ or ZWNJ inside an emoji sequence or a non-Latin word, one selector
+  after an emoji and the tags of the England, Scotland and Wales flags are
+  kept. Any other tag letters after a black flag draw a plain flag and spell
+  hidden text, so they are shown. A key whose shown spelling another key
+  already holds (an author can write the escape text itself) takes a
+  numbered name rather than keeping its hidden character. A text item that
+  is a JSON string or number is shown like prose.
+- **Inside decoded chain data, keys are the author's.** Under `parsed`,
+  `json`, `data` (query_events), `content`, `display`, an object under
+  `sample` (aggregate_events) and the other raw keys a string keeps its
+  spelling only when it is a Move type tag, and a key that is not a Move
+  identifier or a type tag is escaped. Exempting by key name there let an
+  event field named `token_type`, `amount` or `code` pass markup and bidi
+  overrides. A diff's `sample` is a list of code lines and is not decoded
+  data.
+- **A Move type tag keeps its spelling under any key**, including a declared
+  type with type parameters (`Balance<T0>`) or primitives only
+  (`vector<u8>`), and so does a whole URL: valid URL characters form no
+  markup, and escaping `&` or `_` broke links a caller follows. `&` is
+  escaped only as the start of an entity, and `_` only where it can open
+  emphasis (not after a letter or digit, not before a space), so an
+  identifier such as `swap_exact_input_` keeps its spelling.
+- **A `{ tool, args }` call keeps its arguments under any key**
+  (`see`, `sample_next_call`, `*_next_call`), so it stays callable. Hidden
+  characters in them are still shown.
+- **A decoded PTB argument is text.** `decode_ptb` shows a pure `String`
+  under `value`, which is a readable field. A value that is hex bytes
+  (`0x…`) is never escaped or cut under any key: a pure `vector<u8>` such as
+  an oracle update runs past 5,000 characters and is evidence.
+- **Error messages show hidden characters only** (`escapeHidden`), so a type
+  tag quoted back keeps its `<` and `>`.
+- **The cap counts code points** and never ends between a character and its
+  joiner, selector or combining mark.
+- **A stored-result page guards each row under its list's field name**
+  (`guardAtPath`), the rules the tool's own response used.
+
 ## Writing documentation
 
 README, the docs site (`site/src/content/docs/`), CONTRIBUTING and the
@@ -1037,9 +1175,11 @@ since a tool with a wall-clock budget (`SCAN_TIME_BUDGET_MS` in
 `get_top_holders`) reads less while it waits on a shared window.
 
 `oracle-pass.mjs` checks answers on subjects drawn at random each run, from
-the effects version 1 era, later and the newest checkpoints, router
-transactions and registry coins, against the same fact read from the chain
-by another path: swap labels against pool events, object ends and object
+the effects version 1 era, later and the newest checkpoints, transactions of
+each swap router in `ROUTERS` (Aftermath, Cetus aggregator v1 and v3
+contexts, 7k, FlowX, Astros; tallied per router) and registry coins, against
+the same fact read from the chain by another path: swap labels against pool
+events, object ends and object
 changes against GraphQL `objectChanges` (effects version 1 against its own
 BCS), mint authority against the registry and a `TreasuryCap<T>` type query,
 flows against `balanceChanges`, cap owners against live owners, first
@@ -2504,6 +2644,113 @@ Only bridge chain ids observed on mainnet (0 = Sui, 10 = Ethereum) map to
 CAIP-2. Testnet/custom variants are reported by number, same non-guessing rule
 as Wormhole.
 
+### Liquidity custody is current unless read at an incident checkpoint
+
+`find_pools` searches exact pool types for a token pair and reports per-venue
+coverage. `analyze_token` searches only SUI and mainnet-USDC pairs and inspects
+at most three pools per page, ordered by their current SUI or USDC reserve
+valued at the current SUI price (`counterpart_reserve_usd`). Ordered by the
+token's own reserve, a healthy coin's report opened on dead pools that buyers
+had emptied of SUI and read as drained. Without a SUI price the token's
+reserve orders them and `selection` says a drained pool may come first. A
+venue's failed or bounded read never establishes absence. A pool's creator
+and an LP recipient at creation are historical facts; the current holder
+scan is not a historical snapshot. A deleted position or an LP coin burned
+on withdrawal is no longer in the current holders. Keep the creation
+transaction and the position's last touch as leads; check the position
+history or holder balance at the incident checkpoint before asserting who
+could withdraw then.
+
+An LP coin resides in coin objects and address balances, so a holder scan
+must read both. CLMM positions are NFTs: do not treat the pool's current
+active liquidity as the sum of all its position liquidity. A partial scan
+has no pool-wide position denominator and gives no concentration or
+absence verdict. A kiosk's declared owner is not the cap's holder. An
+object holding a position or LP coin is not automatically a locker; a
+known locker needs its package's withdrawal authority verified before
+claiming the liquidity is locked. Reserved unspendable addresses such as
+0x0 count as burned only when they currently own the LP or position.
+
+A failed owner-kind read must not become `wallet`: `fetchKinds` omits that
+address, while `describeAddresses` defaults its kind to wallet. An object
+holder is `object` and a package address `package`, never a protocol: the
+holder kind must not suggest the liquidity is locked. A position kept as a
+dynamic object field is owned by its `dynamic_field::Field`, so the row is
+re-keyed to the object owning that Field (a kiosk, a vault); otherwise
+`kiosk` could never be reported for a position.
+
+Cetus and Magma expose a linked active-position table in the pool state; enumerate
+that table and read each NFT owner to get complete current shares when the
+walk finishes. A position in the table that is not a top-level object
+(wrapped in a farm or a burn certificate) goes to `owner_unread` with its
+amounts and share; it does not make the scan incomplete, the same rule as
+`unresolved_owners` in the holder scan. Counting it as incompleteness
+nulled every share of every pool holding one wrapped position. A table read
+short of its end has no pool total: `total_liquidity_raw` is null, never
+the sum of the positions read. A CLMM position's raw liquidity L cannot be
+used as its fraction of the pool's reserves when tick ranges differ. Use the
+position's tick bounds, current tick and sqrt price to derive its
+withdrawable A and B amounts, grouping the positions by owner before
+dividing each coin's amounts by the whole scanned pool's position amounts.
+Fees and rewards are separate. A type-wide NFT scan on the other CLMMs
+usually hits its object-ID bound before the pool's positions. Missing owners
+there are not zero holdings, and a scan that reaches the end still omits
+wrapped positions: it counts as complete only when its in-range positions'
+liquidity equals the pool's active `liquidity`.
+
+For fungible LP coins, reconcile the scanned holders' balances to the pool's
+minted supply before calling their shares complete; coins inside other
+objects may not appear in the coin-object or address-balance walks. LP the
+pool keeps for itself counts on the pool's side of the reconciliation:
+BlueMove's `minimum_liq` balance and Aftermath's `illiquid_lp_supply`. FlowX
+v2's pending protocol fee mint is not minted yet and is not in the supply.
+BlueMove's reserves are `reserve_x`/`reserve_y`; its `token_x`/`token_y`
+balances read zero.
+
+On an incomplete scan `publisher_liquidity_raw` and `burned_liquidity_raw`
+are null unless such a holder was observed: a zero there read as "the
+publisher holds none". CLMM sums carry the paired coin too, since an
+out-of-range position can hold none of the queried coin. `burned_positions`
+counts initial positions an unspendable address holds with liquidity still
+in them; an emptied position sent to 0x0 locks nothing. A Turbos NFT holds
+no liquidity, so its position object is read for it.
+
+Removals are matched by each venue's own event (`REMOVAL_EVENTS` in
+`liquidity-origin.ts`, every type read off a mainnet event) and must name
+the pool. A `Remove*Liquidity` name pattern missed Turbos, Bluefin, FlowX,
+Aftermath and Kriya, and on a dead pool whose ten newest transactions were
+all read, an empty list then read as "no withdrawal". An event removing
+zero liquidity is a fee collection. The creation transaction is the
+earliest retained version's only when it created the pool (`idCreated`);
+a position's last touch is its last affecting transaction, which includes
+the one that deleted or wrapped it. An initial position with no current
+object carries `ended`, read from that transaction's gRPC effects with
+`objectEndKind`: `deleted` means it was closed, and a CLMM position closes
+only once its liquidity is removed; `wrapped` means another object holds
+it, which a burn certificate and a farm both do. Both read as a null object,
+and only the effects tell a closed position from one held elsewhere. `ended_by` and
+each removal's sender are compared with the coin's publisher
+(`ended_by_publisher`, `sender_is_publisher`).
+
+A coin can have more than a thousand pools of one pair on one venue (DEEP
+has over a thousand Bluefin DEEP/SUI pools). Pool states are read in
+batches of 50, never one request each, and `find_pools` pages its list
+with `offset` while `total` counts every pool.
+
+`analyze_token` has two wall-clock budgets, checked between pages:
+`DISCOVERY_TIME_BUDGET_MS` (30 s) for pool discovery and
+`LIQUIDITY_TIME_BUDGET_MS` (35 s) shared by the position and LP-token scans
+(an LP coin's holder walk keeps its own `SCAN_TIME_BUDGET_MS`). A venue the
+budget stopped is `incomplete`; a stopped scan sets `time_budget_reached`
+and its `reason` counts what was read. Without them a slow or rate-limited
+endpoint had no bound but the page counts: DEEP's 1,076 pools took 113 s at
+`SUI_RATE_LIMIT=25`. `find_pools` has no time budget; its bound is 20 pages
+per pool type.
+
+A holder continuation includes the pool ID (`liquidity_holder_pool`) and the
+offset within that pool. Applying one pool's displayed count as a global
+offset to several pools repeats or skips another pool's holders.
+
 ### Holder scans rank a sample, not the chain
 
 `scanTokenTopHolders` walks `objects(filter: Coin<T>)` in **object-id order**,
@@ -3455,6 +3702,47 @@ Pure split and accounting rules in `src/utils/flow-graph.ts`, the BFS in
 `src/utils/flow-engine.ts`, renderers in `src/utils/flow-export.ts`. Rules a
 change is likely to break:
 
+- **A valued object changing custody is a separate asset branch.**
+  `readMovedObjects` supplies exact input/output versions and
+  `valueMovedObjects` values each handover at its checkpoint. The object ID
+  stays with the branch until its next `affectedObject` custody change; a
+  redemption passes its share to priced coin proceeds, bounded by the
+  object's value. A forward start transaction's branches are what addresses
+  gained, so they include an object created for an address other than the
+  sender; backward, what addresses gave up. An address start scans
+  `sentAddress` forward (an address-owned object leaves only in a
+  transaction its owner sends, and an object such a transaction creates for
+  another address is a handover too) and `affectedAddress` backward. Price an
+  object and a coin together before dividing the root share, so an unpriced
+  coin cannot take the stake's share. A coin filter deliberately omits
+  objects. List unvalued objects separately, only those moving in the traced
+  direction (an airdrop received does not make a forward graph incomplete),
+  and disclose that their value is outside the denominator; a failed version
+  read makes the graph incomplete. An object held by another object cannot
+  be attributed to a wallet by address alone: a move into or out of a
+  wrapper, a kiosk or a shared or frozen owner ends the branch as
+  `read_failed`, never as a redemption.
+- **Value drawn from a held position is a partial redemption.** A kept row
+  (`changed_in_place`) of the followed object passes the drawn part
+  (forward: a fall in value; backward: a rise) to that transaction's priced
+  coins and the object keeps the rest. Without it, a CLMM position whose
+  liquidity was removed, or an obligation whose collateral was withdrawn,
+  reads as `unspent` at full value. Objects of one transaction divide its
+  coins by the value each converted. Following an object skips the hub
+  check, since its identity does not mix with the holder's funds; its
+  holder's coin proceeds do mix, so they arrive from the previous holder and
+  the holder is hub-checked before they are followed.
+- **An address start counts a coin converted into an object once.** A coin
+  leg whose unpaid part went into an object the address handed over is the
+  same value as that handover: forward, an object created for the address
+  or written in place while it held it in the leg's transaction (opened,
+  then added to), or created in that transaction for another address;
+  backward, one the address received and then gave up or drew from in place.
+  `rootObjectLinks` moves that part of the leg's share onto the object, so a
+  stake made and then handed over is 100% the handover, never 50% consumed
+  and 50% handed over. The legs feeding one object together take at most its
+  value at the handover. Written-in-place objects come from `written.held`, a
+  field derived at fetch time, so adding it raised `TX_METHOD_VERSION` to 5.
 - **The trunk reads as many moves as the start.** A node carrying more than
   half the traced value is the start's continuation and gets
   `MOVES_PER_START_ADDRESS` instead of `MOVES_PER_NODE`, both directions. At

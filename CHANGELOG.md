@@ -19,6 +19,20 @@
   a probe of an address with large batch payouts stops at `query_budget`.
   `observed_but_below_threshold` lists each pair once with its signal types
   and weight; its evidence stays in `edges`.
+- **Human-readable chain and provider fields are marked as untrusted data.** Tool results add one `untrusted_text` note and show control, bidirectional, zero-width and Unicode tag characters as visible escapes in every field. Readable fields and decoded chain data also escape markup and are capped at 2,048 characters with an explicit count of the characters cut. Addresses, digests, amounts, Move type tags, hex byte arguments, URLs and code listings retain their original spelling.
+- **Fund-flow graphs follow valued object handovers.** `trace_flow_graph`
+  and `find_flow_path` trace StakedSui, priced positions and NFT estimates
+  across direct owner changes, onward coin redemptions and value withdrawn
+  from a position its holder keeps. Each object edge carries its ID, type,
+  checkpoint USD value and valuation tier. An address start counts a coin it
+  converted into an object and then handed over once, including deposits
+  added in place and objects it created for another address, and never
+  carves more than the object's value at the handover. A holder's redemption
+  proceeds are hub-checked before they are followed. Unvalued objects moving
+  in the traced direction are listed apart and do not receive a share; moves
+  into or out of a kiosk or wrapper and incomplete histories report their
+  bounds.
+- **Pool discovery and liquidity custody.** `find_pools` searches the CLMM and AMM venues supported by the position valuers and reports each venue's coverage or failure; its pool list pages with `offset` while `total` counts every pool. `analyze_token` checks current LP coin and position holders for the three pools against SUI and native USDC with the largest SUI or USDC reserve, identifies publisher and unspendable-address custody, and links pool creation to the minted positions and each venue's own liquidity-removal events. An initial position that no longer exists is marked closed or wrapped, and a closing or removal by the coin's publisher is marked. LP coin shares reconcile against minted supply, including LP the pool keeps for itself; Cetus positions whose holder cannot be read are counted under `owner_unread`. Holder scans and pool pages state their bounds, and `analyze_token`'s pool discovery (30 s) and position scans (35 s) stop at a time budget they report; past custody still requires transaction or object history.
 - **Mainnet address attribution includes more public disclosures.** MEXC’s SUI-network reserve wallets, Allbridge Core, LayerZero and Axelar deployments, and Suilend, Scallop and Bucket components carry their source document and retrieval date. Labels only claim the roles those documents name.
 - **Unreachable public sources retain explicit staleness.** A disclosure refresh that fails preserves its former labels with `stale` and `stale_since` in address results and trace descriptions rather than presenting them as newly checked.
 - **Active validators have checkpointed chain-state labels.** Each records its on-chain name, project URL, staking pool and verified operation-cap owner when the cap is directly address-owned. Refresh failures retain the prior snapshot marked stale; validator-supplied names are not independently verified legal identities.
@@ -29,6 +43,16 @@
 ### Changed
 - **Weekly data refresh defers to pending releases.** When Unreleased has entries, its data changes stay there without a version bump or automatic publish; an empty Unreleased section still permits a data-only patch.
 - **Verified-coin sync bounds metadata requests.** Aftermath coin metadata is fetched in batches of 100 with positional response checks; any failed batch leaves the shipped registry unchanged.
+- **Event type filters reject unknown full struct names with candidate types.**
+  `query_events`, `aggregate_events` and `sample_control_addresses` also
+  reject a module-level `event_type` whose module defines no struct, listing
+  the modules that do, and report an unread package type origin separately
+  from a verified empty result. The error lists only whole candidate types.
+  An empty `query_events` page reached through `cursor` says it covers the
+  rest of the list only. Their `module` argument names the emitting call,
+  which may differ from the event struct's module. Both list tools and
+  `query_transactions` document ISO 8601 time bounds directly in their
+  existing arguments.
 - **Batched transaction protocol names include event emitters.** `get_transactions` reads the emitting package alongside the event's defining type, so framework-typed events still identify the application that emitted them.
 - **Docs and tool descriptions were checked against the code.** Corrected:
   `query_events` `event_type` accepts a package, module or struct;
@@ -65,6 +89,31 @@
   single string), and never labels a verified type as an impostor. This field
   identifies symbol lookalikes, not malicious intent; decimals remain the
   candidate's own.
+
+### Fixed
+- **Swap labels read the pools' own swap events.** `get_transaction` takes
+  each swap's coins in and out from the event of the pool that ran it,
+  placed on the call that takes that pool, instead of from the call's type
+  arguments or the sender's net change. This corrects reversed labels on
+  Astros, 7k and FlowX routes and Aftermath AMM swaps that named the pool's
+  LP coin, labels flash swaps that the PTB repays (Cetus, Bluefin, Turbos,
+  Magma, Momentum) as swaps, labels both pools of a Cetus two-pool
+  `router::swap_ab_bc` call, and reads swap-context routes whose type
+  arguments fit more than one path. Calls with no swap event, or with one
+  that cannot be read or placed on a single call, keep the reading from the
+  call, and so do the history, timeline and trace tools, which decode
+  without events. A one-coin liquid-staking leg between two event-read
+  swaps of one route path is labelled with the coins around it.
+- **FlowX `swap_exact_x_to_y` and `swap_exact_y_to_x` name their
+  direction** in every tool that decodes actions.
+- **Swap-context routes label their executed pool hops.** Every tool that
+  decodes actions labels each pool call of a router swap context
+  (`new_swap_context` and `new_swap_context_v3`) in command order, including
+  routes split into paths that run side by side. A call takes in a coin the
+  context already holds and gives out one the route's output or a later
+  call names; fee-tier and LP types are passed over. A context with a call
+  that can be read more than one way, or that names only one coin, keeps
+  its single route-wide label.
 
 ## 1.27.0 (2026-10-06)
 

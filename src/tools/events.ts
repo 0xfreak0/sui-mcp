@@ -76,7 +76,7 @@ export function registerEventTools(server: McpServer) {
       event_type: z
         .string()
         .optional()
-        .describe("Filter by event type: 0x..., 0x...::module or 0x...::module::Name. An unknown full struct type returns candidate names from its package."),
+        .describe("Filter by event type: 0x..., 0x...::module or 0x...::module::Name. An unknown struct or struct-less module returns candidates from its package."),
       sender: addressArg().optional().describe("Filter by transaction sender"),
       module: z
         .string()
@@ -216,7 +216,9 @@ export function registerEventTools(server: McpServer) {
                         ? "The package's type origins could not be verified, so an empty event query cannot establish absence. Check the full struct type and retry the lookup."
                         : hasNextPage
                           ? "No events found in this scan slice; continue at next_cursor before drawing a conclusion."
-                          : "No events matched the queried filters in this window. A module filter names the emitting call, which can differ from the event type's module.",
+                          : cursor
+                            ? "No events past this cursor. A continuation reads only the rest of the list; earlier pages are not re-read."
+                            : "No events matched the queried filters in this window. A module filter names the emitting call, which can differ from the event type's module.",
                     }
                   : {}),
                 ...(budgetSpent

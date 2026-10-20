@@ -279,11 +279,14 @@ TRANSACTION:
   package-level type spanning several defining IDs keeps one and lists the
   rest as `event_type_resolution`.
   A readable lineage whose requested full struct name is absent is an input
-  error, with candidate structs from `typeOrigins`; do not query that name and
-  present an empty page as chain evidence. A failed or unavailable origins
+  error, with candidate structs from `typeOrigins`; so is a module-level
+  `event_type` naming a module that defines no struct in the lineage. Do not
+  query that name and present an empty page as chain evidence. The error
+  lists only whole candidates that fit `MAX_ERROR_CHARS`, since a cut inside
+  a type reads as a different type. A failed or unavailable origins
   read is `event_type_resolution.unverified`, and a zero-match result cannot
-  establish absence. `typeOrigins` lists all structs, not only emitted
-  events, so suggestions must not claim each candidate emitted. The
+  establish absence. `typeOrigins` lists all structs and enums, not only
+  emitted events, so suggestions must not claim each candidate emitted. The
   event's `transactionModule` is the call that emitted it, not necessarily
   the module defining its struct: DeepBook margin's
   `margin_manager::LiquidationEvent` was emitted by

@@ -55,7 +55,7 @@ Query events by type, sender, emitting module or time/checkpoint range. For a da
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `event_type` | string | no | Filter by event type: 0x..., 0x...::module or 0x...::module::Name. An unknown full struct type returns candidate names from its package. |
+| `event_type` | string | no | Filter by event type: 0x..., 0x...::module or 0x...::module::Name. An unknown struct or struct-less module returns candidates from its package. |
 | `sender` | string | no | Filter by transaction sender |
 | `module` | string | no | Module of the emitting call, not necessarily the event struct's module; e.g. 0x2::coin or 0x2. The window selects original or called-version ID across the network cutover. module_scope reports scope; other_version_ids lists versions a post-cutover ID misses. |
 | `after_checkpoint` | string \| number | no | Window start: ISO 8601 time such as 2026-08-07T00:00:00Z (inclusive), or checkpoint number (exclusive). No checkpoint lookup is needed. |

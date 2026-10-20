@@ -67,7 +67,7 @@ export function registerAggregateTools(server: McpServer) {
         .string()
         .optional()
         .describe(
-          "Event struct type, matched by the defining package, which may differ from the package called: 0x..., 0x...::module or 0x...::module::Name. Any version's ID is rewritten to the defining one; unknown full structs return candidate names.",
+          "Event struct type, matched by the defining package, which may differ from the package called: 0x..., 0x...::module or 0x...::module::Name. Any version's ID is rewritten to the defining one; an unknown struct or struct-less module returns candidates.",
         ),
       module: z
         .string()

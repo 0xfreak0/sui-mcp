@@ -1,6 +1,8 @@
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { gqlQuery } from "../clients/graphql.js";
 import { getNetwork, type SuiNetwork } from "../config.js";
+import { quoteInput } from "../tools/args.js";
+import { MAX_ERROR_CHARS } from "./errors.js";
 
 /**
  * Filters that name a package match ONE version of it, and a package upgrade
@@ -147,21 +149,46 @@ export async function resolveEventTypeFilter(eventType: string): Promise<EventTy
     const words = (name.match(/[A-Z]?[a-z]+/g) ?? [name])
       .filter((word) => word.length >= 5)
       .map((word) => word.slice(0, 5).toLowerCase());
-    // Rank an action word ahead of declaration order; the error reply is
-    // capped at 500 characters, so later suggestions may not survive.
-    const suggestions = (eventLike.length ? eventLike : candidates)
+    // Rank an action word ahead of declaration order.
+    const ranked = (eventLike.length ? eventLike : candidates)
       .sort((a, b) =>
         Number(words.some((word) => b.struct.toLowerCase().includes(word))) -
         Number(words.some((word) => a.struct.toLowerCase().includes(word))))
-      .slice(0, 3)
       .map((o) => `${normalizeSuiAddress(o.definingId)}::${o.module}::${o.struct}`);
-    throw new Error(
-      `Event type ${JSON.stringify(trimmed)} is not a struct in this package lineage. ` +
-      `Candidate declared structs (emission unverified): ${suggestions.join(", ") || "none"}. ` +
-      "event_type names the defining module; module names the emitting call.",
-    );
+    // A tool error is cut at MAX_ERROR_CHARS; a cut inside a candidate would
+    // leave a truncated type that reads as a real one, so only whole
+    // candidates that fit are listed.
+    let message =
+      `Event type ${quoteInput(trimmed)} is not a struct in this package lineage. ` +
+      "event_type names the defining module; module names the emitting call. " +
+      "Candidate declared structs (emission unverified):";
+    let listed = 0;
+    for (const type of ranked.slice(0, 3)) {
+      const next = `${message}${listed ? "," : ""} ${type}`;
+      if (next.length + 1 > MAX_ERROR_CHARS) break;
+      message = next;
+      listed++;
+    }
+    if (!listed) message += ranked.length ? " too long to list; get_package with detail 'full' lists them" : " none";
+    throw new Error(`${message}.`);
   }
-  if (!relevant.length) return { filter: trimmed };
+  if (!relevant.length) {
+    // Only a module filter reaches here: no struct of the lineage is defined
+    // in that module, so no event type can match it in any window.
+    const more = ", and others";
+    let message =
+      `Event type module ${quoteInput(trimmed)} defines no struct in this package lineage, so no event type belongs to it. ` +
+      "To match events emitted by calls into a module, use the module argument. Modules defining structs:";
+    const modules = [...new Set(origins.map((o) => o.module))];
+    let listed = 0;
+    for (const m of modules) {
+      const next = `${message}${listed ? "," : ""} ${m}`;
+      if (next.length + more.length + 1 > MAX_ERROR_CHARS) break;
+      message = next;
+      listed++;
+    }
+    throw new Error(`${message}${listed < modules.length ? more : ""}.`);
+  }
 
   const counts = new Map<string, number>();
   for (const o of relevant) {
@@ -181,7 +208,7 @@ export async function resolveEventTypeFilter(eventType: string): Promise<EventTy
       queried: filter,
       note: others.length
         ? `${scope} are defined across ${counts.size} package versions, and an event carries the ID of the version that defined its struct, so one filter cannot cover them. This query reads ${chosen}; query the others in other_defining_packages for the rest.`
-        : `${scope} is defined at ${chosen}, and an event carries the ID of the package version that defined its struct, not the ID it was requested by. The filter was rewritten to it.`,
+        : `${scope} ${name ? "is" : "are"} defined at ${chosen}, and an event carries the ID of the package version that defined its struct, not the ID it was requested by. The filter was rewritten to it.`,
       ...(others.length ? { other_defining_packages: others } : {}),
     },
   };

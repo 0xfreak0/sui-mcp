@@ -69,6 +69,63 @@ describe("resolveEventTypeFilter", () => {
     expect(r.filter).toBe("0x9999::m::E");
     expect(r.resolution?.unverified).toBe(true);
   });
+
+  it("keeps the unknown-struct error whole under the tool error cap", async () => {
+    // Tool errors are cut at 500 characters. Long candidate types and a long
+    // quoted input must not leave a candidate cut mid-address.
+    const PKG = `0x${"7a".repeat(32)}`;
+    const long = (s: string) => `${s}${"X".repeat(60)}Event`;
+    const declared = ["A", "B", "C"].map((s) => `${PKG}::liquidation_manager_module::${long(s)}`);
+    mockGqlQuery.mockResolvedValue({
+      package: {
+        typeOrigins: ["A", "B", "C"].map((s) => ({ module: "liquidation_manager_module", struct: long(s), definingId: PKG })),
+      },
+    });
+    const input = `${PKG}::liquidation_manager_module::Missing<${`${PKG}::m::T,`.repeat(6)}>`;
+    const err: Error = await resolveEventTypeFilter(input).then(
+      () => { throw new Error("expected a rejection"); },
+      (e: Error) => e,
+    );
+    expect(err.message.length).toBeLessThanOrEqual(500);
+    expect(err.message).toContain("module names the emitting call");
+    const listed = err.message.split("(emission unverified):")[1].replace(/\.$/, "").split(",").map((s) => s.trim());
+    expect(listed.length).toBeGreaterThan(0);
+    for (const type of listed) expect(declared).toContain(type);
+    // The input is quoted at most 80 characters.
+    expect(err.message).not.toContain(input);
+  });
+
+  it("rejects a module that defines no struct and names the modules that do", async () => {
+    const PKG = `0x${"7b".repeat(32)}`;
+    mockGqlQuery.mockResolvedValue({
+      package: {
+        typeOrigins: [
+          { module: "pool", struct: "SwapEvent", definingId: PKG },
+          { module: "vault", struct: "DepositEvent", definingId: PKG },
+        ],
+      },
+    });
+    await expect(resolveEventTypeFilter(`${PKG}::router`)).rejects.toThrow(/defines no struct.*pool, vault\./);
+    // A module that does define structs, and the bare package, still resolve.
+    await expect(resolveEventTypeFilter(`${PKG}::vault`)).resolves.toEqual({ filter: `${PKG}::vault` });
+    await expect(resolveEventTypeFilter(PKG)).resolves.toEqual({ filter: PKG });
+  });
+
+  it("resolves generic, enum and framework types it declares", async () => {
+    const FW = `0x${"0".repeat(63)}2`;
+    mockGqlQuery.mockResolvedValue({
+      package: {
+        typeOrigins: [
+          { module: "display", struct: "DisplayCreated", definingId: FW },
+          { module: "coin_registry", struct: "SupplyState", definingId: FW },
+        ],
+      },
+    });
+    await expect(resolveEventTypeFilter("0x2::display::DisplayCreated<0x2::sui::SUI>")).resolves.toEqual({
+      filter: "0x2::display::DisplayCreated<0x2::sui::SUI>",
+    });
+    await expect(resolveEventTypeFilter("0x2::coin_registry::SupplyState<0x2::sui::SUI>")).resolves.toBeDefined();
+  });
 });
 
 describe("resolveModuleEventFilter", () => {

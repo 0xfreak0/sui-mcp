@@ -87,6 +87,23 @@ describe("query_events", () => {
     expect(data.no_results_hint).toMatch(/No events matched/);
   });
 
+  it("does not report a continuation's empty last page as a window with no matches", async () => {
+    mockGqlQuery.mockResolvedValue({
+      events: {
+        nodes: [],
+        pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null },
+      },
+    });
+
+    const result = await tools.get("query_events")!({ sender: "0xabc", cursor: "C1" });
+    const data = JSON.parse(result.content[0].text);
+
+    expect(data.events).toHaveLength(0);
+    expect(data.has_next_page).toBe(false);
+    expect(data.no_results_hint).toMatch(/past this cursor/);
+    expect(data.no_results_hint).not.toMatch(/No events matched/);
+  });
+
   it("does not claim absence when a type's defining package could not be read", async () => {
     mockGqlQuery.mockImplementation(async (q: string) => {
       if (q.includes("typeOrigins")) throw new Error("rate limited");

@@ -379,7 +379,9 @@ checkpoint search is needed. For example:
 ```
 
 When events match, the reply includes `events` with decoded `data`, the
-`window`'s resolved checkpoints and `next_cursor` if older matches remain.
+`window`'s resolved checkpoints and `next_cursor` if more matches remain in
+the page order. An empty page reached through `cursor` covers only the rest of
+the list; its `no_results_hint` says so.
 
 The tool fills short service pages up to `limit`; if its read budget stops
 first, `scan` names the continuation. Checkpoint-number bounds are exclusive;
@@ -389,8 +391,10 @@ An event type carries the package ID that defined its struct. The `event_type`
 filter accepts a package, module or full struct type; an upgraded package ID is
 resolved to the defining version and reported in `event_type_resolution`. A
 full struct name absent from a readable package lineage returns an error
-listing candidate structs, rather than a zero-match page. An unread lineage
-is marked `unverified`; an empty page cannot establish absence in that case.
+listing candidate structs, rather than a zero-match page. A module that
+defines no struct in the lineage returns an error listing the modules that
+do. An unread lineage is marked `unverified`; an empty page cannot establish
+absence in that case.
 The `module` filter names the call that emitted the event. That call can
 belong to a different package and module from the event struct.
 GraphQL rejects a request combining `event_type` and `module`; query the

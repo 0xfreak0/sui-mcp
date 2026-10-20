@@ -40,7 +40,7 @@ export function registerControlTools(server: McpServer) {
         .string()
         .optional()
         .describe(
-          "Population: addresses that emitted this event struct type. Any version's ID of the defining package works.",
+          "Population: addresses that emitted this event struct type. Any version's ID of the defining package works; an unknown struct or struct-less module returns candidates.",
         ),
       size: numArg()
         .int()
@@ -165,6 +165,9 @@ export function registerControlTools(server: McpServer) {
                         `Only ${result.population_size} distinct addresses were available, fewer than the ${result.requested} requested. A control this small will not separate a real effect from chance — widen the window or raise max_events.` +
                         (moduleFilter?.resolution?.other_version_ids
                           ? " From the relocate_event_module cutover on, a `module` filter draws callers of one package version only; module_scope.other_version_ids lists the rest of the lineage."
+                          : "") +
+                        (typeFilter?.resolution?.unverified
+                          ? " The event type's package type origins could not be read, so the type was queried unchecked; event_type_resolution says so."
                           : ""),
                     }
                   : {}),

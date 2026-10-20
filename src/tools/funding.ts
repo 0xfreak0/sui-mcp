@@ -644,7 +644,9 @@ export function registerFundingTools(server: McpServer) {
         // into "shared funding" of two addresses. The link itself is reported
         // in subject_funded_subject. Walks also stop at a service-scale funder,
         // so nothing reached through a hub is counted either.
-    const subjectSet = new Set([...addresses, ...(related_addresses ?? [])]);
+    const subjectSet = new Set(addresses);
+    const walkedCount = subjectSet.size;
+    for (const address of related_addresses ?? []) subjectSet.add(address);
         const byFunder = new Map<string, string[]>();
         for (const r of results) {
           for (const step of r.chain) {
@@ -757,12 +759,12 @@ export function registerFundingTools(server: McpServer) {
             };
           }
     } else {
-     const scan = await findSetSubjectPayments(addresses, [...subjectSet]);
+     const scan = await findSetSubjectPayments(addresses, subjectSet);
      subjectPayments.push(...scan.payments);
           paymentScope = {
       method: "newest sent and affected transactions of each walked address",
       walked_addresses: addresses.length,
-      related_addresses: subjectSet.size - new Set(addresses).size,
+      related_addresses: subjectSet.size - walkedCount,
       transactions_per_direction: SET_PAYMENT_PAGES * 50,
       requests: scan.requests,
       ...(scan.incomplete.length ? { incomplete: scan.incomplete } : {}),
@@ -840,7 +842,7 @@ export function registerFundingTools(server: McpServer) {
 
         const base = {
           address_count: addresses.length,
-     ...(related_addresses?.length ? { related_address_count: subjectSet.size - new Set(addresses).size } : {}),
+     ...(related_addresses?.length ? { related_address_count: subjectSet.size - walkedCount } : {}),
           depth: depth ?? "full",
           ...(formerNames.length
             ? {

@@ -226,7 +226,7 @@ export interface SetPaymentScan {
  * recipients with the union of walked and related subjects. Related addresses
  * are never scanned independently, so cost follows the number walked.
  */
-export async function findSetSubjectPayments(walked: string[], subjects: string[]): Promise<SetPaymentScan> {
+export async function findSetSubjectPayments(walked: string[], subjects: Iterable<string>): Promise<SetPaymentScan> {
  const invalid: string[] = [];
  const valid = new Set<string>();
  for (const address of subjects) {
@@ -283,11 +283,16 @@ export async function findSetSubjectPayments(walked: string[], subjects: string[
      if (!node.effects?.balanceChanges || completed[index].balanceChangesTruncated) {
       incompleteTransactions.add(node.digest);
      }
-     const changes = completed[index].balanceChanges
-      .filter((c) => c.owner?.address && c.amount && c.coinType?.repr)
-      .map((c) => ({ address: c.owner!.address, amount: c.amount!, coinType: c.coinType!.repr }));
-     for (const payee of new Set(changes.map((c) => c.address))) {
-      if (!valid.has(payee) || payee === payer || (payer !== address && payee !== address)) continue;
+     const changes: FundingChange[] = [];
+     const payees = new Set<string>();
+     for (const change of completed[index].balanceChanges) {
+      const owner = change.owner?.address;
+      if (!owner || !valid.has(owner) || !change.amount || !change.coinType?.repr) continue;
+      changes.push({ address: owner, amount: change.amount, coinType: change.coinType.repr });
+      payees.add(owner);
+     }
+     for (const payee of payees) {
+      if (payee === payer || (payer !== address && payee !== address)) continue;
       const key = `${node.digest}:${payer}:${payee}`;
       if (seen.has(key)) continue;
       const payment = paymentInTx(payer, payee, node.digest, node.effects?.timestamp ?? null, changes);

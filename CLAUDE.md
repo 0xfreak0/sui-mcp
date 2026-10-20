@@ -3566,6 +3566,47 @@ Pure split and accounting rules in `src/utils/flow-graph.ts`, the BFS in
 `src/utils/flow-engine.ts`, renderers in `src/utils/flow-export.ts`. Rules a
 change is likely to break:
 
+- **A valued object changing custody is a separate asset branch.**
+  `readMovedObjects` supplies exact input/output versions and
+  `valueMovedObjects` values each handover at its checkpoint. The object ID
+  stays with the branch until its next `affectedObject` custody change; a
+  redemption passes its share to priced coin proceeds, bounded by the
+  object's value. A forward start transaction's branches are what addresses
+  gained, so they include an object created for an address other than the
+  sender; backward, what addresses gave up. An address start scans
+  `sentAddress` forward (an address-owned object leaves only in a
+  transaction its owner sends, and an object such a transaction creates for
+  another address is a handover too) and `affectedAddress` backward. Price an
+  object and a coin together before dividing the root share, so an unpriced
+  coin cannot take the stake's share. A coin filter deliberately omits
+  objects. List unvalued objects separately, only those moving in the traced
+  direction (an airdrop received does not make a forward graph incomplete),
+  and disclose that their value is outside the denominator; a failed version
+  read makes the graph incomplete. An object held by another object cannot
+  be attributed to a wallet by address alone: a move into or out of a
+  wrapper, a kiosk or a shared or frozen owner ends the branch as
+  `read_failed`, never as a redemption.
+- **Value drawn from a held position is a partial redemption.** A kept row
+  (`changed_in_place`) of the followed object passes the drawn part
+  (forward: a fall in value; backward: a rise) to that transaction's priced
+  coins and the object keeps the rest. Without it, a CLMM position whose
+  liquidity was removed, or an obligation whose collateral was withdrawn,
+  reads as `unspent` at full value. Objects of one transaction divide its
+  coins by the value each converted. Following an object skips the hub
+  check, since its identity does not mix with the holder's funds; its
+  holder's coin proceeds do mix, so they arrive from the previous holder and
+  the holder is hub-checked before they are followed.
+- **An address start counts a coin converted into an object once.** A coin
+  leg whose unpaid part went into an object the address handed over is the
+  same value as that handover: forward, an object created for the address
+  or written in place while it held it in the leg's transaction (opened,
+  then added to), or created in that transaction for another address;
+  backward, one the address received and then gave up or drew from in place.
+  `rootObjectLinks` moves that part of the leg's share onto the object, so a
+  stake made and then handed over is 100% the handover, never 50% consumed
+  and 50% handed over. The legs feeding one object together take at most its
+  value at the handover. Written-in-place objects come from `written.held`, a
+  field derived at fetch time, so adding it raised `TX_METHOD_VERSION` to 5.
 - **The trunk reads as many moves as the start.** A node carrying more than
   half the traced value is the start's continuation and gets
   `MOVES_PER_START_ADDRESS` instead of `MOVES_PER_NODE`, both directions. At

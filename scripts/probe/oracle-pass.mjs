@@ -108,15 +108,19 @@
  * router. `--coins` registry coins (default 6, alternately
  * registered through `finalize_registration` and migrated through
  * `migrate_legacy_metadata`) to d and f, with their package's UpgradeCap to
-  * b. Registry coins also seed h when `--coins` is positive: sample more
-  * registered coin types until three with short, nonempty holder walks are
-  * found. With `--coins 0`, h is not run. Drawn senders and SUI recipients go
-  * to g, withdrawals that delete a pre-existing StakedSui inside the
-  * consistent range go to i, native bridge sends to j, sparsely active
-  * addresses between a target below the balance range and an anchor near
-  * its top go to k, and one random checkpoint per era goes to l. `--jobs`
-  * subjects run at once through one server (default 2). An enabled oracle
-  * with no checked subjects still fails.
+ * b. Registry coins also seed h when `--coins` is positive: up to 15 more
+ * rounds of four fresh `finalize_registration` coins are drawn until three
+ * have short, nonempty holder walks. With `--coins 0`, h is not drawn. Drawn
+ * senders and SUI recipients go to g; withdrawals that delete a pre-existing
+ * StakedSui inside the consistent range go to i (at most 60 candidates read
+ * over six pages); native bridge sends go to j; addresses with at most 50
+ * transactions between a target below the balance range and an anchor near
+ * its top go to k (owners from up to 30 random checkpoints, 20 a
+ * checkpoint); and one random checkpoint per era goes to l. `--jobs`
+ * subjects run at once through one server (default 2). An oracle whose
+ * source flags are zero is reported as not drawn; any other oracle that
+ * checked nothing fails the run, and i says "drawn but unverifiable" when
+ * its candidate bound ran out first.
  * `VERBOSE=1` prints both sides of every agreement too.
  *
  * `--subjects` pins the subjects instead, as JSON or a file holding it:
@@ -1299,6 +1303,7 @@ async function drawExtra(txs, coins, eras) {
     if (tx.sender && !funding.includes(tx.sender)) funding.push(tx.sender);
   }
   const small = [];
+  let smallProbes = 0;
   if (COINS) {
     const seen = new Set();
     const candidates = coins.map((c) => c.type);
@@ -1313,6 +1318,7 @@ async function drawExtra(txs, coins, eras) {
         if (small.length >= 3) break;
         if (seen.has(type)) continue;
         seen.add(type);
+        smallProbes++;
         try {
           const probe = await gql(`query($coin:String!,$balance:String!){
             c:objects(filter:{type:$coin},first:50){pageInfo{hasNextPage} nodes{address}}
@@ -1336,17 +1342,22 @@ async function drawExtra(txs, coins, eras) {
   const stake = [];
   const maxStakeReads = 60;
   let stakeReads = 0;
+  let stakeReadFailures = 0;
   let stakeBoundReached = false;
   for (let page = 0, before = null; page < 6 && rangeTop > liveStart + 10 && stake.length < 3; page++) {
     const d = await gql(`query($a:UInt53!,$b:UInt53!,$c:String){transactions(filter:{function:"0x3::sui_system::request_withdraw_stake",afterCheckpoint:$a,beforeCheckpoint:$b},last:50,before:$c){nodes{digest effects{status}} pageInfo{hasPreviousPage startCursor}}}`, { a: liveStart + 10, b: rangeTop + 1, c: before });
     for (const n of shuffled(d.transactions.nodes.filter((node) => node.effects?.status === "SUCCESS"))) {
       if (stake.length >= 3 || stakeReads >= maxStakeReads) break;
       stakeReads++;
-      const tx = await rawTx(n.digest).catch(() => null);
+      const tx = await rawTx(n.digest).catch((err) => {
+        stakeReadFailures++;
+        console.log(`  withdrawal candidate ${n.digest} unreadable: ${String(err).slice(0, 120)}`);
+        return null;
+      });
       if (checkableStakeWithdrawal(tx)) stake.push(n.digest);
     }
     const more = d.transactions.pageInfo.hasPreviousPage;
-    if (stakeReads >= maxStakeReads || (page === 5 && more)) stakeBoundReached = true;
+    if (stake.length < 3 && (stakeReads >= maxStakeReads || (page === 5 && more))) stakeBoundReached = true;
     if (!more || stake.length >= 3 || stakeReads >= maxStakeReads || page === 5) break;
     before = d.transactions.pageInfo.startCursor;
     if (!before) throw new Error("staking transaction range has more rows but no cursor");
@@ -1365,9 +1376,12 @@ async function drawExtra(txs, coins, eras) {
   const anchor = Number(ranges.serviceConfig.balances.last.sequenceNumber) - 200;
   const balances = [];
   const seenOwners = new Set();
+  let balanceCheckpoints = 0;
+  let balanceProbes = 0;
   // Keep drawing checkpoints until a sparse address qualifies, rather than
   // accepting six checkpoints' mostly high-volume senders as the entire pool.
   for (let i = 0; i < 30 && balances.length < 3 && anchor > at; i++) {
+    balanceCheckpoints++;
     const c = await gql(`query($s:UInt53!){checkpoint(sequenceNumber:$s){transactions(first:20){nodes{sender{address} effects{balanceChanges(first:10){nodes{owner{address}}}}}}}}`, { s: randInt(at + 1, anchor) }, true);
     const owners = [];
     for (const n of c.checkpoint?.transactions?.nodes ?? [])
@@ -1375,16 +1389,27 @@ async function drawExtra(txs, coins, eras) {
         if (a && !seenOwners.has(normAddr(a))) {
           seenOwners.add(normAddr(a));
           owners.push(normAddr(a));
-  }
+        }
     for (const address of shuffled(owners).slice(0, 20)) {
-    if (balances.length >= 3) break;
-    const history = await gql(`query($a:SuiAddress!,$lo:UInt53!,$hi:UInt53!){transactions(filter:{affectedAddress:$a,afterCheckpoint:$lo,beforeCheckpoint:$hi},first:50){nodes{digest}pageInfo{hasNextPage}}}`, { a: address, lo: at, hi: anchor + 1 }, true);
-    if (history.transactions.nodes.length && !history.transactions.pageInfo.hasNextPage)
-      balances.push({ address, target: at, anchor });
-  }
+      if (balances.length >= 3) break;
+      balanceProbes++;
+      const history = await gql(`query($a:SuiAddress!,$lo:UInt53!,$hi:UInt53!){transactions(filter:{affectedAddress:$a,afterCheckpoint:$lo,beforeCheckpoint:$hi},first:50){nodes{digest}pageInfo{hasNextPage}}}`, { a: address, lo: at, hi: anchor + 1 }, true);
+      if (history.transactions.nodes.length && !history.transactions.pageInfo.hasNextPage)
+        balances.push({ address, target: at, anchor });
+    }
   }
   const checkpoints = eras.map((era) => randInt(era.lo, era.hi));
-  return { funding: shuffled(funding).slice(0, 8), small, stake, stakeDraw: { reads: stakeReads, boundReached: stakeBoundReached }, bridge: bridge.slice(0, 3), balances, checkpoints };
+  return {
+    funding: shuffled(funding).slice(0, 8),
+    small,
+    smallDraw: { probed: smallProbes },
+    stake,
+    stakeDraw: { reads: stakeReads, failures: stakeReadFailures, boundReached: stakeBoundReached },
+    bridge: bridge.slice(0, 3),
+    balances,
+    balanceDraw: { checkpoints: balanceCheckpoints, probes: balanceProbes },
+    checkpoints,
+  };
 }
 
 // ---- plan and run --------------------------------------------------------------
@@ -1496,9 +1521,9 @@ if (PINNED) {
   }
   const more = await drawExtra(txs, coins, eras);
   stakeDraw = more.stakeDraw;
-  console.log(`  funding: ${more.funding.join(", ")}; small coins: ${more.small.join(", ")}`);
-  console.log(`  withdrawals: ${more.stake.join(", ")}; native bridge: ${more.bridge.join(", ")}`);
-  console.log(`  balance: ${more.balances.map((b) => `${b.address}@${b.target}@${b.anchor}`).join(", ")}; checkpoints: ${more.checkpoints.join(", ")}`);
+  console.log(`  funding: ${more.funding.join(", ")}; small coins: ${more.small.join(", ")} (${more.smallDraw.probed} coin types probed)`);
+  console.log(`  withdrawals: ${more.stake.join(", ")} (${more.stakeDraw.reads} candidates read, ${more.stakeDraw.failures} unreadable); native bridge: ${more.bridge.join(", ")}`);
+  console.log(`  balance: ${more.balances.map((b) => `${b.address}@${b.target}@${b.anchor}`).join(", ")} (${more.balanceDraw.checkpoints} checkpoints, ${more.balanceDraw.probes} address histories read); checkpoints: ${more.checkpoints.join(", ")}`);
   for (const address of more.funding) task((k) => extra.funding(k, address));
   for (const type of more.small) task((k) => extra.holders(k, type));
   for (const digest of more.stake) task((k) => extra.stakeValue(k, digest));
@@ -1532,18 +1557,11 @@ const summary = [];
 for (const [id, o] of Object.entries(ORACLES)) {
   const rows = [...o.rows].sort((a, b) => a.key - b.key);
   const n = (s) => rows.filter((r) => r.status === s).length;
-  // A drawn oracle whose bounds allow subjects must check something.
-  const routerTxs = ROUTER_N * ROUTER_NAMES.length;
-  const drawn = {
-    a: routerTxs, b: ENDS + COINS, c: TXS + routerTxs, d: COINS, e: TXS + routerTxs, f: COINS,
-    g: TXS * 3, h: 3, i: 3, j: 3, k: 3, l: 3
-  };
-  const requested = PINNED ? !!PINNED[id]?.length : drawn[id] > 0;
-  if (!rows.length && !requested) continue;
+  // An oracle whose source bounds allow subjects must check something.
   const checked = n("agree") + n("disagree") + n("known");
   const state = oracleDrawState(id, { pinned: PINNED, txs: TXS, ends: ENDS, router: ROUTER_N, coins: COINS, stakeBoundReached: stakeDraw?.boundReached }, checked);
   if (!rows.length && state === "not_drawn") {
-    console.log(`\n${id}. ${o.title}: not drawn (no subjects requested)`);
+    if (!PINNED) console.log(`\n${id}. ${o.title}: not drawn (no subjects requested)`);
     continue;
   }
   summary.push([id, o.title, checked, n("agree"), n("disagree"), n("known"), n("skip")]);
@@ -1577,7 +1595,7 @@ for (const [id, o] of Object.entries(ORACLES)) {
   if (n("stale")) problems.push(`${id}: ${n("stale")} KNOWN_DEFECTS entr(ies) now agree; remove them`);
   if (state === "unchecked") problems.push(`${id}. ${o.title}: nothing was checked`);
   if (state === "drawn_but_unverifiable")
-    problems.push(`${id}. ${o.title}: drawn but unverifiable (${stakeDraw.reads} withdrawal candidates inspected before the draw bound)`);
+    problems.push(`${id}. ${o.title}: drawn but unverifiable (${stakeDraw.reads} withdrawal candidates read, ${stakeDraw.failures} of them unreadable, before the draw bound)`);
 }
 
 console.log(`\n${"checked".padStart(8)} ${"agree".padStart(6)} ${"disagree".padStart(9)} ${"known".padStart(6)} ${"skip".padStart(5)}  oracle`);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { diffData, staleSources } from "../scripts/data-sync-summary.mjs";
-import { addChangelogSection, nextPatch } from "../scripts/data-release-prep.mjs";
+import { addChangelogSection, addUnreleasedData, hasUnreleasedEntries, nextPatch } from "../scripts/data-release-prep.mjs";
 
 const base = {
   generated_at: "2026-10-05",
@@ -92,9 +92,22 @@ describe("data release preparation", () => {
     expect(() => nextPatch("2.0.0-rc.1")).toThrow();
   });
 
-  it("turns Unreleased into the release section, so merged entries ship under the version that carries them", () => {
-    const out = addChangelogSection("# Changelog\n\n## Unreleased\n\n### Added\n- Thing.\n\n## 1.27.0 (2026-10-06)\n", "1.27.1", "2026-10-12", "- **Data refresh.** x.");
-    expect(out).toBe("# Changelog\n\n## 1.27.1 (2026-10-12)\n\n### Data\n- **Data refresh.** x.\n\n### Added\n- Thing.\n\n## 1.27.0 (2026-10-06)\n");
+  it("keeps pending code entries under Unreleased and adds the data note without a version bump", () => {
+    const changelog = "# Changelog\n\n## Unreleased\n\n### Added\n- Thing.\n\n## 1.27.0 (2026-10-06)\n";
+    expect(hasUnreleasedEntries(changelog)).toBe(true);
+    const out = addUnreleasedData(changelog, "- **Data refresh.** x.");
+    expect(out).toBe("# Changelog\n\n## Unreleased\n\n### Data\n- **Data refresh.** x.\n\n### Added\n- Thing.\n\n## 1.27.0 (2026-10-06)\n");
+    expect(addUnreleasedData(out, "- **Data refresh.** y.")).toBe(
+      "# Changelog\n\n## Unreleased\n\n### Data\n- **Data refresh.** y.\n- **Data refresh.** x.\n\n### Added\n- Thing.\n\n## 1.27.0 (2026-10-06)\n",
+    );
+  });
+
+  it("permits a patch when Unreleased holds no entries", () => {
+    const empty = "# Changelog\n\n## Unreleased\n\n### Added\n\n## 1.27.0 (2026-10-06)\n";
+    expect(hasUnreleasedEntries(empty)).toBe(false);
+    expect(hasUnreleasedEntries("# Changelog\n\n## 1.27.0 (2026-10-06)\n")).toBe(false);
+    expect(addChangelogSection("# Changelog\n\n## Unreleased\n\n## 1.27.0 (2026-10-06)\n", "1.27.1", "2026-10-12", "- **Data refresh.** x."))
+      .toBe("# Changelog\n\n## 1.27.1 (2026-10-12)\n\n### Data\n- **Data refresh.** x.\n\n## 1.27.0 (2026-10-06)\n");
   });
 
   it("opens a new section above the last release when nothing is unreleased", () => {

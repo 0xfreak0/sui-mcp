@@ -1131,6 +1131,15 @@ npm run sync:labels -- --exclude FILE   # build, then regenerate src/data/deposi
 npm run sync:framework -- REF   # vendor the Sui framework sources test/sui-framework.test.ts checks claims against
 ```
 
+### Weekly data refresh
+
+`data-release-prep.mjs` keeps data notes under `## Unreleased` when that
+section has entries and does not bump the package version. The merged data
+PR is not tagged by `data-release.yml` in that case; the next normal release
+ships it after full `verify:live`. With no pending entries the weekly PR
+bumps the patch version and the merge can publish. Review failed syncs and
+source removals before either merge.
+
 ### Live checks
 
 The offline tests pin real mainnet signatures and shapes as fixtures, which is

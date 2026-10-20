@@ -504,10 +504,12 @@ function typedSwap(ev: AttackEvent, o: Record<string, unknown>): Pick<SwapObserv
  * {@link typedSwap}, and amounts keyed by side and direction
  * ({@link sidedAmounts}). A swap event without a price is still listed, with the
  * impact null. `pool` is the changed shared object the event names
- * ({@link poolOfEvent}).
+ * ({@link poolOfEvent}). With `flash`, a flash swap's event (Bluefin's
+ * `FlashSwap`) is read too: the pool swapped in its stated direction and
+ * the repay paid the input coin.
  */
-export function readSwap(ev: AttackEvent, shared: SharedObjects | EventTargets = new Map()): SwapObservation | null {
-  if (!isSwapEvent(ev.type)) return null;
+export function readSwap(ev: AttackEvent, shared: SharedObjects | EventTargets = new Map(), { flash = false } = {}): SwapObservation | null {
+  if (flash ? /repay/i.test(structName(ev.type)) || !/swap/i.test(structName(ev.type)) : !isSwapEvent(ev.type)) return null;
   const o = asRecord(ev.json);
   if (!o) return null;
   let aToB = boolField(o, "atob", "a2b", "a_to_b", "x_for_y");

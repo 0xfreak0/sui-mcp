@@ -26,11 +26,11 @@ The calls use the package, shared object and collector addresses; the
 signer's address is omitted.
 
 To follow the SUI recipients of the drain, call `trace_funds` with the drain
-digest, `direction: "forward"` and `coin_type: "0x2::sui::SUI"`. The trace
-follows the larger collector and lists the other under `unfollowed_spends`.
-`trace_flow_graph` with the same digest and coin type shows both collectors.
-The `swapS` function name does not make the CTX minted to the signer swap
-proceeds when SUI was paid to other addresses.
+digest and `direction: "forward"`. The first hop follows the larger collector
+and lists the other under `unfollowed_recipients`. The `swapS` calls do not
+count as a swap, because the collectors received far more SUI than the signer
+spent; the CTX minted to the signer is not followed. `trace_flow_graph` with
+the same digest shows both collectors.
 
 ## Steps
 

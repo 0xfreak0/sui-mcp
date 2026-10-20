@@ -171,30 +171,6 @@ describe("a swap by its values", () => {
     expect(d).toMatchObject({ nextAddress: victim, isSwap: false });
   });
 
- it("follows collectors when a claim::swapS drain mints bait to the signer", () => {
-  // F3TCZ6KiuZWosPhnNF4QrYsWuU4pbKncec6vkoVS9Vyd, signer replaced.
-  // Most SUI here came from the three StakedSui objects, not the signer's coin balance.
-  const signer = "0xsigner";
-  const largeCollector = "0x55abfb40f533b549e43cdd2711746b208052512ee72874f7a5851ce186489e0f";
-  const smallCollector = "0x532517d0f3d0d56566ab3580ca4d3b373a9303cb513c26dbdcf852582ba4e096";
-  const changes: HopChange[] = [
-   { address: signer, amount: "-5367827991", coin_type: SUI },
-   { address: signer, amount: "8314000000000", coin_type: "0xab58b428020df50fe33cbb6d1533b0d146a3c1621210cfc867f8fee394f17ae9::ctx::CTX" },
-   { address: smallCollector, amount: "173353561916", coin_type: SUI },
-   { address: largeCollector, amount: "520060685745", coin_type: SUI },
-  ];
-  const d = chooseNextHop({
-   sender: signer,
-   changes,
-   actions: ["Call 0xa032d8b8…5083::claim::swapS", "Call 0xa032d8b8…5083::claim::swapT", "Call 0xab58b428…7ae9::ctx::mint"],
-   direction: "forward",
-   trackedCoin: SUI,
-   isPassThrough: noPools,
-  });
-  expect(d).toMatchObject({ nextAddress: largeCollector, nextCoinType: SUI, isSwap: false, basis: "direct" });
-  expect(d.unfollowed.map((c) => c.address)).toEqual([smallCollector]);
- });
-
   it("follows the swapper, not the fee collector, when no action is named swap", () => {
     const d = chooseNextHop({
       sender: attacker,
@@ -206,6 +182,185 @@ describe("a swap by its values", () => {
     });
     expect(d).toMatchObject({ nextAddress: attacker, nextCoinType: USDC, isSwap: true, basis: "swap-follow" });
     expect(d.unfollowed.map((u) => u.address)).toEqual([collector]);
+  });
+});
+
+describe("a call named swap that paid others half or more of what moved", () => {
+  const collector = "0xfeecollector";
+  const friend = "0xfriend";
+  const BTC = "0xb::btc::BTC";
+  const CTX = "0xab58b428020df50fe33cbb6d1533b0d146a3c1621210cfc867f8fee394f17ae9::ctx::CTX";
+  // SUI at $2, USDC at $1, BTC at $60,000; any other coin unpriced.
+  const prices = (c: HopChange) => {
+    const n = Number(c.amount);
+    if (c.coin_type === SUI) return (n / 1e9) * 2;
+    if (c.coin_type === USDC) return n / 1e6;
+    if (c.coin_type === BTC) return (n / 1e8) * 60_000;
+    return null;
+  };
+
+  // F3TCZ6KiuZWosPhnNF4QrYsWuU4pbKncec6vkoVS9Vyd, signer replaced. Most of the
+  // SUI came from the signer's StakedSui objects, not its coin balance.
+  const signer = "0xsigner";
+  const largeCollector = "0x55abfb40f533b549e43cdd2711746b208052512ee72874f7a5851ce186489e0f";
+  const smallCollector = "0x532517d0f3d0d56566ab3580ca4d3b373a9303cb513c26dbdcf852582ba4e096";
+  const drainActions = [
+    "Call 0xa032d8b8…5083::claim::swapS",
+    "Call 0xa032d8b8…5083::claim::swapT",
+    "Call 0xab58b428…7ae9::ctx::mint",
+  ];
+  const drain: HopChange[] = [
+    { address: signer, amount: "-5367827991", coin_type: SUI },
+    { address: signer, amount: "8314000000000", coin_type: CTX },
+    { address: smallCollector, amount: "173353561916", coin_type: SUI },
+    { address: largeCollector, amount: "520060685745", coin_type: SUI },
+  ];
+
+  it("follows the collectors when a claim::swapS drain mints bait to the signer", () => {
+    const d = chooseNextHop({
+      sender: signer,
+      changes: drain,
+      actions: drainActions,
+      direction: "forward",
+      trackedCoin: SUI,
+      isPassThrough: noPools,
+    });
+    expect(d).toMatchObject({ nextAddress: largeCollector, nextCoinType: SUI, isSwap: false, basis: "direct" });
+    expect(d.unfollowed.map((c) => c.address)).toEqual([smallCollector]);
+  });
+
+  it("follows the collectors with no coin tracked, even when the bait coin is priced", () => {
+    const d = chooseNextHop({
+      sender: signer,
+      changes: drain,
+      actions: drainActions,
+      direction: "forward",
+      trackedCoin: null,
+      isPassThrough: noPools,
+      // A bait coin priced by a pool its minter seeded is worth anything it likes.
+      valueUsd: (c) => (c.coin_type === CTX ? 1e12 : prices(c)),
+    });
+    expect(d).toMatchObject({ nextAddress: largeCollector, nextCoinType: SUI, isSwap: false });
+  });
+
+  it("follows the collectors when the signer itself net gained a little of the coin", () => {
+    const d = chooseNextHop({
+      sender: signer,
+      changes: [
+        { address: signer, amount: "1000000000", coin_type: SUI },
+        { address: signer, amount: "8314000000000", coin_type: CTX },
+        { address: largeCollector, amount: "520060685745", coin_type: SUI },
+      ],
+      actions: drainActions,
+      direction: "forward",
+      trackedCoin: SUI,
+      isPassThrough: noPools,
+    });
+    expect(d).toMatchObject({ nextAddress: largeCollector, isSwap: false });
+  });
+
+  it("keeps a swap with a router fee in its input coin when no coin is tracked yet", () => {
+    // Raw amounts summed across coins made the 300 SUI gain cancel the USDC
+    // spend, and the trace followed the 1 USDC fee.
+    const d = chooseNextHop({
+      sender: attacker,
+      changes: [
+        { address: attacker, amount: "-1001000000", coin_type: USDC },
+        { address: attacker, amount: "300000000000", coin_type: SUI },
+        { address: collector, amount: "1000000", coin_type: USDC },
+      ],
+      actions: ["Swap USDC → SUI on Cetus"],
+      direction: "forward",
+      trackedCoin: null,
+      isPassThrough: noPools,
+    });
+    expect(d).toMatchObject({ nextAddress: attacker, nextCoinType: SUI, isSwap: true, basis: "swap-follow" });
+    expect(d.unfollowed.map((u) => u.address)).toEqual([collector]);
+  });
+
+  it("keeps a swap whose referrer is paid in the output coin", () => {
+    const d = chooseNextHop({
+      sender: attacker,
+      changes: [
+        { address: attacker, amount: "-1000000000", coin_type: USDC },
+        { address: attacker, amount: "299000000000", coin_type: SUI },
+        { address: collector, amount: "1000000000", coin_type: SUI },
+      ],
+      actions: ["Swap USDC → SUI on Cetus"],
+      direction: "forward",
+      trackedCoin: null,
+      isPassThrough: noPools,
+    });
+    expect(d).toMatchObject({ nextAddress: attacker, nextCoinType: SUI, isSwap: true });
+  });
+
+  it("keeps an arbitrage swap that returned more of the tracked coin and paid a fee in it", () => {
+    const d = chooseNextHop({
+      sender: attacker,
+      changes: [
+        { address: attacker, amount: "10000000000", coin_type: SUI },
+        { address: collector, amount: "100000000", coin_type: SUI },
+      ],
+      actions: ["Call 0xabc…::arb::swap_cycle"],
+      direction: "forward",
+      trackedCoin: SUI,
+      isPassThrough: noPools,
+    });
+    expect(d).toMatchObject({ nextAddress: attacker, nextCoinType: SUI, isSwap: true, basis: "swap-follow" });
+  });
+
+  it("keeps a routed swap whose fee was taken in an unpriced intermediate coin", () => {
+    const d = chooseNextHop({
+      sender: attacker,
+      changes: [
+        { address: attacker, amount: "-5010000", coin_type: USDC },
+        { address: attacker, amount: "4963818403", coin_type: SUI },
+        { address: collector, amount: "6", coin_type: "0xc::mid::MID" },
+        { address: collector, amount: "42585", coin_type: USDC },
+      ],
+      actions: ["Swap USDC → SUI on Aftermath"],
+      direction: "forward",
+      trackedCoin: null,
+      isPassThrough: noPools,
+    });
+    expect(d).toMatchObject({ nextAddress: attacker, nextCoinType: SUI, basis: "swap-follow" });
+  });
+
+  it("follows the collectors when the signer neither spent nor kept the coin they were paid", () => {
+    const d = chooseNextHop({
+      sender: signer,
+      changes: drain.filter((c) => c.coin_type !== SUI || c.address !== signer),
+      actions: drainActions,
+      direction: "forward",
+      trackedCoin: null,
+      isPassThrough: noPools,
+    });
+    expect(d).toMatchObject({ nextAddress: largeCollector, nextCoinType: SUI, isSwap: false });
+  });
+
+  it("weighs a payment in a second coin by value when every coin is priced", () => {
+    const changes: HopChange[] = [
+      { address: attacker, amount: "-500000000000", coin_type: SUI },
+      { address: attacker, amount: "-10000000", coin_type: USDC },
+      { address: attacker, amount: "1660000", coin_type: BTC },
+      { address: friend, amount: "10000000", coin_type: USDC },
+    ];
+    const params = {
+      sender: attacker,
+      changes,
+      actions: ["Swap SUI → BTC on Cetus"],
+      direction: "forward" as const,
+      trackedCoin: null,
+      isPassThrough: noPools,
+    };
+    // $10 paid out beside a $1,000 swap.
+    expect(chooseNextHop({ ...params, valueUsd: prices })).toMatchObject({
+      nextAddress: attacker,
+      nextCoinType: BTC,
+      basis: "swap-follow",
+    });
+    // Unpriced, the USDC leg went entirely to the friend and decides alone.
+    expect(chooseNextHop(params)).toMatchObject({ nextAddress: friend, isSwap: false });
   });
 });
 
@@ -600,16 +755,16 @@ describe("chooseNextHop — guards against following the wrong party", () => {
     expect(flash.nextAddress).toBe(victim);
     expect(flash.nextCoinType).toBe(SUI);
 
-  // A real swap with only a small payment to someone else still follows
-  // the swapper and switches asset.
+    // A real swap with only a small payment to someone else still follows
+    // the swapper and switches asset.
     const real = chooseNextHop({
-   sender: attacker,
-   changes: [
-    { address: attacker, amount: "-1000", coin_type: SUI },
-    { address: attacker, amount: "500", coin_type: USDC },
-    { address: victim, amount: "100", coin_type: SUI },
-   ],
-   actions: ["Swap SUI → USDC on Cetus"],
+      sender: attacker,
+      changes: [
+        { address: attacker, amount: "-1000", coin_type: SUI },
+        { address: attacker, amount: "500", coin_type: USDC },
+        { address: victim, amount: "100", coin_type: SUI },
+      ],
+      actions: ["Swap SUI → USDC on Cetus"],
       direction: "forward", trackedCoin: SUI, isPassThrough: noPools,
     });
     expect(real.isSwap).toBe(true);

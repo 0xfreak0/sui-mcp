@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Fixed
-- **Forward fund traces follow recipients of named-swap drains.** A call named `swap` cannot redirect the trace to a coin minted to its signer when other addresses receive at least half the tracked coin the signer spent. Collector payments remain reachable in the graph and path tools.
+- **Forward fund traces follow the recipients of a drain named `swap`.** `trace_funds` reads a call named `swap` as a swap only while addresses other than the sender and pools received less than half of what the sender moved, compared in USD when every coin involved is priced and per coin otherwise. A drainer's claim function named `swap` that pays collectors and mints a bait coin to the signer now continues to the larger collector and lists the other under `unfollowed_recipients`. Router swaps that pay a fee or referrer, in the input, output or an intermediate coin, still follow the swapper, including on a first hop with no `coin_type`.
 
 ### Added
 - **Live oracle pass checks funding, holders, staking, bridges, past balances and checkpoints.** Random draws compare `find_funding_source`'s first hop with the earliest transactions' balance changes, direct prices and supply shares, small coins' holder rankings with both walks and gRPC balances, historical staked SUI rewards with withdrawal events (a lower payout is skipped only when it emptied the rewards pool), native bridge deposits with the event's BCS over gRPC, balances below the consistent range with an anchored read, and `get_checkpoint` by number and by time with GraphQL's checkpoint records. Probe scripts now count the tool calls of the `lib/` modules they import toward live coverage.

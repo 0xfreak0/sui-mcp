@@ -233,6 +233,69 @@ export function isSwapShape(
 const SWAP_MIN_RETURN = 0.1;
 
 /**
+ * Did addresses other than the holder and pools take half or more of what a
+ * transaction moved for the holder, so a call named `swap` does not make it a
+ * swap? A drainer's claim function named `swap` pays collectors the victim's
+ * coins and mints a bait coin to the signer; following the signer's gain
+ * would lose the drain. Only tracked coins count (every coin when none is
+ * tracked yet). Per coin, the payments to others are set against the
+ * holder's absolute net change: a fee on a swap's input or output, or on an
+ * arbitrage that returns more of the coin, is small beside it. When every
+ * coin paid out or spent has a price, the sums are compared in USD, so a
+ * small payment in a second coin does not veto a large swap; the holder's
+ * gains in coins nobody else was paid stay out of the sum, so a bait coin's
+ * price cannot outweigh the payments. Otherwise each paid coin is judged on
+ * its own, since raw amounts of different coins do not compare. A coin the
+ * holder neither spent nor kept on net, paid out while it spent another, is
+ * then left out: it is a router's fee on a route's intermediate coin, whose
+ * size beside the swap is unknown. Gas must already be removed from
+ * `changes`.
+ */
+function paidPastSwap(
+  changes: HopChange[],
+  holder: string,
+  tracked: (c: HopChange) => boolean,
+  isPassThrough: (address: string) => boolean,
+  valueUsd: (change: HopChange) => number | null,
+): boolean {
+  const net = new Map<string, { coin_type: string; amount: bigint }>();
+  const paid = new Map<string, { coin_type: string; amount: bigint }>();
+  const add = (m: typeof net, c: HopChange, amount: bigint) => {
+    const key = coinKey(c.coin_type);
+    m.set(key, { coin_type: c.coin_type, amount: (m.get(key)?.amount ?? 0n) + amount });
+  };
+  for (const c of changes) {
+    if (!tracked(c)) continue;
+    const amount = BigInt(c.amount);
+    if (c.address === holder) add(net, c, amount);
+    else if (amount > 0n && !isPassThrough(c.address)) add(paid, c, amount);
+  }
+  if (paid.size === 0) return false;
+  const spentKeys = [...net].filter(([, n]) => n.amount < 0n).map(([key]) => key);
+  let paidUsd = 0;
+  let movedUsd = 0;
+  let priced = true;
+  for (const key of new Set([...paid.keys(), ...spentKeys])) {
+    const p = paid.get(key);
+    const coin_type = p?.coin_type ?? net.get(key)!.coin_type;
+    const out = p ? valueUsd({ address: holder, coin_type, amount: p.amount.toString() }) : 0;
+    const own = valueUsd({ address: holder, coin_type, amount: absBig(net.get(key)?.amount ?? 0n).toString() });
+    if (out === null || own === null) {
+      priced = false;
+      break;
+    }
+    paidUsd += out;
+    movedUsd += own;
+  }
+  if (priced && movedUsd > 0) return paidUsd * 2 >= movedUsd;
+  const spentAny = spentKeys.length > 0;
+  return [...paid].some(([key, p]) => {
+    const own = absBig(net.get(key)?.amount ?? 0n);
+    return (own > 0n || !spentAny) && p.amount * 2n >= own;
+  });
+}
+
+/**
  * Rank two candidates.
  *
  * USD first, because raw amounts are not comparable across coins: 1 USDC is
@@ -405,14 +468,8 @@ export function chooseNextHop(params: {
   );
   const holderSpent = changes.some((c) => c.address === holder && neg(c) && tracked(c));
 
- // A named swap may pay a pool and a small fee, but payments to other
- // addresses of at least half the tracked spend take priority over its name.
- const spentTracked = changes.reduce((sum, c) =>
-  c.address === holder && tracked(c) ? sum - BigInt(c.amount) : sum, 0n);
- const paidTracked = positiveToOthers.reduce((sum, c) =>
-  tracked(c) && !isPassThrough(c.address) ? sum + BigInt(c.amount) : sum, 0n);
- const namedSwap = isSwapHop(actions) && spentTracked > 0n && paidTracked * 2n < spentTracked;
- if ((namedSwap || isSwapShape(changes, holder, sender, trackedCoin, valueUsd)) && holder === sender) {
+  const namedSwap = isSwapHop(actions) && !paidPastSwap(changes, holder, tracked, isPassThrough, valueUsd);
+  if ((namedSwap || isSwapShape(changes, holder, sender, trackedCoin, valueUsd)) && holder === sender) {
     const received = holderGains.find((g) => !tracked(g)) ?? holderGains[0];
     return {
       nextAddress: holder,

@@ -3648,14 +3648,26 @@ Rules a change is likely to break:
   beside a deposit and a payment does not read as the swap and steal the
   payee's branch. That follows the swapper through a swap that also
   pays a fee collector, which without a call named `swap` sent the trace to
-  the collector. `isSwapHop` still matches a named swap only when the signer
-  net spent the tracked coin and non-pool addresses gained less than half of
-  that spend. A claim function named `swap` that pays collectors most of the
-  SUI and mints a bait coin to the signer follows the SUI recipients instead.
+  the collector.
   A flash swap nets to nothing and matches neither. Backward, the actor paying
   another coin in for the tracked one is `swap-follow` by the same reading,
   and the flow graph labels the holder's own gains in a conversion
   `swap-follow` whatever the calls are named.
+- **A call named `swap` is a swap unless others took the value.**
+  `isSwapHop` matches the name; `paidPastSwap` vetoes it when addresses other
+  than the holder and pools gained half or more of what the holder moved,
+  per tracked coin (every coin before one is tracked) against the holder's
+  absolute net change in it. With every paid or spent coin priced, the sums
+  are compared in USD, so a small payment in a second coin keeps a large
+  swap. The holder's gains in coins nobody else was paid stay out of the sum:
+  a drainer's bait coin can carry any price. Unpriced, each paid coin decides
+  alone, except a coin the holder neither spent nor kept while it spent
+  another, which is a router's fee on an intermediate coin. A claim function
+  named `swap` that pays collectors the victim's SUI and mints a bait coin to
+  the signer follows the SUI recipients; a fee on a swap's input or output,
+  or on an arbitrage that returns more of the coin, keeps the swap. Never sum
+  raw amounts across coins here: before a coin is tracked, a USDC spend and a
+  SUI gain cancel and the trace walks to the fee collector.
 - **An object cannot send.** When the recipient has sent nothing since the hop,
   the next hop is the first later transaction in which its balance of the coin
   goes down, found through `affectedAddress` and marked

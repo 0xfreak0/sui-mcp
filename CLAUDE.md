@@ -1106,19 +1106,23 @@ fields need to be covered by the boundary's field rules
   event field named `token_type`, `amount` or `code` pass markup and bidi
   overrides. A diff's `sample` is a list of code lines and is not decoded
   data.
-- **A Move type tag keeps its spelling under any key**, including a declared
-  type with type parameters (`Balance<T0>`) or primitives only
-  (`vector<u8>`), and so does a whole URL: valid URL characters form no
-  markup, and escaping `&` or `_` broke links a caller follows. `&` is
-  escaped only as the start of an entity, and `_` only where it can open
-  emphasis (not after a letter or digit, not before a space), so an
-  identifier such as `swap_exact_input_` keeps its spelling.
+- **Only one complete, balanced Move type tag keeps its spelling under any
+  key.** The type can be a struct path, primitive, type parameter or generic
+  (`0x2::coin::Coin<0x2::sui::SUI>`, `Balance<T0>`, `vector<u8>`).
+  Punctuation before or after it is text, not part of the type. A whole URL
+  also keeps its spelling: valid URL characters form no markup, and escaping
+  `&` or `_` broke links a caller follows. `&` is escaped only as the start
+  of an entity, and `_` only where it can open emphasis (not after a letter
+  or digit, not before a space), so `swap_exact_input_` keeps its spelling.
 - **Evidence punctuation and embedded types stay legible.** A `>` outside an
   HTML tag or a leading blockquote remains an arrow or comparison, and `<`
-  outside a tag opener remains a comparison. A Move generic inside a sentence
-  keeps its complete type, including nested arguments and underscores.
-  An HTML tag still has both brackets shown as escapes, and Markdown links
-  and emphasis remain inert.
+  outside a tag opener remains a comparison. A generic type inside a
+  sentence keeps its full struct paths and nested arguments, such as
+  `Pool<0x2::sui::SUI, 0xabc::usdc::USDC>`. An embedded `<address>` or
+  `<T>` opens an HTML tag and is escaped even when it sits inside a generic
+  expression (`Box<address>`, `Balance<T>`); underscores that can open
+  emphasis are escaped inside those expressions too. HTML tags, Markdown
+  links and emphasis stay inert.
 - **A `{ tool, args }` call keeps its arguments under any key**
   (`see`, `sample_next_call`, `*_next_call`), so it stays callable. Hidden
   characters in them are still shown.

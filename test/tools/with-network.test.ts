@@ -563,6 +563,53 @@ describe("chain-supplied text at the tool boundary", () => {
     expect(neutralizeText("a >= b and x < y")).toBe("a >= b and x < y");
   });
 
+  it("exempts only a complete Move type, not punctuation around or inside it", async () => {
+    const { guardValue } = await import("../../src/utils/untrusted-text.js");
+    const cases: Array<[string, string]> = [
+        ["> Foo<u8>", "\\u003e Foo\\u003cu8>"],
+        ["Foo<u8", "Foo\\u003cu8"],
+        ["Foo<u8> >", "Foo\\u003cu8> >"],
+        ["Foo<img<T onerror<T>>>", "Foo\\u003cimg\\u003cT onerror\\u003cT\\u003e>>"],
+        ["0x2::coin::Coin<0x2::sui::SUI>", "0x2::coin::Coin<0x2::sui::SUI>"],
+        ["Balance<T0>", "Balance<T0>"],
+        ["vector<u8>", "vector<u8>"],
+        ["Pool<0x2::sui::SUI, 0xabc::usdc::USDC>", "Pool<0x2::sui::SUI, 0xabc::usdc::USDC>"],
+    ];
+    for (const [input, expected] of cases) {
+        expect(guardValue(input, "parsed", true).value, input).toBe(expected);
+        const fields = guardValue({ [input]: "1" }, "parsed", true).value as Record<string, unknown>;
+        expect(Object.keys(fields), input).toEqual([expected]);
+    }
+  });
+
+  it("guards embedded type markup while preserving chain evidence punctuation", async () => {
+    const { neutralizeText } = await import("../../src/utils/untrusted-text.js");
+    const cases: Array<[string, string]> = [
+        ["See Wrapper<0x2::_claim_::T>", "See Wrapper<0x2::\\u005fclaim_::T>"],
+        ["See Box<address>", "See Box\\u003caddress>"],
+        ["See Balance<T>", "See Balance\\u003cT>"],
+        ["->", "->"],
+        ["a < b", "a < b"],
+        ["x > y", "x > y"],
+        ["See Pool<0x2::sui::SUI, 0xabc::usdc::USDC>", "See Pool<0x2::sui::SUI, 0xabc::usdc::USDC>"],
+    ];
+    for (const [input, expected] of cases) expect(neutralizeText(input), input).toBe(expected);
+  });
+
+  it("guards unclosed and mixed generic-like strings in bounded time", async () => {
+    const { guardValue } = await import("../../src/utils/untrusted-text.js");
+    const samples = [
+        "A<".repeat(1_024),
+        "a < b Pool<0x2::sui::SUI> ".repeat(100).slice(0, 2_048),
+    ];
+    for (const sample of samples) {
+        guardValue(sample, "evidence", true);
+        const started = performance.now();
+        for (let i = 0; i < 50; i++) guardValue(sample, "evidence", true);
+        expect((performance.now() - started) / 50, sample.slice(0, 40)).toBeLessThan(5);
+    }
+  });
+
   it("never cuts a pure byte argument shown as hex", async () => {
     const { server, registered } = fakeServer();
     // decode_ptb shows an oracle update's vector<u8> as one hex value.

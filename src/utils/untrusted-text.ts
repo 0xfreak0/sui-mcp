@@ -76,21 +76,27 @@ export function escapeHidden(value: string): string {
   return escapeInvisible(value, false);
 }
 
-/** Indices of a Move generic inside prose, including nested type arguments. */
+/** Indices of a complete Move generic inside prose, including nested type arguments. */
 function embeddedTypes(value: string): Set<number> {
   const indices = new Set<number>();
   const starts = /(?:(?:0x)?[0-9a-fA-F]{1,64}::[A-Za-z_][A-Za-z0-9_]*::)?[A-Za-z_][A-Za-z0-9_]*</g;
-  for (const match of value.matchAll(starts)) {
-    const start = match.index!;
+  let match: RegExpExecArray | null;
+  while ((match = starts.exec(value))) {
+    const start = match.index;
     if (start > 0 && /[A-Za-z0-9_:]/.test(value[start - 1]!)) continue;
     let depth = 1;
-    let end = start + match[0].length;
+    let end = starts.lastIndex;
     for (; end < value.length && depth; end++) {
       if (value[end] === "<") depth++;
       else if (value[end] === ">") depth--;
     }
-    if (depth || !isTypeTag(value.slice(start, end))) continue;
+    // An unclosed generic cannot have a later, independent candidate.
+    if (depth) break;
+    if (isTypeTag(value.slice(start, end))) {
     for (let i = start; i < end; i++) indices.add(i);
+    }
+    // Nested openers have already been examined as part of this span.
+    starts.lastIndex = end;
   }
   return indices;
 }
@@ -105,10 +111,17 @@ function escapeText(value: string, code: boolean): string {
   // A plain arrow or comparison is evidence, not markup. Protect tag brackets,
   // a leading blockquote and Markdown syntax without changing Move generics.
   const escaped = escapeInvisible(value.replace(MARKUP, (char: string, at: number, text: string) => {
-    if (types.has(at)) return char;
-    if (char === "<") return /[A-Za-z!/]/.test(text[at + 1] ?? "") ? CODEPOINT(char) : char;
-    if (char === ">") return tagEnds.has(at) || /^[ \t]{0,3}$/.test(text.slice(0, at)) ? CODEPOINT(char) : char;
     if (char === "_") return !/[A-Za-z0-9]/.test(text[at - 1] ?? "") && !/^\s?$/.test(text[at + 1] ?? "") ? CODEPOINT(char) : char;
+    if (char === "<") {
+      // A type argument can itself spell an HTML tag, e.g. Box<address>.
+      if (types.has(at)) {
+        TYPE_HTML_OPEN.lastIndex = at;
+        if (!TYPE_HTML_OPEN.test(text)) return char;
+      }
+      return /[A-Za-z!/]/.test(text[at + 1] ?? "") ? CODEPOINT(char) : char;
+    }
+    if (types.has(at)) return char;
+    if (char === ">") return tagEnds.has(at) || /^[ \t]{0,3}$/.test(text.slice(0, at)) ? CODEPOINT(char) : char;
     return CODEPOINT(char);
   }), false);
   // A chain-supplied sentence must not become a Markdown heading or list.
@@ -153,22 +166,48 @@ const decoded = (field: string, value: unknown) =>
 const SKIP = /(?:^|_)(?:next_call|previous_call|repeat_with|continue_with)$/;
 const CODE = /^(?:disassembly|code|decompiled)$/;
 const MOVE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const STRUCT_PATH = /(?:0x)?[0-9a-fA-F]{1,64}::[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*/g;
-const PRIMITIVE = /\b(?:u8|u16|u32|u64|u128|u256|bool|address|signer|vector)\b/g;
+const TYPE_HTML_OPEN = /<[A-Za-z][A-Za-z0-9-]*(?=[>\s/])/y;
+const TYPE_NAME = /[A-Za-z_][A-Za-z0-9_]*/y;
+const TYPE_STRUCT = /(?:0x)?[0-9a-fA-F]{1,64}::[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*/y;
+const TYPE_PRIMITIVE = /^(?:u8|u16|u32|u64|u128|u256|bool|address|signer)$/;
 /**
  * Bytes shown as hex (an address, or a pure `vector<u8>` argument such as an
  * oracle update): no markup and no readable text, so never cut.
  */
 const HEX_BYTES = /^0x[0-9a-fA-F]*$/;
 /** A type parameter as the chain prints one in a declaration (`Balance<T0>`). */
-const TYPE_PARAM = /\bT\d*\b/g;
-const GENERIC_NAME = /\b[A-Za-z_][A-Za-z0-9_]*(?=<)/g;
+const TYPE_PARAM = /^T\d*$/;
 
-/** A Move type tag: struct paths, primitives and type parameters joined by `<`, `>`, `,` and spaces. */
+/** Accept exactly one balanced Move type expression, not type-like punctuation in prose. */
 function isTypeTag(value: string): boolean {
-  if (!(value.includes("::") || value.includes("<")) || value.length > 8_192) return false;
-  const rest = value.replace(STRUCT_PATH, "S").replace(PRIMITIVE, "P").replace(TYPE_PARAM, "G").replace(GENERIC_NAME, "G");
-  return /^[SPG<>, ]+$/.test(rest) && (rest.includes("S") || rest.includes("<"));
+  if (value.length > 8_192 || !value) return false;
+  let at = 0;
+  const type = (depth: number): boolean => {
+    if (depth > 128) return false;
+    TYPE_STRUCT.lastIndex = at;
+    const struct = TYPE_STRUCT.exec(value);
+    TYPE_NAME.lastIndex = at;
+    const name = struct ?? TYPE_NAME.exec(value);
+    if (!name) return false;
+    at += name[0].length;
+    const bare = !struct;
+    if (value[at] !== "<") return !bare || TYPE_PRIMITIVE.test(name[0]) || TYPE_PARAM.test(name[0]);
+    if (bare && TYPE_PRIMITIVE.test(name[0])) return false;
+    at++;
+    let args = 0;
+    do {
+      while (value[at] === " ") at++;
+      if (!type(depth + 1)) return false;
+      args++;
+      while (value[at] === " ") at++;
+      if (value[at] !== ",") break;
+      at++;
+    } while (true);
+    if (value[at] !== ">" || (bare && name[0] === "vector" && args !== 1)) return false;
+    at++;
+    return true;
+  };
+  return type(0) && at === value.length;
 }
 
 /**

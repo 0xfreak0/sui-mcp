@@ -116,13 +116,13 @@ function moduleMatches(actual: string | undefined, requested: ModuleEventFilterR
   });
 }
 
-/** First listed object named anywhere in decoded fields, with its field path. */
+/** First listed object a decoded field names within eight levels, with its field path. */
 function namedObject(json: unknown, objects: string[]): { index: number; path: string } | null {
   const visit = (value: unknown, path: string, depth: number): { index: number; path: string } | null => {
     if (typeof value === "string" && /^0x[0-9a-fA-F]{1,64}$/.test(value)) {
       const index = objects.indexOf(normalizeSuiAddress(value));
       return index < 0 ? null : { index, path };
-  }
+    }
     if (!value || typeof value !== "object" || depth >= 8) return null;
     for (const [key, child] of Object.entries(value)) {
       const hit = visit(child, path ? `${path}.${key}` : key, depth + 1);

@@ -103,16 +103,16 @@ states the side:
 |Vice|`pool::buy`, `pool::sell`|`<token, quote>` type arguments|
 |SuiPump|`bonding_curve::buy`/`sell`, `agent_session::buy_with_session`/`sell_with_session`|one type argument, traded against SUI|
 |Koi|`curve::buy`/`sell`, `buy_to_sender`/`sell_to_sender`|one type argument, traded against SUI|
-|Memez pool via the routed wrapper|`router::pump_pump_ref_w1`, `pump_dump_ref_w1`|the pool's Pump/Dump event; with no events, the wrapper's input/output type arguments or an isolated SUI/token net|
+|Memez pool via a routing wrapper|`router::pump_pump_ref_w1`, `pump_dump_ref_w1` and the other `{pump,stable,auction}_{pump,dump}` variants|the pool's Pump/Dump event; with no events, the last two type arguments (input, output) or an isolated SUI/token net|
 
 `get_transaction` labels memez's direct pump and dump from their
 `<token, quote>` type arguments. A BLAST pump quoted in SUI reads
 `Swap SUI → BLAST on Interest Protocol`, and its dump reads
 `Swap BLAST → SUI on Interest Protocol`. A routed memez trade uses its
 pool's Pump/Dump event for the coins and direction, with no protocol
-name asserted for the wrapper. When events are unavailable, the routed
-wrapper's `<RouterData, input, input, output>` type arguments settle its
-coins. `get_transaction_history`, `build_timeline` and `trace_funds`
+name asserted for the wrapper. When events are unavailable, the wrapper's
+last two type arguments settle its coins, input then output; on a route
+opened in another coin the type argument before them is that opening coin. `get_transaction_history`, `build_timeline` and `trace_funds`
 read commands without type arguments or events. They name the token
 only when one curve trade and the routing scaffold are the only
 non-framework calls, and the sender's SUI and one other coin moved in

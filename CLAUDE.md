@@ -533,9 +533,9 @@ Memez wraps Pump/Dump events in `memez_events_wrapper::Event<T>`, with
 its changed pool ID, both coin types and positive trade amounts under
 `pos0`. `readPoolSwap` reads that exact defining event type and verifies
 the pool is a changed object before assigning the swap to its emitting
-router call. The separate router lineage version `0x241fde24…` links
-the memez package but has no verified first-party name; event-based
-labels must not give the wrapper Interest Protocol's identity.
+router call. The router lineage rooted at `0x42005a3a…` links the memez
+package but has no verified first-party name; event-based labels must not
+give the wrapper Interest Protocol's identity.
 
 - **An event goes to the call that ran it.** A swap is placed on the call
   that takes its pool as an argument and whose package and module could have
@@ -614,12 +614,18 @@ labels must not give the wrapper Interest Protocol's identity.
   net, and only when the PTB holds one curve trade, every other call is
   into 0x1, 0x2, 0x3 or the same protocol, and the sender's SUI (exactly
   `0x2::sui::SUI`) and one other coin moved the way the side states. The
-  `0x241fde24…` memez route also permits the exact Aftermath router
-  scaffold's begin/initiate/end calls; a second trade or other call
-  forbids using the whole-PTB net. Its v3
-  `router::pump_pump_ref_w1` and `pump_dump_ref_w1` type arguments
-  `<RouterData, input, input, output>` settle the pair without events.
-  A coinless row reports Buy/Sell with no guessed protocol or coin.
+  memez route lineage (root `0x42005a3a…`, matched by its five version
+  IDs or a prefetched root) also permits the Aftermath router lineage's
+  `begin_router_tx*`, `initiate_path*` and `end_router_tx*` calls; a
+  second trade or any other call forbids using the whole-PTB net. Its
+  `router::{pump,stable,auction}_{pump,dump}[_ref][_w1]` calls take the
+  input coin as their second-to-last type argument and the output as the
+  last: `<RouterData, route start coin, input, output>` with `_w1` and
+  `<cap, input, output>` without. The route start coin is the path's
+  opening coin (USDC on a USDC → SUI → meme route), so it never names the
+  trade. A routed trade passes its output on as the path's coin, as a
+  routed swap does. A coinless row reports Buy/Sell with no guessed
+  protocol or coin.
 
 ## Completeness beats payload size
 

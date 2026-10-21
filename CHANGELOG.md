@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- **Split funding calls expose cross-batch first funders.** With `related_addresses`, `find_funding_sources` reports `first_funder_by_subject` for every walked address and notes that `shared_funders` groups only walked chains in that call. Compare those maps across calls for matches.
 - **A window that ends before it starts is refused.** Every tool taking a time or checkpoint window returns an error for a start later than its end, or a checkpoint start at or above a checkpoint end, instead of an empty result.
 - **Paging ends at the last cursor.** Read from a list's last cursor, or from a cursor outside the window, `get_transaction_history`, `query_transactions`, `query_events` and `check_activity` report no further page instead of an empty page that claims more.
 - **Launchpad curve trades name their direction.** Interest Protocol memez `pump`/`dump`, SuiPump bonding-curve and session `buy`/`sell`, and Koi curve `buy`/`sell` calls render as `Swap SUI → MEME` or `Swap MEME → SUI` when the traded coin is known. History rows without generic arguments use the sender's isolated SUI and token changes or retain a coinless Buy/Sell label.

@@ -601,6 +601,22 @@ describe("find_funding_sources checks related subjects across batches", () => {
     expect(d.subject_payment_scope).toMatchObject({ walked_addresses: 1, related_addresses: 22 });
   });
 
+ it("exposes first funders across split calls even when neither call forms a shared group", async () => {
+  earliest[other[0]] = [fundingTx("OtherFunding", DISTRIBUTOR, other[0], "1000000000", "2025-09-07T09:00:00.000Z")];
+  const first = await run("find_funding_sources", {
+   addresses: [ATTACKER], related_addresses: [other[0]], depth: "first_hop", measure_fanout: false,
+  });
+  const second = await run("find_funding_sources", {
+   addresses: [other[0]], related_addresses: [ATTACKER], depth: "first_hop", measure_fanout: false,
+  });
+  expect(first.shared_funders).toEqual([]);
+  expect(second.shared_funders).toEqual([]);
+  expect(first.first_funder_by_subject).toEqual({ [ATTACKER]: DISTRIBUTOR });
+  expect(second.first_funder_by_subject).toEqual({ [other[0]]: DISTRIBUTOR });
+  expect(first.shared_funders_scope).toContain("only walked addresses");
+  expect(second.shared_funders_scope).toContain("compare first_funder_by_subject");
+ });
+
   it("counts shared funders past a related subject as a call walking every address does", async () => {
     paid[DISTRIBUTOR] = [ATTACKER];
     earliest[other[0]] = [fundingTx("OtherFunding", ANCESTOR, other[0], "1000000000", "2025-09-07T09:00:00.000Z")];

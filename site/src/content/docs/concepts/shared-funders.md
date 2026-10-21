@@ -201,10 +201,10 @@ Like the single walk, it stops at funders that paid more than 50 distinct
 addresses. Each common funder has fan-out and flow shape to distinguish a
 narrow origin from an exchange many unrelated users withdrew from. A chain
 counts toward shared funders up to the first funder that is a walked subject.
-When a walked chain reaches a related address, the funders past it are
-counted for that related address, so a split set reports the shared funders
-one call over every address would. Two addresses walked in different calls
-are not compared for shared funders; compare their `first_funder` fields.
+When a walked chain reaches a related address, funders past it count for
+that related address. `shared_funders` groups only walked chains in one call;
+compare `first_funder_by_subject` across split calls to find funders shared
+by subjects walked in different calls.
 
 Co-funding is measured against each transaction's total recipient count.
 Two subjects among two recipients suggests a bespoke payment; two among

@@ -1765,9 +1765,12 @@ Rules for `walkFunding` and the batch tool, in `src/tools/funding.ts`:
   but get no result row. A larger set is split across calls, each passing the
   rest as related. A walked chain that reaches a related subject credits its
   later funders to that subject, not to the walked one, so shared-funder
-  counts match a call that walks every address. Stopping there instead lost
-  the funder F of A <- R <- F and B <- F in every split. Shared funders of two
-  addresses walked in different calls are still not compared.
+  counts for those reached chains match a call that walks every address.
+  Stopping there instead lost the funder F of A <- R <- F and B <- F in
+  every split. Shared funders of two addresses walked in different calls
+  are not compared: `first_funder_by_subject` lists every walked subject's
+  first funder even when capped result rows omit some, so callers can
+  compare the maps across calls. It never claims a related address was walked.
 - **`subject_paid_subject` asks each ordered pair of up to 20 walked
   subjects.** `sentAddress` and `affectedAddress` combine in one filter, so
   the answer does not depend on how far back either history runs, and ten

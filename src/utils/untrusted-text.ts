@@ -92,7 +92,7 @@ function embeddedTypes(value: string): Set<number> {
     }
     // An unclosed generic cannot have a later, independent candidate.
     if (depth) break;
-    if (isTypeTag(value.slice(start, end))) {
+    if (isTypeTag(value.slice(start, end), true)) {
     for (let i = start; i < end; i++) indices.add(i);
     }
     // Nested openers have already been examined as part of this span.
@@ -113,7 +113,7 @@ function escapeText(value: string, code: boolean): string {
   const escaped = escapeInvisible(value.replace(MARKUP, (char: string, at: number, text: string) => {
     if (char === "_") return !/[A-Za-z0-9]/.test(text[at - 1] ?? "") && !/^\s?$/.test(text[at + 1] ?? "") ? CODEPOINT(char) : char;
     if (char === "<") {
-      // A type argument can itself spell an HTML tag, e.g. Box<address>.
+      // A type argument can itself spell an HTML tag or autolink.
       if (types.has(at)) {
         TYPE_HTML_OPEN.lastIndex = at;
         if (!TYPE_HTML_OPEN.test(text)) return char;
@@ -166,7 +166,7 @@ const decoded = (field: string, value: unknown) =>
 const SKIP = /(?:^|_)(?:next_call|previous_call|repeat_with|continue_with)$/;
 const CODE = /^(?:disassembly|code|decompiled)$/;
 const MOVE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const TYPE_HTML_OPEN = /<[A-Za-z][A-Za-z0-9-]*(?=[>\s/])/y;
+const TYPE_HTML_OPEN = /<(?:[A-Za-z][A-Za-z0-9-]*(?=[>\s/])|[A-Za-z][A-Za-z0-9+.-]{1,31}:)/y;
 const TYPE_NAME = /[A-Za-z_][A-Za-z0-9_]*/y;
 const TYPE_STRUCT = /(?:0x)?[0-9a-fA-F]{1,64}::[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*/y;
 const TYPE_PRIMITIVE = /^(?:u8|u16|u32|u64|u128|u256|bool|address|signer)$/;
@@ -178,8 +178,8 @@ const HEX_BYTES = /^0x[0-9a-fA-F]*$/;
 /** A type parameter as the chain prints one in a declaration (`Balance<T0>`). */
 const TYPE_PARAM = /^T\d*$/;
 
-/** Accept exactly one balanced Move type expression, not type-like punctuation in prose. */
-function isTypeTag(value: string): boolean {
+/** Accept exactly one balanced Move type; bare generic names belong in embedded prose only. */
+function isTypeTag(value: string, allowBareNames = false): boolean {
   if (value.length > 8_192 || !value) return false;
   let at = 0;
   const type = (depth: number): boolean => {
@@ -192,7 +192,7 @@ function isTypeTag(value: string): boolean {
     at += name[0].length;
     const bare = !struct;
     if (value[at] !== "<") return !bare || TYPE_PRIMITIVE.test(name[0]) || TYPE_PARAM.test(name[0]);
-    if (bare && TYPE_PRIMITIVE.test(name[0])) return false;
+    if (bare && (TYPE_PRIMITIVE.test(name[0]) || (name[0] !== "vector" && !allowBareNames))) return false;
     at++;
     let args = 0;
     do {

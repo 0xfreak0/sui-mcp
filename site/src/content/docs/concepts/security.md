@@ -60,10 +60,12 @@ or `wss` URL keeps its spelling; a `data:` URI is text and is cut like other
 text. Inside decoded chain data (event JSON, `aggregate_events` event
 samples, object content, Display fields) the field names are chosen by
 whoever wrote the data, so every string there is escaped unless it is one
-complete, balanced Move type tag or hex bytes. Field names that are not Move
+complete, balanced Move type tag or hex bytes. A whole-field or decoded-key
+type tag is a struct path, primitive, type parameter or vector type; bare
+generic names such as `Box<address>` are text. Field names that are not Move
 identifiers or complete type tags are escaped too. Addresses, digests, amounts,
-complete Move type tags (declared types such as `Balance<T0>` included), hex
-bytes such as a pure `vector<u8>` argument and continuation calls keep their
+full-path Move type tags (including `0x2::balance::Balance<T0>`), hex bytes
+such as a pure `vector<u8>` argument and continuation calls keep their
 spelling apart from hidden characters and are never cut. Error messages show
 hidden characters only, so a type tag they quote stays usable. Code listings
 keep their lines and type tags, so their contents must still be read as
@@ -73,9 +75,9 @@ Arrows and comparisons in evidence keep their punctuation (`->`, `a < b`,
 `x > y`). Generic types with struct paths remain readable within a sentence,
 including `Pool<0x2::sui::SUI, 0xabc::usdc::USDC>`. HTML tag openers inside
 an embedded generic are escaped (`Box<address>` and `Balance<T>`), as are
-underscores that can open emphasis. HTML tag openers, Markdown links,
-emphasis and leading blockquotes are escaped, so they do not become active
-formatting.
+CommonMark URI autolinks such as `<ab::m::T>` and underscores that can open
+emphasis. HTML tag openers, Markdown links, emphasis and leading blockquotes
+are escaped, so they do not become active formatting.
 
 Registered chain-reading tools guard their JSON results before any
 `structuredContent` is built; `enable_tools` is a control tool with no chain

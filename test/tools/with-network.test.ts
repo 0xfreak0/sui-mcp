@@ -570,8 +570,11 @@ describe("chain-supplied text at the tool boundary", () => {
         ["Foo<u8", "Foo\\u003cu8"],
         ["Foo<u8> >", "Foo\\u003cu8> >"],
         ["Foo<img<T onerror<T>>>", "Foo\\u003cimg\\u003cT onerror\\u003cT\\u003e>>"],
+        ["Box<address>", "Box\\u003caddress>"],
+        ["Balance<T0>", "Balance\\u003cT0>"],
         ["0x2::coin::Coin<0x2::sui::SUI>", "0x2::coin::Coin<0x2::sui::SUI>"],
-        ["Balance<T0>", "Balance<T0>"],
+        ["0x2::balance::Balance<T0>", "0x2::balance::Balance<T0>"],
+        ["0x1::m::W<0x2::_claim_::T>", "0x1::m::W<0x2::_claim_::T>"],
         ["vector<u8>", "vector<u8>"],
         ["Pool<0x2::sui::SUI, 0xabc::usdc::USDC>", "Pool<0x2::sui::SUI, 0xabc::usdc::USDC>"],
     ];
@@ -587,6 +590,7 @@ describe("chain-supplied text at the tool boundary", () => {
     const cases: Array<[string, string]> = [
         ["See Wrapper<0x2::_claim_::T>", "See Wrapper<0x2::\\u005fclaim_::T>"],
         ["See Box<address>", "See Box\\u003caddress>"],
+        ["See Box<ab::m::T>", "See Box\\u003cab::m::T>"],
         ["See Balance<T>", "See Balance\\u003cT>"],
         ["->", "->"],
         ["a < b", "a < b"],

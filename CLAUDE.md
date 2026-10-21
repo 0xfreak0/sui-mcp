@@ -1107,9 +1107,12 @@ fields need to be covered by the boundary's field rules
   overrides. A diff's `sample` is a list of code lines and is not decoded
   data.
 - **Only one complete, balanced Move type tag keeps its spelling under any
-  key.** The type can be a struct path, primitive, type parameter or generic
-  (`0x2::coin::Coin<0x2::sui::SUI>`, `Balance<T0>`, `vector<u8>`).
-  Punctuation before or after it is text, not part of the type. A whole URL
+  key.** Whole-field and decoded-key exemptions cover struct paths,
+  primitives, type parameters and `vector<T>`, including
+  `0x2::coin::Coin<0x2::sui::SUI>` and `0x2::balance::Balance<T0>`.
+  A bare `Box<address>` or `Balance<T0>` in decoded chain data is text and
+  has its HTML tag opener escaped. Punctuation before or after a type is
+  text, not part of the type. A whole URL
   also keeps its spelling: valid URL characters form no markup, and escaping
   `&` or `_` broke links a caller follows. `&` is escaped only as the start
   of an entity, and `_` only where it can open emphasis (not after a letter
@@ -1118,11 +1121,13 @@ fields need to be covered by the boundary's field rules
   HTML tag or a leading blockquote remains an arrow or comparison, and `<`
   outside a tag opener remains a comparison. A generic type inside a
   sentence keeps its full struct paths and nested arguments, such as
-  `Pool<0x2::sui::SUI, 0xabc::usdc::USDC>`. An embedded `<address>` or
-  `<T>` opens an HTML tag and is escaped even when it sits inside a generic
-  expression (`Box<address>`, `Balance<T>`); underscores that can open
-  emphasis are escaped inside those expressions too. HTML tags, Markdown
-  links and emphasis stay inert.
+  `Pool<0x2::sui::SUI, 0xabc::usdc::USDC>`. Bare generic names are recognised
+  here only to find embedded types, not for the whole-field exemption.
+  An embedded `<address>` or `<T>` opens an HTML tag and is escaped even
+  when it sits inside a generic expression (`Box<address>`, `Balance<T>`);
+  an `<ab::m::T>` can become a CommonMark URI autolink and is escaped too.
+  Underscores that can open emphasis are escaped inside those expressions.
+  HTML tags, Markdown links and emphasis stay inert.
 - **A `{ tool, args }` call keeps its arguments under any key**
   (`see`, `sample_next_call`, `*_next_call`), so it stays callable. Hidden
   characters in them are still shown.

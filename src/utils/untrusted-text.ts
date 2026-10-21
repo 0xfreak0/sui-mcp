@@ -9,7 +9,7 @@ const MAX_TEXT = 2_048;
  */
 const INVISIBLE =
   /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}\p{Default_Ignorable_Code_Point}]/gu;
-const MARKUP = /[<>*~`|\[\]\\]|&(?=#?[A-Za-z0-9]+;)/g;
+const MARKUP = /[<>*~`|\[\]\\_]|&(?=#?[A-Za-z0-9]+;)/g;
 /**
  * The three subdivision flags emoji fonts draw (England, Scotland, Wales):
  * black flag, the tags of gbeng, gbsct or gbwls, cancel tag. Any other tag
@@ -76,13 +76,41 @@ export function escapeHidden(value: string): string {
   return escapeInvisible(value, false);
 }
 
+/** Indices of a Move generic inside prose, including nested type arguments. */
+function embeddedTypes(value: string): Set<number> {
+  const indices = new Set<number>();
+  const starts = /(?:(?:0x)?[0-9a-fA-F]{1,64}::[A-Za-z_][A-Za-z0-9_]*::)?[A-Za-z_][A-Za-z0-9_]*</g;
+  for (const match of value.matchAll(starts)) {
+    const start = match.index!;
+    if (start > 0 && /[A-Za-z0-9_:]/.test(value[start - 1]!)) continue;
+    let depth = 1;
+    let end = start + match[0].length;
+    for (; end < value.length && depth; end++) {
+      if (value[end] === "<") depth++;
+      else if (value[end] === ">") depth--;
+    }
+    if (depth || !isTypeTag(value.slice(start, end))) continue;
+    for (let i = start; i < end; i++) indices.add(i);
+  }
+  return indices;
+}
+
 function escapeText(value: string, code: boolean): string {
   if (code || URL_VALUE.test(value)) return escapeInvisible(value, code);
-  // Escape original markup first, leaving the visible escapes for controls intact.
-  const escaped = escapeInvisible(value.replace(MARKUP, CODEPOINT), false)
-    // Only an underscore that can open emphasis (not after a letter or digit,
-    // not before a space) is escaped, so `swap_exact_input_` keeps its spelling.
-    .replace(/(?<![A-Za-z0-9])_(?![\s]|$)/g, CODEPOINT);
+  const types = embeddedTypes(value);
+  const tagEnds = new Set<number>();
+  for (const match of value.matchAll(/<[A-Za-z!/][^<>]*>/g)) {
+    if (!types.has(match.index!)) tagEnds.add(match.index! + match[0].length - 1);
+  }
+  // A plain arrow or comparison is evidence, not markup. Protect tag brackets,
+  // a leading blockquote and Markdown syntax without changing Move generics.
+  const escaped = escapeInvisible(value.replace(MARKUP, (char: string, at: number, text: string) => {
+    if (types.has(at)) return char;
+    if (char === "<") return /[A-Za-z!/]/.test(text[at + 1] ?? "") ? CODEPOINT(char) : char;
+    if (char === ">") return tagEnds.has(at) || /^[ \t]{0,3}$/.test(text.slice(0, at)) ? CODEPOINT(char) : char;
+    if (char === "_") return !/[A-Za-z0-9]/.test(text[at - 1] ?? "") && !/^\s?$/.test(text[at + 1] ?? "") ? CODEPOINT(char) : char;
+    return CODEPOINT(char);
+  }), false);
   // A chain-supplied sentence must not become a Markdown heading or list.
   return escaped.replace(/^([ \t]{0,3})(#{1,6}|[-+]|\d+\.)(?=\s)/, (_match, spaces: string, marker: string) =>
     `${spaces}${CODEPOINT(marker[0]!)}${marker.slice(1)}`);
@@ -134,11 +162,12 @@ const PRIMITIVE = /\b(?:u8|u16|u32|u64|u128|u256|bool|address|signer|vector)\b/g
 const HEX_BYTES = /^0x[0-9a-fA-F]*$/;
 /** A type parameter as the chain prints one in a declaration (`Balance<T0>`). */
 const TYPE_PARAM = /\bT\d*\b/g;
+const GENERIC_NAME = /\b[A-Za-z_][A-Za-z0-9_]*(?=<)/g;
 
 /** A Move type tag: struct paths, primitives and type parameters joined by `<`, `>`, `,` and spaces. */
 function isTypeTag(value: string): boolean {
   if (!(value.includes("::") || value.includes("<")) || value.length > 8_192) return false;
-  const rest = value.replace(STRUCT_PATH, "S").replace(PRIMITIVE, "P").replace(TYPE_PARAM, "G");
+  const rest = value.replace(STRUCT_PATH, "S").replace(PRIMITIVE, "P").replace(TYPE_PARAM, "G").replace(GENERIC_NAME, "G");
   return /^[SPG<>, ]+$/.test(rest) && (rest.includes("S") || rest.includes("<"));
 }
 

@@ -53,9 +53,9 @@ emoji or a word in a script shaped with them are kept, and so are the tags of
 the England, Scotland and Wales flags.
 
 Human-readable fields (names, symbols, descriptions, labels, notes,
-summaries, decoded transaction arguments) also escape HTML and Markdown
-syntax, and each is cut after 2,048 characters with the number of characters
-removed. A field that is a single `http`, `https`, `ipfs`, `ipns`, `ar`, `ws`
+summaries, decoded transaction arguments) escape HTML tags and Markdown
+formatting and are cut after 2,048 characters, with the number removed.
+A field that is a single `http`, `https`, `ipfs`, `ipns`, `ar`, `ws`
 or `wss` URL keeps its spelling; a `data:` URI is text and is cut like other
 text. Inside decoded chain data (event JSON, `aggregate_events` event
 samples, object content, Display fields) the field names are chosen by
@@ -67,6 +67,11 @@ and continuation calls keep their spelling apart from hidden characters and
 are never cut, and error messages show hidden characters only, so a type
 tag they quote stays usable. Code listings keep their lines and type tags, so
 their contents must still be read as untrusted data.
+
+Arrows and comparisons in evidence keep their punctuation (`->`, `a < b`).
+Move generic types remain readable within a sentence, including nested types.
+HTML tag brackets, Markdown links, emphasis and leading blockquotes are
+escaped, so they do not become active formatting.
 
 Registered chain-reading tools guard their JSON results before any
 `structuredContent` is built; `enable_tools` is a control tool with no chain

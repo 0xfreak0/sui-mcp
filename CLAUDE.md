@@ -1113,6 +1113,12 @@ fields need to be covered by the boundary's field rules
   escaped only as the start of an entity, and `_` only where it can open
   emphasis (not after a letter or digit, not before a space), so an
   identifier such as `swap_exact_input_` keeps its spelling.
+- **Evidence punctuation and embedded types stay legible.** A `>` outside an
+  HTML tag or a leading blockquote remains an arrow or comparison, and `<`
+  outside a tag opener remains a comparison. A Move generic inside a sentence
+  keeps its complete type, including nested arguments and underscores.
+  An HTML tag still has both brackets shown as escapes, and Markdown links
+  and emphasis remain inert.
 - **A `{ tool, args }` call keeps its arguments under any key**
   (`see`, `sample_next_call`, `*_next_call`), so it stays callable. Hidden
   characters in them are still shown.

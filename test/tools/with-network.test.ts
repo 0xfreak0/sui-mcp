@@ -537,6 +537,32 @@ describe("chain-supplied text at the tool boundary", () => {
     expect(data.findings[0].evidence).toEqual(["fn router::swap_exact_input_", "\\u005fclaim_ the \\u003cb\\u003ereward\\u003c/b\\u003e"]);
   });
 
+  it("keeps transaction evidence arrows and embedded Move types readable", async () => {
+    const { server, registered } = fakeServer();
+    const sui = `0x${"0".repeat(63)}2::sui::SUI`;
+    const evidence = `2 object(s) -> 0xb0ac (swap::EscrowCoinsV2) Balance<${sui}>`;
+    withNetworkParam(server).tool("analyze_attack_tx", "desc", {}, async () => ({
+      content: [{ type: "text", text: JSON.stringify({
+        evidence: [evidence],
+        summary: `Decoded 0x2::foo_bar::Token<vector<${sui}>> -> receiver`,
+        notes: `1 < 2 and 3 > 2; Balance<${sui}> alongside <script> and [click](https://evil.invalid)`,
+        detail: "Plain x_y remains readable; > quoted text stays plain",
+      }) }],
+    }));
+    const data = JSON.parse(((await registered[0].handler({})) as { content: Array<{ text: string }> }).content[0].text);
+    expect(data.evidence).toEqual([evidence]);
+    expect(data.summary).toBe(`Decoded 0x2::foo_bar::Token<vector<${sui}>> -> receiver`);
+    expect(data.notes).toBe(`1 < 2 and 3 > 2; Balance<${sui}> alongside \\u003cscript\\u003e and \\u005bclick\\u005d(https://evil.invalid)`);
+    expect(data.detail).toBe("Plain x_y remains readable; > quoted text stays plain");
+  });
+
+  it("neutralizes actual tag brackets and leading blockquotes without escaping comparisons", async () => {
+    const { neutralizeText } = await import("../../src/utils/untrusted-text.js");
+    expect(neutralizeText("> blockquoted text")).toBe("\\u003e blockquoted text");
+    expect(neutralizeText("a <script>alert(1)</script> -> b")).toBe("a \\u003cscript\\u003ealert(1)\\u003c/script\\u003e -> b");
+    expect(neutralizeText("a >= b and x < y")).toBe("a >= b and x < y");
+  });
+
   it("never cuts a pure byte argument shown as hex", async () => {
     const { server, registered } = fakeServer();
     // decode_ptb shows an oracle update's vector<u8> as one hex value.

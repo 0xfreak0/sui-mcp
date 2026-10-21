@@ -267,6 +267,11 @@ interface CurveTrade {
   pair: boolean;
 }
 const MEMEZ_CURVE: CurveTrade = { buy: ["pump"], sell: ["dump"], pair: true };
+// This router's v3 calls use <RouterData, input, input, output>. Its
+// linked memez package emitted the Pump/Dump events; publisher identity
+// alone does not establish the router's protocol name.
+const MEMEZ_ROUTE = "0x241fde2461a546fc18492c7f6d2bad88f3ec3be706aaa2e174ce2b0e9525bab2";
+const AFTERMATH_ROUTE = "0x7de5de8d75a8f4e42cdd3c018f788bc9b9ebf2d3d61dcfe9d2136f17f077afd5";
 const CURVE_TRADES: Record<string, Record<string, CurveTrade>> = {
   "Interest Protocol": { memez_pump: MEMEZ_CURVE, memez_stable: MEMEZ_CURVE, memez_auction: MEMEZ_CURVE, memez_router: MEMEZ_CURVE },
   SuiPump: {
@@ -279,13 +284,18 @@ const CURVE_TRADES: Record<string, Record<string, CurveTrade>> = {
 const SUI_COIN = "0x2::sui::SUI";
 
 interface CurveCall {
-  protocol: string;
+  protocol: string | null;
   side: "buy" | "sell";
   pair: boolean;
+  routed?: boolean;
 }
 
 /** The side of a curated launchpad's curve trade, when its function name states it. */
 function curveCall(pkg: string, mod: string, fn: string): CurveCall | null {
+  if (normalizeSuiAddress(pkg) === MEMEZ_ROUTE && mod === "router") {
+    if (fn === "pump_pump_ref_w1") return { protocol: null, side: "buy", pair: false, routed: true };
+    if (fn === "pump_dump_ref_w1") return { protocol: null, side: "sell", pair: false, routed: true };
+  }
   const proto = lookupProtocol(pkg);
   if (proto?.type !== "launchpad") return null;
   const trade = CURVE_TRADES[proto.name]?.[mod];
@@ -301,6 +311,9 @@ function curveCall(pkg: string, mod: string, fn: string): CurveCall | null {
  * the side states. Null when neither settles them.
  */
 function curveCoins(call: CurveCall, typeArgs: string[], isolated: boolean, net: Map<string, bigint>): [string, string] | null {
+  if (call.routed && typeArgs.length === 4 && typeArgs[1] === typeArgs[2] && typeArgs[1] !== typeArgs[3])
+    return [typeArgs[1], typeArgs[3]];
+  if (call.routed && typeArgs.length !== 0) return null;
   let pair: [string, string] | null = null;
   if (call.pair && typeArgs.length === 2) pair = [typeArgs[0], typeArgs[1]];
   else if (!call.pair && typeArgs.length === 1) pair = [typeArgs[0], SUI_COIN];
@@ -571,14 +584,22 @@ export function decodeTransaction(
   const protocols = new Set<string>();
   const actions: string[] = [];
   const net = senderNetByCoin(balanceChanges, sender);
-  // A curve trade's coins are read from the sender's net only when it is the
-  // PTB's one curve trade and every other call is the framework's or the same
-  // protocol's, so no other leg can have moved a coin.
+  // A net identifies a curve's pair only if there is one trade and no
+  // other value-moving call. The memez wrapper runs inside Aftermath's
+  // routing scaffold; allow that exact router, not arbitrary other legs.
   const moveCalls = commands.flatMap((cmd) => (cmd.command.oneofKind === "moveCall" ? [cmd.command.moveCall] : []));
   const curves = moveCalls.flatMap((mc) => curveCall(mc.package ?? "", mc.module ?? "", mc.function ?? "") ?? []);
   const curveIsolated =
     curves.length === 1 &&
-    moveCalls.every((mc) => isPlumbingPackage(mc.package ?? "0x0") || lookupProtocol(mc.package ?? "")?.name === curves[0].protocol);
+    moveCalls.every((mc) =>
+      isPlumbingPackage(mc.package ?? "0x0") ||
+      (curves[0].routed
+        ? (normalizeSuiAddress(mc.package ?? "0x0") === MEMEZ_ROUTE &&
+          mc.module === "router" && ["pump_pump_ref_w1", "pump_dump_ref_w1"].includes(mc.function ?? "")) ||
+        (normalizeSuiAddress(mc.package ?? "0x0") === AFTERMATH_ROUTE &&
+          mc.module === "router" &&
+          ["begin_router_tx_r1_w1_varied_in", "initiate_path_by_percent_w1", "end_router_tx_r1_w1"].includes(mc.function ?? ""))
+        : lookupProtocol(mc.package ?? "")?.name === curves[0].protocol));
 
   // The type tokens of every deposit/withdraw/borrow/repay/liquidity leg in
   // the PTB. Such a leg can move the coins a swap does, and then the

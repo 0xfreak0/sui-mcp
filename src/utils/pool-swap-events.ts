@@ -40,6 +40,27 @@ function canonicalType(t: string | null | undefined): string | null {
   }
 }
 
+const MEMEZ_EVENT = "0x779829966a2e8642c310bed79e6ba603e5acd3c31b25d7d4511e2c9303d6e3ef";
+
+/** A memez Pump/Dump event wraps its pool, coin types and amounts in pos0. */
+function memezSwap(event: SwapEventInput, targets: EventTargets): { pool: string; coinIn: string; coinOut: string } | null {
+  const type = canonicalType(event.type);
+  const pump = type === `${MEMEZ_EVENT}::memez_events_wrapper::Event<${MEMEZ_EVENT}::memez_events::Pump>`;
+  const dump = type === `${MEMEZ_EVENT}::memez_events_wrapper::Event<${MEMEZ_EVENT}::memez_events::Dump>`;
+  if (!pump && !dump) return null;
+  const fields = (event.json as { pos0?: Record<string, unknown> } | null)?.pos0;
+  const pool = typeof fields?.memez_fun === "string" ? normalizeSuiAddress(fields.memez_fun) : null;
+  if (!pool || (!targets.shared.has(pool) && !targets.others.has(pool))) return null;
+  const token = canonicalType(typeof fields?.meme === "string" ? fields.meme : null);
+  const quote = canonicalType(typeof fields?.quote === "string" ? fields.quote : null);
+  const amountIn = fields?.[pump ? "quote_amount_in" : "meme_amount_in"];
+  const amountOut = fields?.[pump ? "meme_amount_out" : "quote_amount_out"];
+  if (!token || !quote || token === quote ||
+    typeof amountIn !== "string" || !/^[1-9]\d*$/.test(amountIn) ||
+    typeof amountOut !== "string" || !/^[1-9]\d*$/.test(amountOut)) return null;
+  return { pool, coinIn: pump ? quote : token, coinOut: pump ? token : quote };
+}
+
 /**
  * The coins one event says a pool took in and paid out, and the pool, or
  * null. Coins come from fields that name them (Aftermath's `types_in` and
@@ -51,6 +72,8 @@ function canonicalType(t: string | null | undefined): string | null {
  * and the PTB's repay paid the input coin.
  */
 export function readPoolSwap(event: SwapEventInput, index: number, targets: EventTargets): { pool: string; coinIn: string; coinOut: string } | null {
+  const memez = memezSwap(event, targets);
+  if (memez) return memez;
   const pool = poolOfEvent(event.json, targets);
   if (!pool) return null;
   const j = event.json as Record<string, unknown> | null;

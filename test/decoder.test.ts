@@ -164,6 +164,64 @@ describe("decodeTransaction", () => {
     expect(decodeTransaction([makeCommand(pkg, "pool", "sell", [token, SUI])], [], "0xsender").actions).toEqual(["Swap GRAD → SUI on Vice"]);
   });
 
+  it.each([
+    ["14cUFyy79VotGqqYgQquVP9w5BNFG4NZAn865tdenVou", "pump_pump_ref_w1", "-8006476628", "12139534316505221", "7952040000", "12139534316505221", "Swap SUI → JOB"],
+    ["Bou7PnDgqNLaTai5g6fujP7NwpFipHArfe7jFH6Bqn24", "pump_pump_ref_w1", "-150006476628", "114670697537412565", "149100750000", "114670697537412565", "Swap SUI → JOB"],
+    ["CisMX1jX1PGBouDZS8WTmX6G86NTNUFhr6WegN6Birh7", "pump_pump_ref_w1", "-100005498508", "55554603503674102", "99400500000", "55554603503674102", "Swap SUI → JOB"],
+    ["CRVF2vPXG6TvC4hKGJSjmqhkczbDxqT1VcFV7osJu7eV", "pump_dump_ref_w1", "241792618027", "-47547859740000000", "47310120441300000", "241796755986", "Swap JOB → SUI"],
+  ])("labels JOB routed curve trade %s with and without pool events", (_digest, fn, suiAmount, jobAmount, eventIn, eventOut, expected) => {
+    const wrapper = "0x241fde2461a546fc18492c7f6d2bad88f3ec3be706aaa2e174ce2b0e9525bab2";
+    const aftermath = "0x7de5de8d75a8f4e42cdd3c018f788bc9b9ebf2d3d61dcfe9d2136f17f077afd5";
+    const job = "0xee13f7e784dea867688a0a29fc176b2279e645532af8ea4e812b89f374d7c12e::job::JOB";
+    const pool = "0xedc01918f6417e459d39a7594aaca5f3411515fc3ebc8638afa443c54bb4ae26";
+    const routeData = "0x3f0871fc4320e2399734c44eae3a7599c57900a66af6ba6fe0f6e50d2d8bed8a::router::RouterDataV1";
+    const buy = fn === "pump_pump_ref_w1";
+    const commands = [
+      makeCommand(aftermath, "router", "begin_router_tx_r1_w1_varied_in"),
+      makeCommand(aftermath, "router", "initiate_path_by_percent_w1"),
+      {
+        command: {
+          oneofKind: "moveCall",
+          moveCall: {
+            package: wrapper, module: "router", function: fn,
+            typeArguments: [routeData, buy ? SUI : job, buy ? SUI : job, buy ? job : SUI],
+            arguments: [{ kind: 2, input: 0 }],
+          },
+        },
+      } as unknown as GrpcTypes.Command,
+      makeCommand(aftermath, "router", "end_router_tx_r1_w1"),
+      makeTransferCommand(),
+    ];
+    const balances = [makeBalanceChange("0xsender", SUI, suiAmount), makeBalanceChange("0xsender", job, jobAmount)];
+    const eventType = `${MEMEZ}::memez_events_wrapper::Event<${MEMEZ}::memez_events::${buy ? "Pump" : "Dump"}>`;
+    const event = {
+      packageId: wrapper, module: "router", type: eventType,
+      json: {
+        pos0: {
+          memez_fun: pool, meme: job.slice(2), quote: `0000000000000000000000000000000000000000000000000000000000000002::sui::SUI`,
+          [buy ? "quote_amount_in" : "meme_amount_in"]: eventIn,
+          [buy ? "meme_amount_out" : "quote_amount_out"]: eventOut,
+        }
+      },
+    };
+    const evidence = { events: [event], inputObjectIds: [pool], objectTypes: new Map([[pool, `${MEMEZ}::memez_fun::MemezFun`]]) };
+    expect(decodeTransaction(commands, balances, "0xsender", { swapEvidence: evidence }).actions[2]).toBe(expected);
+    const withoutEvents = commands.map((c) => c.command.oneofKind === "moveCall"
+      ? makeCommand(c.command.moveCall.package ?? "", c.command.moveCall.module ?? "", c.command.moveCall.function ?? "")
+      : c);
+    expect(decodeTransaction(withoutEvents, balances, "0xsender").actions[2]).toBe(expected);
+    // No generics or balance changes: only the pool's own event can name
+    // either coin, even when the wrapper has no direct pool argument.
+    expect(decodeTransaction(withoutEvents, [], "0xsender", { swapEvidence: evidence }).actions[2]).toBe(expected);
+    expect(decodeTransaction([...withoutEvents, makeCommand("0x123", "other", "swap")], balances, "0xsender").actions[2])
+      .toBe(buy ? "Buy" : "Sell");
+    expect(decodeTransaction([commands[2]], [], "0xsender").actions).toEqual([expected]);
+    expect(decodeTransaction([makeCommand(wrapper, "router", fn, [routeData])], balances, "0xsender").actions)
+      .toEqual([buy ? "Buy" : "Sell"]);
+    expect(decodeTransaction([...withoutEvents, makeCommand(wrapper, "router", "other_call")], balances, "0xsender").actions[2])
+      .toBe(buy ? "Buy" : "Sell");
+  });
+
   it("does not promote another package's memez-named call to a trade", () => {
     const result = decodeTransaction([makeCommand("0x2", "memez_pump", "pump", ["0x11::meme::MEME", SUI])], [], "0xsender");
     expect(result.actions).toEqual(["Call memez_pump::pump on Sui Framework"]);

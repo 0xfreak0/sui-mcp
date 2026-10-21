@@ -91,10 +91,10 @@ beforeEach(() => {
 });
 
 describe("affected-object event listing", () => {
-  it("returns complete decoded events newest first and marks only top-level object ids", async () => {
+  it("returns complete decoded events newest first and marks nested object ids", async () => {
     chain({ [pool]: [tx("d1", 1, [event(deposit, { nested: { id: pool } })]), tx("d2", 2, [event(swap, { pool: other })], [event(swap, { pool })])] });
     const result = await read();
-    expect(result.events.map((e) => [e.tx_digest, e.names_object])).toEqual([["d2", true], ["d2", false], ["d1", false]]);
+    expect(result.events.map((e) => [e.tx_digest, e.names_object, e.names_object_at])).toEqual([["d2", true, "pool"], ["d2", false, undefined], ["d1", true, "nested.id"]]);
     expect(result.has_next_page).toBe(false);
     const listing = query.mock.calls.find(([document]) => document.includes("o0: transactions("));
     expect(listing?.[0]).toContain("events(first: 50)");
@@ -160,6 +160,47 @@ describe("affected-object event listing", () => {
     const result = await read({ eventTypes: [swap], module: { segments: [{ filter: "0x2::pool", afterCheckpoint: 1, beforeCheckpoint: 3 }] } as never, namesObjectOnly: true });
     expect(result.events).toHaveLength(1);
     expect(result.events[0]).toMatchObject({ type: swap, emitting_module: "0x2::pool", names_object: true });
+  });
+
+  it("finds the real memez wrapper's nested pool field, including through names_object filtering", async () => {
+    const memez = "0x779829966a2e8642c310bed79e6ba603e5acd3c31b25d7d4511e2c9303d6e3ef";
+    const pump = `${memez}::memez_events_wrapper::Event<${memez}::memez_events::Pump>`;
+    chain({
+      [pool]: [tx("pump", 2, [
+        event(pump, { pos0: { memez_fun: pool, meme: "ee13f7e784dea867688a0a29fc176b2279e645532af8ea4e812b89f374d7c12e::job::JOB", quote: "0000000000000000000000000000000000000000000000000000000000000002::sui::SUI", quote_amount_in: "7952040000", meme_amount_out: "12139534316505221" } }),
+        event(swap, { pool: other }),
+      ])]
+    });
+    const result = await read({ namesObjectOnly: true });
+    expect(result.events).toMatchObject([{ tx_digest: "pump", names_object: true, names_object_at: "pos0.memez_fun" }]);
+    expect(result.has_next_page).toBe(false);
+    const unfiltered = await read();
+    expect(unfiltered.events).toHaveLength(2);
+  });
+
+  it("counts read and dropped events when none names the requested object", async () => {
+    chain({ [pool]: [tx("d2", 2, [event(swap, { pool: other }), event(deposit, { id: other })])] });
+    const result = await read({ namesObjectOnly: true });
+    expect(result.events).toEqual([]);
+    expect(result.no_results_hint).toMatch(/Read 2 events.*dropped 2/);
+    expect(result.has_next_page).toBe(false);
+  });
+
+  it("matches ids inside arrays but does not search past the depth bound", async () => {
+    chain({
+      [pool]: [tx("d2", 2, [
+        event(swap, { pools: [{ id: pool }] }),
+        event(swap, { a: { b: { c: { d: { e: { f: { g: { h: { id: pool } } } } } } } } }),
+      ])]
+    });
+    const result = await read({ namesObjectOnly: true });
+    expect(result.events.map((e) => e.names_object_at)).toEqual(["pools.0.id"]);
+  });
+
+  it("does not treat a wide but shallow decoded event as an absent pool", async () => {
+    chain({ [pool]: [tx("wide", 2, [event(swap, { values: [...Array(2_100).fill("other"), pool] })])] });
+    const result = await read({ namesObjectOnly: true });
+    expect(result.events.map((e) => e.names_object_at)).toEqual(["values.2100"]);
   });
 
   it("matches type arguments however their addresses are written, and any listed defining package", () => {

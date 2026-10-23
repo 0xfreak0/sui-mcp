@@ -116,15 +116,21 @@ function moduleMatches(actual: string | undefined, requested: ModuleEventFilterR
   });
 }
 
-/** Index of the first listed object a top-level decoded field holds, or -1. */
-function namedObject(json: unknown, objects: string[]): number {
-  if (!json || typeof json !== "object" || Array.isArray(json)) return -1;
-  for (const value of Object.values(json)) {
-    if (typeof value !== "string" || !/^0x[0-9a-fA-F]{1,64}$/.test(value)) continue;
-    const i = objects.indexOf(normalizeSuiAddress(value));
-    if (i >= 0) return i;
-  }
-  return -1;
+/** First listed object a decoded field names within eight levels, with its field path. */
+function namedObject(json: unknown, objects: string[]): { index: number; path: string } | null {
+  const visit = (value: unknown, path: string, depth: number): { index: number; path: string } | null => {
+    if (typeof value === "string" && /^0x[0-9a-fA-F]{1,64}$/.test(value)) {
+      const index = objects.indexOf(normalizeSuiAddress(value));
+      return index < 0 ? null : { index, path };
+    }
+    if (!value || typeof value !== "object" || depth >= 8) return null;
+    for (const [key, child] of Object.entries(value)) {
+      const hit = visit(child, path ? `${path}.${key}` : key, depth + 1);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  return visit(json, "", 0);
 }
 
 /**
@@ -143,7 +149,7 @@ export async function readObjectEvents(opts: {
   /** Event types, modules or packages; an event matching any of them is listed. */
   eventTypes?: string[];
   module: ModuleEventFilterResolution | null;
-  /** List only events whose top-level field holds a listed object id. */
+  /** List only events whose decoded fields name a listed object id. */
   namesObjectOnly?: boolean;
   order: ListOrder;
   limit: number;
@@ -158,6 +164,8 @@ export async function readObjectEvents(opts: {
   let top = position.top;
   /** Checkpoint of every transaction fully listed, by digest. */
   const seen = new Map<string, number>((position.seen?.digests ?? []).map((d) => [d, position.seen!.cp]));
+  let eventsRead = 0;
+  let namesObjectDropped = 0;
   const pages: Array<VersionPage<ObjectTx> | null> = streams.map(() => null);
   /** Streams whose page must reach further before the next transaction is placed. */
   const extend = new Set<number>();
@@ -282,10 +290,14 @@ export async function readObjectEvents(opts: {
       let emitted = 0;
       let split = false;
       for (const e of nodes) {
+        eventsRead++;
         if (!typeMatches(e.contents?.type?.repr, opts.eventTypes) ||
           !moduleMatches(e.transactionModule?.fullyQualifiedName, opts.module, checkpoint)) continue;
         const named = namedObject(e.contents?.json, objects);
-        if (opts.namesObjectOnly && named < 0) continue;
+        if (opts.namesObjectOnly && !named) {
+          namesObjectDropped++;
+          continue;
+        }
         if (matched++ < skip) continue;
         if (events.length >= opts.limit) {
           split = true;
@@ -300,8 +312,9 @@ export async function readObjectEvents(opts: {
           tx_digest: tx.digest,
           checkpoint,
           timestamp: tx.effects?.timestamp,
-          names_object: named >= 0,
-          ...(multi ? { object_refs: refs, ...(named >= 0 ? { named_object_ref: named } : {}) } : {}),
+          names_object: named !== null,
+          ...(named ? { names_object_at: named.path } : {}),
+          ...(multi ? { object_refs: refs, ...(named ? { named_object_ref: named.index } : {}) } : {}),
         });
       }
       if (split) {
@@ -354,7 +367,9 @@ export async function readObjectEvents(opts: {
     next_cursor: nextCursor,
     ...shownRange(events.map((e) => e.timestamp as string | undefined)),
     ...(events.length === 0 ? {
-      no_results_hint: incompleteTransactions.length
+      no_results_hint: opts.namesObjectOnly && namesObjectDropped
+        ? `Read ${eventsRead} events in this transaction scan slice; names_object dropped ${namesObjectDropped} that did not name a requested object. ${incompleteTransactions.length ? "Inspect incomplete_transactions before drawing a conclusion." : hasNext ? "Continue with next_cursor; more transactions remain." : "No matching events were found in this slice."}`
+        : incompleteTransactions.length
         ? "Some matching transactions have incomplete event reads; inspect incomplete_transactions before concluding no events match."
         : hasNext
           ? "No events matched in this transaction scan slice; continue with next_cursor."

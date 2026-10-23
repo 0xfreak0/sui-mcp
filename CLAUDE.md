@@ -227,9 +227,11 @@ transaction's events. Newest order reverses both the transaction and event
 pages. The object filter belongs on transactions; `event_type` and `module`
 narrow events after the read and may leave short or empty pages. `sender`
 cannot be combined with `affected_object`; the transaction filter does not
-support that combination. `names_object` checks top-level decoded fields for
-the object ID, to distinguish a pool's own events from other legs in the same
-transaction. Continuation reads share `OBJECT_EVENTS_MAX_READS`; any
+support that combination. `names_object` checks decoded fields down to
+eight levels for the object ID, and `names_object_at` gives the path. A
+short or empty page cannot establish absence until the scan ends; if
+`names_object: true` drops every event, its hint counts those read and
+dropped. Continuation reads share `OBJECT_EVENTS_MAX_READS`; any
 transaction with incomplete event pagination is listed under
 `incomplete_transactions` for a `get_transaction` follow-up. A short page is
 not evidence of absent events while `has_next_page` is true.
@@ -238,11 +240,13 @@ not evidence of absent events while `has_next_page` is true.
 events. The filter covers failed transactions and every transaction that took
 the object, so on a busy pool most rows are not its trades (345 transactions
 and 1,000 events on the Cetus SUI/USDC pool in 400 checkpoints, 21 events
-naming it). `names_object` checks top-level decoded fields for a listed ID and
-`names_object: true` keeps only those; a router's echo names the pool too, and
-some venues' events name no pool ID. `sender` goes into the same transaction
-filter as `sentAddress`; `event_type` and `module` narrow events after the read,
-may leave short or empty pages, and match every defining package of a module.
+naming it). `names_object` checks nested decoded fields for a listed ID and
+`names_object: true` keeps only those; a router's echo can name the pool too,
+and some venues' events name no pool ID. A memez Pump/Dump wraps its pool
+ID at `pos0.memez_fun`; count trades by event type, not by `names_object`.
+`sender` goes into the same transaction filter as `sentAddress`;
+`event_type` and `module` narrow events after the read, may leave short
+or empty pages, and match every defining package of a module.
 
 - **Up to 20 objects merge through `mergeVersionPages`**, 10 aliased
   connections a request (11 with the nested events selection exceed the
@@ -525,6 +529,14 @@ sender's net change are only the fallback. Calls into routers name their
 coins in whatever order the integration chose, and a sender's net nets every
 leg of a PTB, so the guess read Astros, 7k and FlowX routes backwards.
 
+Memez wraps Pump/Dump events in `memez_events_wrapper::Event<T>`, with
+its changed pool ID, both coin types and positive trade amounts under
+`pos0`. `readPoolSwap` reads that exact defining event type and verifies
+the pool is a changed object before assigning the swap to its emitting
+router call. The router lineage rooted at `0x42005a3a…` links the memez
+package but has no verified first-party name; event-based labels must not
+give the wrapper Interest Protocol's identity.
+
 - **An event goes to the call that ran it.** A swap is placed on the call
   that takes its pool as an argument and whose package and module could have
   emitted it (`eventCommands`), and never on a call whose function starts
@@ -601,10 +613,19 @@ leg of a PTB, so the guess read Astros, 7k and FlowX routes backwards.
   commands carry no type arguments, so the token comes from the sender's
   net, and only when the PTB holds one curve trade, every other call is
   into 0x1, 0x2, 0x3 or the same protocol, and the sender's SUI (exactly
-  `0x2::sui::SUI`) and one other coin moved the way the side states. Any
-  other row reads `Buy on <protocol>` or `Sell on <protocol>` with no coin:
-  a DEX call beside the trade can leave the sender holding a coin the curve
-  never paid.
+  `0x2::sui::SUI`) and one other coin moved the way the side states. The
+  memez route lineage (root `0x42005a3a…`, matched by its five version
+  IDs or a prefetched root) also permits the Aftermath router lineage's
+  `begin_router_tx*`, `initiate_path*` and `end_router_tx*` calls; a
+  second trade or any other call forbids using the whole-PTB net. Its
+  `router::{pump,stable,auction}_{pump,dump}[_ref][_w1]` calls take the
+  input coin as their second-to-last type argument and the output as the
+  last: `<RouterData, route start coin, input, output>` with `_w1` and
+  `<cap, input, output>` without. The route start coin is the path's
+  opening coin (USDC on a USDC → SUI → meme route), so it never names the
+  trade. A routed trade passes its output on as the path's coin, as a
+  routed swap does. A coinless row reports Buy/Sell with no guessed
+  protocol or coin.
 
 ## Completeness beats payload size
 

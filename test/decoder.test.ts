@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { addressFlow, decodeTransaction } from "../src/protocols/decoder.js";
 import { GrpcTypes } from "@mysten/sui/grpc";
 import { runWithNetwork } from "../src/config.js";
+import { notePackageRoot } from "../src/protocols/package-roots.js";
 import { HASHI_PACKAGES } from "../src/utils/bridge/hashi.js";
 
 function makeCommand(
@@ -162,6 +163,117 @@ describe("decodeTransaction", () => {
     const token = "0xbbc7ceea6a6728a6a46a5303f7078f9798dba224314c76826fa160af5cbdac01::grad::GRAD";
     expect(decodeTransaction([makeCommand(pkg, "pool", "buy", [token, SUI])], [], "0xsender").actions).toEqual(["Swap SUI → GRAD on Vice"]);
     expect(decodeTransaction([makeCommand(pkg, "pool", "sell", [token, SUI])], [], "0xsender").actions).toEqual(["Swap GRAD → SUI on Vice"]);
+  });
+
+  it.each([
+    ["14cUFyy79VotGqqYgQquVP9w5BNFG4NZAn865tdenVou", "pump_pump_ref_w1", "-8006476628", "12139534316505221", "7952040000", "12139534316505221", "Swap SUI → JOB"],
+    ["Bou7PnDgqNLaTai5g6fujP7NwpFipHArfe7jFH6Bqn24", "pump_pump_ref_w1", "-150006476628", "114670697537412565", "149100750000", "114670697537412565", "Swap SUI → JOB"],
+    ["CisMX1jX1PGBouDZS8WTmX6G86NTNUFhr6WegN6Birh7", "pump_pump_ref_w1", "-100005498508", "55554603503674102", "99400500000", "55554603503674102", "Swap SUI → JOB"],
+    ["CRVF2vPXG6TvC4hKGJSjmqhkczbDxqT1VcFV7osJu7eV", "pump_dump_ref_w1", "241792618027", "-47547859740000000", "47310120441300000", "241796755986", "Swap JOB → SUI"],
+  ])("labels JOB routed curve trade %s with and without pool events", (_digest, fn, suiAmount, jobAmount, eventIn, eventOut, expected) => {
+    const wrapper = "0x241fde2461a546fc18492c7f6d2bad88f3ec3be706aaa2e174ce2b0e9525bab2";
+    const aftermath = "0x7de5de8d75a8f4e42cdd3c018f788bc9b9ebf2d3d61dcfe9d2136f17f077afd5";
+    const job = "0xee13f7e784dea867688a0a29fc176b2279e645532af8ea4e812b89f374d7c12e::job::JOB";
+    const pool = "0xedc01918f6417e459d39a7594aaca5f3411515fc3ebc8638afa443c54bb4ae26";
+    const routeData = "0x3f0871fc4320e2399734c44eae3a7599c57900a66af6ba6fe0f6e50d2d8bed8a::router::RouterDataV1";
+    const buy = fn === "pump_pump_ref_w1";
+    const commands = [
+      makeCommand(aftermath, "router", "begin_router_tx_r1_w1_varied_in"),
+      makeCommand(aftermath, "router", "initiate_path_by_percent_w1"),
+      {
+        command: {
+          oneofKind: "moveCall",
+          moveCall: {
+            package: wrapper, module: "router", function: fn,
+            typeArguments: [routeData, buy ? SUI : job, buy ? SUI : job, buy ? job : SUI],
+            arguments: [{ kind: 2, input: 0 }],
+          },
+        },
+      } as unknown as GrpcTypes.Command,
+      makeCommand(aftermath, "router", "end_router_tx_r1_w1"),
+      makeTransferCommand(),
+    ];
+    const balances = [makeBalanceChange("0xsender", SUI, suiAmount), makeBalanceChange("0xsender", job, jobAmount)];
+    const eventType = `${MEMEZ}::memez_events_wrapper::Event<${MEMEZ}::memez_events::${buy ? "Pump" : "Dump"}>`;
+    const event = {
+      packageId: wrapper, module: "router", type: eventType,
+      json: {
+        pos0: {
+          memez_fun: pool, meme: job.slice(2), quote: `0000000000000000000000000000000000000000000000000000000000000002::sui::SUI`,
+          [buy ? "quote_amount_in" : "meme_amount_in"]: eventIn,
+          [buy ? "meme_amount_out" : "quote_amount_out"]: eventOut,
+        }
+      },
+    };
+    const evidence = { events: [event], inputObjectIds: [pool], objectTypes: new Map([[pool, `${MEMEZ}::memez_fun::MemezFun`]]) };
+    expect(decodeTransaction(commands, balances, "0xsender", { swapEvidence: evidence }).actions[2]).toBe(expected);
+    const withoutEvents = commands.map((c) => c.command.oneofKind === "moveCall"
+      ? makeCommand(c.command.moveCall.package ?? "", c.command.moveCall.module ?? "", c.command.moveCall.function ?? "")
+      : c);
+    expect(decodeTransaction(withoutEvents, balances, "0xsender").actions[2]).toBe(expected);
+    // No generics or balance changes: only the pool's own event can name
+    // either coin, even when the wrapper has no direct pool argument.
+    expect(decodeTransaction(withoutEvents, [], "0xsender", { swapEvidence: evidence }).actions[2]).toBe(expected);
+    expect(decodeTransaction([...withoutEvents, makeCommand("0x123", "other", "swap")], balances, "0xsender").actions[2])
+      .toBe(buy ? "Buy" : "Sell");
+    expect(decodeTransaction([commands[2]], [], "0xsender").actions).toEqual([expected]);
+    expect(decodeTransaction([makeCommand(wrapper, "router", fn, [routeData])], balances, "0xsender").actions)
+      .toEqual([buy ? "Buy" : "Sell"]);
+    expect(decodeTransaction([...withoutEvents, makeCommand(wrapper, "router", "other_call")], balances, "0xsender").actions[2])
+      .toBe(buy ? "Buy" : "Sell");
+  });
+
+  it("reads a routed memez trade's coins from its last two type arguments in every version and trade function", () => {
+    const v3 = "0x241fde2461a546fc18492c7f6d2bad88f3ec3be706aaa2e174ce2b0e9525bab2";
+    const v5 = "0x159b32079c1e7a4322ea16c4a3c5cce8993133cf101c784d811590e53c3f9da3";
+    const v1 = "0x42005a3a3cc019e7af12830f92402655322c57e119a032b72f985617df4c9488";
+    const routeData = "0x3f0871fc4320e2399734c44eae3a7599c57900a66af6ba6fe0f6e50d2d8bed8a::router::RouterDataV1";
+    const usdc = "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
+    const job = "0xee13f7e784dea867688a0a29fc176b2279e645532af8ea4e812b89f374d7c12e::job::JOB";
+    const decode = (pkg: string, fn: string, types: string[]) => decodeTransaction([makeCommand(pkg, "router", fn, types)], [], "0xsender").actions;
+    // A route opened in USDC: the second type argument is the route's start coin (7kq8Dkis…).
+    expect(decode(v3, "pump_pump_ref_w1", [routeData, usdc, SUI, job])).toEqual(["Swap SUI → JOB"]);
+    expect(decode(v5, "stable_dump_w1", [routeData, job, job, SUI])).toEqual(["Swap JOB → SUI"]);
+    expect(decode(v1, "auction_pump", ["0xe5099fcd45747074d0ef5eabce07a9bd1c3b0c1862435bf2a09c3a81e0604373::router::RouterSwapCap", SUI, job])).toEqual(["Swap SUI → JOB"]);
+    expect(decode(v3, "pump_dump_ref", ["0x1::a::A", job, SUI, SUI])).toEqual(["Sell"]);
+    const future = "0x00000000000000000000000000000000000000000000000000000000000f00d1";
+    expect(decode(future, "pump_dump_ref_w1", [routeData, job, job, SUI])[0]).toMatch(/^Call /);
+    notePackageRoot(future, v1);
+    expect(decode(future, "pump_dump_ref_w1", [routeData, job, job, SUI])).toEqual(["Swap JOB → SUI"]);
+    expect(runWithNetwork("testnet", () => decode(v3, "pump_pump_ref_w1", [routeData, SUI, SUI, job]))[0]).toMatch(/^Call /);
+  });
+
+  it("passes a routed memez trade's output to the next hop of its path", () => {
+    const aftermath = "0x7de5de8d75a8f4e42cdd3c018f788bc9b9ebf2d3d61dcfe9d2136f17f077afd5";
+    const routeData = "0x3f0871fc4320e2399734c44eae3a7599c57900a66af6ba6fe0f6e50d2d8bed8a::router::RouterDataV1";
+    const sfour = "0x9839c5b881f7490e853ff2fb9e4ad8d6f7f1064372b6739b15f24d08addc97dd::sfour::SFOUR";
+    const usdb = "0xe14726c336e81b32328e92afc37345d159f5b550b09fa92bd43640cfdd0a0cfd::usdb::USDB";
+    const usdc = "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
+    const cetusLeg = "0x8fbcffce4ac1b56d517cc2118fae85f1881a80a934af575d825f63a05af5a874";
+    // Commands 18 to 23 of DUzzeh6V…, read without events.
+    const commands = [
+      makeCommand(aftermath, "router", "begin_router_tx_r1_w1_varied_in", [sfour, usdc]),
+      makeCommand(aftermath, "router", "initiate_path_by_percent_w1", [routeData, sfour]),
+      makeCommand("0x241fde2461a546fc18492c7f6d2bad88f3ec3be706aaa2e174ce2b0e9525bab2", "router", "pump_dump_ref_w1", [routeData, sfour, sfour, SUI]),
+      makeCommand(cetusLeg, "router", "swap_b_to_a_by_b_w1", [routeData, sfour, usdb, SUI]),
+      makeCommand(cetusLeg, "router", "swap_a_to_b_by_a_w1", [routeData, sfour, usdb, usdc]),
+      makeCommand(aftermath, "router", "end_router_tx_r1_w1", [sfour, usdc]),
+    ];
+    expect(decodeTransaction(commands, [], "0xsender").actions.slice(2, 5)).toEqual([
+      "Swap SFOUR → SUI",
+      expect.stringMatching(/^Swap SUI → USDB/),
+      expect.stringMatching(/^Swap USDB → USDC/),
+    ]);
+  });
+
+  it("isolates a routed memez trade inside any Aftermath router scaffold call, and no other leg", () => {
+    const aftermath = "0x7de5de8d75a8f4e42cdd3c018f788bc9b9ebf2d3d61dcfe9d2136f17f077afd5";
+    const job = "0xee13f7e784dea867688a0a29fc176b2279e645532af8ea4e812b89f374d7c12e::job::JOB";
+    const balances = [makeBalanceChange("0xsender", SUI, "-100"), makeBalanceChange("0xsender", job, "5")];
+    const trade = makeCommand("0x58fb40ef5e69f0eb846b7e7e3b9b798ce03b12f6b3905a68b680f8954ca6bca3", "router", "pump_pump_w1");
+    const scaffold = [makeCommand(aftermath, "router", "begin_router_tx_sui_r1_w1"), makeCommand(aftermath, "router", "initiate_path_w1"), trade, makeCommand(aftermath, "router", "end_router_tx_and_pay_fees")];
+    expect(decodeTransaction(scaffold, balances, "0xsender").actions[2]).toBe("Swap SUI → JOB");
+    expect(decodeTransaction([...scaffold, makeCommand(aftermath, "router", "swap_exact_in")], balances, "0xsender").actions[2]).toBe("Buy");
   });
 
   it("does not promote another package's memez-named call to a trade", () => {

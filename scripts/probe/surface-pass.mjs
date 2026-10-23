@@ -352,7 +352,7 @@ try {
   ck("query_events with two pools lists every event of either pool's own read, naming its pool",
     pairTurbos.done && pairCetus.done && pair.done && pair.rows.length > 0 &&
     sameSet([...new Set(pair.rows.map((e) => JSON.stringify([e.tx_digest, e.type, e.data])))], [...new Set(singles)]) &&
-    pair.rows.every((e, i) => e.named && Object.values(e.data ?? {}).includes(e.named) && (i === 0 || e.checkpoint <= pair.rows[i - 1].checkpoint)),
+    pair.rows.every((e, i) => e.named && (e.names_object_at ?? "").split(".").reduce((v, k) => v?.[k], e.data) === e.named && (i === 0 || e.checkpoint <= pair.rows[i - 1].checkpoint)),
     `${pairTurbos.rows.length}+${pairCetus.rows.length} vs ${pair.rows.length}`);
 
   // ======================================================================

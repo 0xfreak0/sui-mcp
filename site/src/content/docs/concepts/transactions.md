@@ -103,16 +103,22 @@ states the side:
 |Vice|`pool::buy`, `pool::sell`|`<token, quote>` type arguments|
 |SuiPump|`bonding_curve::buy`/`sell`, `agent_session::buy_with_session`/`sell_with_session`|one type argument, traded against SUI|
 |Koi|`curve::buy`/`sell`, `buy_to_sender`/`sell_to_sender`|one type argument, traded against SUI|
+|Memez pool via a routing wrapper|`router::pump_pump_ref_w1`, `pump_dump_ref_w1` and the other `{pump,stable,auction}_{pump,dump}` variants|the pool's Pump/Dump event; with no events, the last two type arguments (input, output) or an isolated SUI/token net|
 
-`get_transaction` reads the coins from the type arguments, so a memez pump of
-BLAST quoted in SUI is `Swap SUI → BLAST on Interest Protocol` and the dump
-is `Swap BLAST → SUI on Interest Protocol`. `get_transaction_history`,
-`build_timeline` and `trace_funds` read commands without type arguments.
-They name the token only when the trade is the transaction's one curve trade,
-every other call is into the Sui framework or the same protocol, and the
-sender's SUI and one other coin moved in the trade's direction. Other rows
-read `Buy on SuiPump` or `Sell on Koi` with no coin; `get_transaction` on the
-digest names it. Migration, graduation and quote calls stay as
+`get_transaction` labels memez's direct pump and dump from their
+`<token, quote>` type arguments. A BLAST pump quoted in SUI reads
+`Swap SUI → BLAST on Interest Protocol`, and its dump reads
+`Swap BLAST → SUI on Interest Protocol`. A routed memez trade uses its
+pool's Pump/Dump event for the coins and direction, with no protocol
+name asserted for the wrapper. When events are unavailable, the wrapper's
+last two type arguments settle its coins, input then output; on a route
+opened in another coin the type argument before them is that opening coin. `get_transaction_history`, `build_timeline` and `trace_funds`
+read commands without type arguments or events. They name the token
+only when one curve trade and the routing scaffold are the only
+non-framework calls, and the sender's SUI and one other coin moved in
+the named direction. Other rows retain a coinless Buy/Sell label; open
+the digest in `get_transaction` to read its events. Migration,
+graduation and quote calls stay as
 `Call memez_pump::migrate on Interest Protocol`.
 
 ## Why a transaction failed
@@ -464,17 +470,20 @@ once.
 ```
 
 ```json
-{ "objects": ["0x…pool_a", "0x…pool_b"], "events": [{ "type": "0x…::pool::SwapEvent", "data": { "pool": "0x…pool_b", "…": "…" }, "tx_digest": "…", "checkpoint": 336210042, "timestamp": "…", "names_object": true, "object_refs": [1], "named_object_ref": 1 }], "has_next_page": true, "next_cursor": "…" }
+{ "objects": ["0x…pool_a", "0x…pool_b"], "events": [{ "type": "0x…::pool::SwapEvent", "data": { "pool": "0x…pool_b", "…": "…" }, "tx_digest": "…", "checkpoint": 336210042, "timestamp": "…", "names_object": true, "names_object_at": "pool", "object_refs": [1], "named_object_ref": 1 }], "has_next_page": true, "next_cursor": "…" }
 ```
 
 Most transactions touching a busy pool are not its trades: arbitrage that
 fails, bots that pass the pool to another venue's call, and other legs of a
-routed swap. `names_object` is true when a top-level decoded field holds a
-listed ID, and `names_object: true` lists only those events. A router's echo of
-a swap also names the pool, so count trades with the venue's own event type
-in `event_type`. Some venues' swap events name no pool ID (a pair kept as a
-dynamic field and identified by its coin types), so `false` does not mean the
-event concerns another object. With several objects, `object_refs` indexes the
+routed swap. `names_object` is true when a decoded field names a listed ID,
+including a nested field such as memez's `pos0.memez_fun`; `names_object_at`
+names the first matching field path. `names_object: true` filters by that
+match. A router's echo can name the pool too, so count trades with the
+venue's own event type in `event_type`. Some venues' swap events name no
+pool ID (a pair kept as a dynamic field and identified by its coin types),
+so `false` does not mean the event concerns another object. An empty
+filtered slice reports how many events it read and dropped; continue when
+`has_next_page` is true. With several objects, `object_refs` indexes the
 listed objects the transaction touched and `named_object_ref` the one the
 event names.
 

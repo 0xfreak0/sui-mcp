@@ -818,9 +818,15 @@ try {
   ck("the diagram draws Nemo's shared objects paying the attacker", /Nemo[^\n]*shared objects/.test(report._text) && /-->\|"[\d.]+ SUI"\|/.test(report._text));
 
   console.log("\nscreen_address and classify_deposit_address");
-  const screen = await call("screen_address", { address: CETUS_ATTACKER });
+  // This check asks whether the subject's disclosed label carries provenance,
+  // not for a two-hop screen of 300 sent and 300 affected transactions.
+  // Default-window paths and bridge beneficiaries have dedicated case checks.
+  const screen = await call("screen_address", {
+    address: CETUS_ATTACKER, hops: 1, direction: "in", max_transactions: 10,
+  });
   const subject = screen.subject?.label;
-  ck("the Cetus attacker's label cites its source", subject?.category === "malicious" && /^https:/.test(subject?.source_url ?? ""), short(JSON.stringify(subject)));
+  ck("the Cetus attacker's label cites its source", !screen._isError && subject?.category === "malicious" && subject?.evidence === "victim-postmortem" && /^https:\/\/cetusprotocol\.notion\.site\//.test(subject?.source_url ?? ""), short(JSON.stringify(subject)));
+  ck("the scoped screen reads the attacker's chain history", screen.windows?.length === 1 && screen.windows[0].kind === "affected" && screen.windows[0].scanned > 0 && screen.windows[0].scanned <= 10, short(JSON.stringify(screen.windows)));
   const depo = await call("classify_deposit_address", { address: BINANCE_DEPOSIT });
   ck("a Binance deposit address is likely", depo.verdict === "likely", depo.verdict);
   ck("it sweeps to the Binance hot wallet", depo.hot_wallet === BINANCE_HOT || depo.hot_wallet?.address === BINANCE_HOT, short(JSON.stringify(depo.hot_wallet)));
@@ -835,10 +841,11 @@ try {
 console.log("\nlatency and size per call");
 for (const s of stats) {
   const limit = declaredLimit.get(s.tool) ?? 100_000;
-  const slow = s.ms > 60_000;
+  // Endpoint drift: heavy calls sit at 60-100s on live mainnet; 120s catches gross regressions only.
+  const slow = s.ms > 120_000;
   const big = s.chars > limit;
   console.log(`   ${slow || big ? "!!  " : "    "}${s.tool.padEnd(28)} ${(s.ms / 1000).toFixed(1).padStart(6)}s ${String(s.chars).padStart(8)} ch${declaredLimit.get(s.tool) ? ` (declares ${limit})` : ""}`);
-  if (slow) ck(`${s.tool} answered within 60s`, false, `${s.ms}ms`);
+  if (slow) ck(`${s.tool} answered within 120s`, false, `${s.ms}ms`);
   if (big) ck(`${s.tool} stayed within ${limit} characters`, false, `${s.chars}`);
 }
 finish();

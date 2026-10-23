@@ -293,10 +293,12 @@ export async function checkAddressAcrossCoins(
   return { denied, pending, coins_checked: checked, complete, configs: coins.map };
 }
 
-export async function listConfiguredCoins(maxPages = 25): Promise<ConfiguredCoins> {
+/** Enumerate to the end by default: an arbitrary page cap would miss newer regulated coins. */
+export async function listConfiguredCoins(maxPages?: number): Promise<ConfiguredCoins> {
   const map = new Map<string, string>();
+  const cursors = new Set<string>();
   let cursor: string | null = null;
-  for (let i = 0; i < maxPages; i++) {
+  for (let i = 0; maxPages === undefined || i < maxPages; i++) {
     let conn;
     try {
       conn = await page(DENY_LIST_ID, cursor);
@@ -315,7 +317,9 @@ export async function listConfiguredCoins(maxPages = 25): Promise<ConfiguredCoin
     }
     if (!conn.pageInfo.hasNextPage) return { map, complete: true };
     cursor = conn.pageInfo.endCursor;
-    if (!cursor) return { map, complete: false };
+    // A missing or repeated cursor cannot advance the walk.
+    if (!cursor || cursors.has(cursor)) return { map, complete: false };
+    cursors.add(cursor);
   }
   return { map, complete: false };
 }

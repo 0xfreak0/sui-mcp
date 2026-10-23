@@ -11,6 +11,8 @@
  * tool that does not declare a larger result, fails the run.
  */
 import { startServer, gql, rawNet, checker, short, SUI, ROOT } from "./lib/mcp-client.mjs";
+import { bcs } from "@mysten/sui/bcs";
+import { deriveDynamicFieldID, normalizeStructTag } from "@mysten/sui/utils";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -60,7 +62,8 @@ function instrument(server, declared) {
         continue;
       }
       calls.push({ tool, ms: msg.ms, chars });
-      if (msg.ms > 60_000) ck(`${tool} answers within 60s`, false, `${msg.ms}ms`);
+      // Endpoint drift: heavy calls sit at 60-100s on live mainnet; 120s catches gross regressions only.
+      if (msg.ms > 120_000) ck(`${tool} answers within 120s`, false, `${msg.ms}ms`);
       const limit = declared.get(tool) ?? 100_000;
       if (chars > limit) ck(`${tool} stays under ${limit} characters`, false, `${chars}`);
       return out;
@@ -78,6 +81,7 @@ async function allNodes(query, vars, path) {
     out.push(...(conn?.nodes ?? []));
     if (!conn?.pageInfo?.hasNextPage) return out;
     after = conn.pageInfo.endCursor;
+    if (!after) throw new Error("GraphQL connection reported more rows without a cursor");
   }
 }
 const sameSet = (a, b) => a.length === b.length && [...a].sort().join() === [...b].sort().join();
@@ -287,24 +291,86 @@ try {
   // Pools
   // ======================================================================
   console.log("\npools");
-  const pools = await call("find_pools", { token_a: "0x2::sui::SUI", token_b: USDC });
-  const feeMap = (await gql(`query($id:SuiAddress!){ object(address:$id){ asMoveObject{ contents{ json } } } }`, { id: TURBOS_POOL_CONFIG })).object.asMoveObject.contents.json.fee_map.contents.map((e) => `0x${e.key}`);
+  const poolArgs = { token_a: "0x2::sui::SUI", token_b: USDC };
+  const pools = await call("find_pools", poolArgs);
+  const feeMap = (await gql(`query($id:SuiAddress!){ object(address:$id){ asMoveObject{ contents{ json } } } }`, { id: TURBOS_POOL_CONFIG })).object.asMoveObject.contents.json.fee_map.contents.map((e) => e.key.startsWith("0x") ? e.key : `0x${e.key}`);
   const templates = [
-    "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::Pool<{A}, {B}>",
-    "0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809::pool::Pool<{A}, {B}>",
-    "0x158f2027f60c89bb91526d9bf08831d27f5a0fcb0f74e6698b9f0e1fb2be5d05::clob_v2::Pool<{A}, {B}>",
-    "0xb24b6789e088b876afabca733bed2299fbc9e2d6369be4d1acfa17d8145454d9::swap::Pool<{A}, {B}>",
-    ...feeMap.map((f) => `0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::Pool<{A}, {B}, ${f}>`),
+    ["cetus", "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::Pool<{A}, {B}>"],
+    ["deepbook", "0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809::pool::Pool<{A}, {B}>"],
+    ["deepbook", "0x158f2027f60c89bb91526d9bf08831d27f5a0fcb0f74e6698b9f0e1fb2be5d05::clob_v2::Pool<{A}, {B}>"],
+    ["bluemove", "0xb24b6789e088b876afabca733bed2299fbc9e2d6369be4d1acfa17d8145454d9::swap::Pool<{A}, {B}>"],
+    ["bluefin", "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267::pool::Pool<{A}, {B}>"],
+    ["momentum", "0x70285592c97965e811e0c6f98dccc3a9c2b4ad854b3594faab9597ada267b860::pool::Pool<{A}, {B}>"],
+    ["flowx_clmm", "0x25929e7f29e0a30eb4e692952ba1b5b65a3a4d65ab5f2a32e1ba3edcb587f26d::pool::Pool<{A}, {B}>"],
+    ["magma", "0x4a35d3dfef55ed3631b7158544c6322a23bc434fe4fca1234cb680ce0505f82d::pool::Pool<{A}, {B}>"],
+    ["kriya_v2", "0xa0eba10b173538c8fecca1dff298e488402cc9ff374f8a12ca7758eebe830b66::spot_dex::Pool<{A}, {B}>"],
+    ...feeMap.map((f) => ["turbos", `0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::Pool<{A}, {B}, ${f}>`]),
   ];
   const rawPools = [];
-  for (const t of templates) {
+  for (const [protocol, template] of templates) {
     for (const [a, b] of [[SUI_FULL, USDC], [USDC, SUI_FULL]]) {
-      const nodes = await allNodes(`query($t:String!,$after:String){ objects(filter:{type:$t}, first:50, after:$after){ pageInfo{hasNextPage endCursor} nodes{ address asMoveObject{ contents{ type{ repr } } } } } }`, { t: t.replace("{A}", a).replace("{B}", b) }, (d) => d.objects);
-      rawPools.push(...nodes.map((n) => ({ id: n.address, first: a })));
+      const type = template.replace("{A}", a).replace("{B}", b);
+      const nodes = await allNodes(`query($t:String!,$after:String){ objects(filter:{type:$t}, first:50, after:$after){ pageInfo{hasNextPage endCursor} nodes{ address asMoveObject{ contents{ type{repr} } } } } }`, { t: type }, (d) => d.objects);
+      rawPools.push(...nodes.map((n) => {
+        if (normalizeStructTag(n.asMoveObject?.contents?.type?.repr) !== normalizeStructTag(type)) throw new Error(`Pool ${n.address} does not have the selected type ${type}`);
+        return { pool_id: n.address, protocol, token_a: a, token_b: b };
+      }));
     }
   }
-  ck("find_pools returns exactly the raw pools of every protocol and fee tier", sameSet((pools.pools ?? []).map((p) => p.pool_id), rawPools.map((p) => p.id)), `${pools.total} vs ${rawPools.length}`);
-  ck("find_pools gives each pool's own token order", rawPools.every((r) => pools.pools?.find((p) => p.pool_id === r.id)?.token_a === r.first));
+
+  // Aftermath's Pool<LP> lists its coins in JSON, not in the pool's type arguments.
+  const aftermathPackage = "0xefe170ec0be4d762196bedecd7a065816576198a6527c99282a2551aaa7da38c";
+  const aftermath = await allNodes(`query($t:String!,$after:String){ objects(filter:{type:$t}, first:50, after:$after){ pageInfo{hasNextPage endCursor} nodes{ address asMoveObject{ contents{ type{repr} json } } } } }`, { t: `${aftermathPackage}::pool::Pool` }, (d) => d.objects);
+  for (const n of aftermath) {
+    const contents = n.asMoveObject?.contents;
+    const coinTypes = contents?.json?.type_names?.map((name) => normalizeStructTag(name.startsWith("0x") ? name : `0x${name}`));
+    if (!coinTypes || coinTypes.length < 2) throw new Error(`Aftermath pool ${n.address} has unreadable coin types`);
+    if (coinTypes.includes(SUI_FULL) && coinTypes.includes(USDC)) {
+      const lpType = contents.type.repr.match(/^0x[0-9a-f]+::pool::Pool<(.+)>$/i)?.[1];
+      if (!lpType) throw new Error(`Aftermath pool ${n.address} has no LP type`);
+      rawPools.push({ pool_id: n.address, protocol: "aftermath", token_a: coinTypes[0], token_b: coinTypes[1], coin_types: coinTypes, lp_type: lpType });
+    }
+  }
+
+  // FlowX v2 keeps pairs in a factory bag, rather than top-level Pool<X,Y> objects.
+  const flowxPackage = "0xba153169476e8c3114962261d1edc70de5ad9781b83cc617ecc8c1923191cae0";
+  const factoryId = "0xb65dcbf63fd3ad5d0ebfbf334780dc9f785eff38a4459e37ab08fa79576ee511";
+  const factory = (await gql(`query($id:SuiAddress!){ object(address:$id){ asMoveObject{ contents{ type{repr} json } } } }`, { id: factoryId })).object?.asMoveObject?.contents;
+  if (factory?.type?.repr !== `${flowxPackage}::factory::Container` || !factory.json?.pairs?.id) throw new Error("FlowX v2 factory bag is unreadable");
+  for (const [a, b] of [[SUI_FULL, USDC], [USDC, SUI_FULL]]) {
+    const name = `LP-${a.replace(/0x([0-9a-f]{64})/g, "$1")}-${b.replace(/0x([0-9a-f]{64})/g, "$1")}`;
+    const id = deriveDynamicFieldID(factory.json.pairs.id, "0x1::string::String", bcs.string().serialize(name).toBytes());
+    const field = (await gql(`query($id:SuiAddress!){ object(address:$id){ asMoveObject{ contents{ type{repr} json } } } }`, { id })).object?.asMoveObject?.contents;
+    if (!field) continue;
+    const fieldType = field.type?.repr;
+    if (field.json?.name !== name || !field.json?.value ||
+      normalizeStructTag(fieldType ?? "") !== normalizeStructTag(`${pad("2")}::dynamic_field::Field<${pad("1")}::string::String, ${flowxPackage}::pair::PairMetadata<${a}, ${b}>>`)) {
+      throw new Error(`FlowX v2 factory entry ${id} does not match ${name}`);
+    }
+    rawPools.push({ pool_id: id, protocol: "flowx_v2", token_a: a, token_b: b });
+  }
+
+  const venueNames = ["cetus", "deepbook", "turbos", "bluemove", "bluefin", "momentum", "flowx_clmm", "flowx_v2", "magma", "aftermath", "kriya_v2"];
+  ck("find_pools completes every current venue", sameSet((pools.venues ?? []).map((v) => v.venue), venueNames) && pools.venues.every((v) => v.status === "complete"), JSON.stringify(pools.venues));
+  const listedPools = [...(pools.pools ?? [])];
+  let next = pools.omitted?.next_call;
+  while (next && listedPools.length < pools.total) {
+    const page = await call(next.tool, next.args);
+    if (page.total !== pools.total || !page.pools?.length || page.offset !== listedPools.length || !sameSet((page.venues ?? []).map((v) => v.venue), venueNames) || page.venues.some((v) => fullSet.has(v.venue) && v.status !== "complete")) {
+      throw new Error(`find_pools continuation at ${listedPools.length} is incomplete`);
+    }
+    listedPools.push(...page.pools);
+    next = page.omitted?.next_call;
+  }
+  ck("find_pools returns exactly the raw pools of every protocol and fee tier", !pools.incomplete && listedPools.length === pools.total &&
+    sameSet(listedPools.map((p) => `${p.protocol}:${p.pool_id}`), rawPools.map((p) => `${p.protocol}:${p.pool_id}`)), `${listedPools.length}/${pools.total} vs ${rawPools.length}`);
+  const byId = new Map(listedPools.map((p) => [p.pool_id, p]));
+  ck("find_pools gives each pool's own token order", rawPools.every((r) => {
+    const actual = byId.get(r.pool_id);
+    return actual?.protocol === r.protocol && actual.token_a === r.token_a && actual.token_b === r.token_b &&
+      (r.protocol !== "aftermath" || (sameSet(actual.coin_types ?? [], r.coin_types) &&
+        actual.coin_types?.every((coin, i) => coin === r.coin_types[i]) && actual.lp_type === r.lp_type));
+  }));
 
   const rawObj = async (id) => (await gql(`query($id:SuiAddress!){ object(address:$id){ version asMoveObject{ contents{ json } } } }`, { id })).object;
   const tBefore = await rawObj(TURBOS_QUIET_POOL);

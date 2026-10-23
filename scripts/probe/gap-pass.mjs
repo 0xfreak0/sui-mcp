@@ -26,7 +26,7 @@ await runWithNetwork("mainnet", async () => {
     ck("by-address finds the same restriction",hit,
        `checked=${byAddr.coins_checked} complete=${byAddr.scan_complete} denied_by=${byAddr.denied_by_count}`);
     ck("scan reports completeness",byAddr.scan_complete===true,`=${byAddr.scan_complete}`);
-    ck("caveat explains the anti-correlation",String(byAddr.caveat??"").includes("anti-correlated"));
+    ck("caveat says a frozen address may hold none of the coin",/frozen address may have no balance of that coin/i.test(String(byAddr.caveat??"")));
   }
   const tok=await call("analyze_token",{query:REG_COIN,include_holders:false});
   ck("analyze_token agrees the coin is regulated",tok.deny_list?.regulated===true,`=${JSON.stringify(tok.deny_list?.regulated)}`);

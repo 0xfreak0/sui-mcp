@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const query = vi.hoisted(() => vi.fn());
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: query }));
 
-import { listConfiguredCoins, cachedConfiguredCoins, resetCoinMapCache } from "../src/utils/deny-list-probe.js";
+import { listConfiguredCoins, cachedConfiguredCoins, resetCoinMapCache, readCoinRestrictions } from "../src/utils/deny-list-probe.js";
 
 const coin = Buffer.from("2::sample::SAMPLE").toString("base64");
 const field = { name: { json: { per_type_key: coin } }, value: { address: "0xcafe" } };
@@ -75,5 +75,33 @@ describe("configured coin scan completeness", () => {
     expect([...partial.map.values()]).toEqual(["0xcafe"]);
     expect((await cachedConfiguredCoins()).complete).toBe(true);
     expect(query).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("coin restriction scan continuation", () => {
+  it("resumes at the first unread page without declaring a partial pause state clear", async () => {
+    const denied = (address: string) => ({
+      name: { type: { repr: "0x2::deny_list::AddressKey" }, json: { pos0: address } },
+      value: { json: { data: { newer_value_epoch: "1", newer_value: true } } },
+    });
+    query.mockImplementation(async (_gql: string, vars: { cursor: string | null }) => ({
+      object: {
+        dynamicFields: {
+          nodes: [denied(vars.cursor ? "0x2" : "0x1")],
+          pageInfo: { hasNextPage: !vars.cursor, endCursor: vars.cursor ? null : "page-2" },
+        }
+      },
+    }));
+    const first = await readCoinRestrictions("0x2::sui::SUI", "0xcafe", 5, 1);
+    expect(first).toMatchObject({
+      truncated: true, next_cursor: "page-2", globally_paused: null,
+      denied: [{ address: "0x1", active: true }]
+    });
+    const second = await readCoinRestrictions("0x2::sui::SUI", "0xcafe", 5, 1, first.next_cursor);
+    expect(second).toMatchObject({
+      truncated: false, globally_paused: null,
+      denied: [{ address: "0x2", active: true }]
+    });
+    expect(query.mock.calls.map(([, variables]) => variables.cursor)).toEqual([null, "page-2"]);
   });
 });

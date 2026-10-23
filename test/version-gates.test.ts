@@ -38,4 +38,12 @@ describe("scanVersionGates", () => {
     expect(scan?.unreadable?.map((u) => u.version)).toEqual([2]);
     expect(fetchAllModuleDisassembly).not.toHaveBeenCalledWith(id(1));
   });
+  it("reads every version when the caller raises the comparison bound", async () => {
+    const count = MAX_VERSIONS_COMPARED + 2;
+    fetchPackageVersions.mockResolvedValue(Array.from({ length: count }, (_, i) => ({ address: id(i + 1), version: i + 1 })));
+    fetchAllModuleDisassembly.mockResolvedValue(EMPTY);
+    const scan = await scanVersionGates(id(1), undefined, count);
+    expect(scan?.versions_compared).toHaveLength(count);
+    expect(scan?.versions_not_compared).toBeUndefined();
+});
 });

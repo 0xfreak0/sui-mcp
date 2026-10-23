@@ -109,6 +109,8 @@ export interface CoinRestrictions {
   denied: DeniedAddress[];
   /** True when the address page was cut short. */
   truncated: boolean;
+ /** Cursor for the first unread page when a scan segment reached its page budget. */
+ next_cursor?: string;
 }
 
 /** Key type suffixes as they appear in a dynamic field's type. */

@@ -28,7 +28,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerRestrictionTools(server: McpServer) {
   server.tool(
     "check_coin_restrictions",
-    "(Incident investigation) Read issuer freezes and whole-coin pauses from regulated coins' on-chain deny lists. Give coin_type to list frozen addresses, address to check every regulated coin regardless of holdings, or both for one pair. Address-only checks read many lists. Freezes are issuer decisions, not protocol rules, and the DenyCap holder can reverse them. Off-chain validator freezes are invisible here. Use when a traced address cannot move a token or to check whether an issuer has frozen a counterparty.",
+  "(Incident investigation) Read issuer freezes and whole-coin pauses from regulated coins' on-chain deny lists. Give coin_type to page frozen addresses (follow next_call until the list ends), address to check every regulated coin regardless of holdings, or both for one pair. Address-only checks read many lists. Freezes are issuer decisions, not protocol rules, and the DenyCap holder can reverse them. Off-chain validator freezes are invisible here. Use when a traced address cannot move a token or to check whether an issuer has frozen a counterparty.",
     {
       coin_type: coinTypeArg()
         .optional()
@@ -43,9 +43,13 @@ export function registerRestrictionTools(server: McpServer) {
         .min(1)
         .max(1000)
         .optional()
-        .describe("Cap on denied addresses returned for a coin (default 200)."),
+    .describe("Frozen addresses displayed per scan segment (default 200, max 1000); use next_call for the rest."),
+   denied_offset: numArg().int().min(0).optional()
+    .describe("Offset into this scan segment's denied rows; use next_call to page the display cap."),
+   cursor: z.string().optional()
+    .describe("Next scan segment cursor from next_call; each segment covers up to 20 GraphQL pages."),
     },
-    async ({ coin_type, address, max_addresses }) => {
+  async ({ coin_type, address, max_addresses, denied_offset, cursor }) => {
       if (!coin_type && !address) {
         return errorResult("Give a coin_type, an address, or both.");
       }
@@ -118,9 +122,11 @@ export function registerRestrictionTools(server: McpServer) {
         });
       }
 
-      const restrictions = await readCoinRestrictions(coin_type!, configId, epoch);
+   const restrictions = await readCoinRestrictions(coin_type!, configId, epoch, 20, cursor ?? null);
       const cap = max_addresses ?? 200;
-      const shown = restrictions.denied.slice(0, cap);
+   const offset = denied_offset ?? 0;
+   if (offset > restrictions.denied.length) return errorResult("denied_offset exceeds this scan segment's denied rows.");
+   const shown = restrictions.denied.slice(offset, offset + cap);
 
       // Name the frozen addresses where we can. An issuer freezing a labelled
       // exchange deposit reads very differently from freezing a fresh wallet.
@@ -129,6 +135,11 @@ export function registerRestrictionTools(server: McpServer) {
       );
 
       const target = address ? restrictions.denied.find((d) => d.address === address) : undefined;
+   const next = offset + cap < restrictions.denied.length
+    ? { tool: "check_coin_restrictions", repeat_with: { denied_offset: offset + cap } }
+    : restrictions.next_cursor
+     ? { tool: "check_coin_restrictions", repeat_with: { cursor: restrictions.next_cursor, denied_offset: 0 } }
+     : null;
 
       return json({
         coin_type,
@@ -137,7 +148,12 @@ export function registerRestrictionTools(server: McpServer) {
         config_id: configId,
         globally_paused: restrictions.globally_paused,
         denied_count: restrictions.denied.length,
-        denied_truncated: restrictions.truncated || restrictions.denied.length > cap,
+    denied_count_scope: cursor || restrictions.truncated ? "this scan segment only" : "complete list",
+    denied_truncated: restrictions.truncated || offset + cap < restrictions.denied.length || !!cursor,
+    ...(next ? { next_call: next } : {}),
+    ...(restrictions.truncated && !restrictions.next_cursor ? {
+     scan_note: "The deny-list scan could not advance (missing page or cursor); the omitted rows cannot be reached from this cursor. Retry the call.",
+    } : {}),
         denied: shown.map((d) => {
           const id = identities.get(d.address);
           return {
@@ -146,10 +162,13 @@ export function registerRestrictionTools(server: McpServer) {
             ...(id?.label ? { label: id.label, category: id.label_category } : {}),
           };
         }),
-        ...(address ? { queried_address_denied: Boolean(target?.active) } : {}),
+    ...(address ? { queried_address_denied: target ? target.active : cursor || restrictions.truncated ? null : false } : {}),
         ...(address && restrictionNote(restrictions, address)
           ? { note: restrictionNote(restrictions, address) }
           : {}),
+    ...(address && !target && (cursor || restrictions.truncated) ? {
+     address_scan_note: "This scan segment did not find the address; no unrestricted conclusion follows until all segments are read.",
+    } : {}),
         caveat:
           "Chain-derived: this is what the DenyList object records. It is the issuer's own decision, not a protocol rule, and reversible by whoever holds the DenyCap. An entry with `active: false` is recorded but not yet in force.",
         validator_freeze_note: VALIDATOR_FREEZE_NOTE,

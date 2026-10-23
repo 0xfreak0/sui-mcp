@@ -288,6 +288,10 @@ describe("trace_object_history — a busy object beyond the page limit", () => {
 
     const r = await run({ object_id: "0xflipper", limit: 1 });
     expect(r.owner_change_note).toMatch(/did not finish/);
+  expect(r.owner_change_next_call).toEqual({
+   tool: "trace_object_history",
+   repeat_with: { transition_reads: 160, transition_time_ms: 40_000 },
+  });
     type Range = { from_checkpoint: number; to_checkpoint: number; owner_before: { address: string }; owner_after: { address: string } };
     const ranges: Range[] = r.owner_change_unpinned;
     expect(ranges.length).toBeGreaterThan(0);

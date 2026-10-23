@@ -10,7 +10,7 @@ vi.mock("../../src/clients/grpc.js", () => ({ sui: mockSui, archive: mockSui }))
 // The binary path is read when config loads, and the mock above must exist
 // before the tool module imports the client.
 process.env.SUI_DECOMPILER_PATH = "/nonexistent/move-decompiler";
-const { registerDecompilerTools } = await import("../../src/tools/decompiler.js");
+const { registerDecompilerTools, planModuleBatch, DECOMPILE_LIMITS } = await import("../../src/tools/decompiler.js");
 
 const tools = new Map<string, Function>();
 registerDecompilerTools({
@@ -49,4 +49,21 @@ describe("decompile_module without a decompiler binary", () => {
     expect(result.isError).toBe(true);
     expect(cleanErrorMessage(error, "mainnet")).not.toMatch(/looked up on|network/);
   });
+});
+
+it("pages oversized package modules by offset without skipping or repeating any", () => {
+  const modules = Array.from({ length: DECOMPILE_LIMITS.maxModules * 2 + 3 }, (_, i) => `m${i}`);
+  const first = planModuleBatch(modules);
+  const second = planModuleBatch(modules, first.selected.length);
+  const third = planModuleBatch(modules, first.selected.length + second.selected.length);
+  expect([...first.selected, ...second.selected, ...third.selected]).toEqual(modules);
+  expect(first.skipped).toBe(modules.length - DECOMPILE_LIMITS.maxModules);
+  expect(second.skipped).toBe(3);
+  expect(third.skipped).toBe(0);
+});
+
+it("rejects module offsets outside all_modules mode", async () => {
+  const response = await tools.get("decompile_module")!({ package_id: "0x2", module_offset: 1 });
+  expect(response.isError).toBe(true);
+  expect(JSON.parse(response.content[0].text).error).toContain("all_modules");
 });

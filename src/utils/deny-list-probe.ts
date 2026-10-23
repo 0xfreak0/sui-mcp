@@ -336,6 +336,7 @@ export async function readCoinRestrictions(
   configId: string,
   epoch: number,
   maxPages = 20,
+ startCursor: string | null = null,
 ): Promise<CoinRestrictions> {
   const out: CoinRestrictions = {
     coin_type: coinType,
@@ -345,12 +346,16 @@ export async function readCoinRestrictions(
     truncated: false,
   };
 
-  let cursor: string | null = null;
+ let cursor: string | null = startCursor;
   let complete = false;
   let pauseSeen = false;
   for (let i = 0; i < maxPages; i++) {
     const conn = await page(configId, cursor);
-    if (!conn) break;
+  if (!conn) {
+   out.truncated = true;
+   if (cursor) out.next_cursor = cursor;
+   break;
+  }
     for (const n of conn.nodes) {
       const type = n.name?.type?.repr ?? "";
       const setting = n.value?.json as RawSetting | undefined;
@@ -379,15 +384,19 @@ export async function readCoinRestrictions(
       complete = true;
       break;
     }
-    cursor = conn.pageInfo.endCursor;
-    // Another page claimed with no cursor restarts the walk. Bounded by
-    // maxPages so it terminates, but it would re-read page one and report the
-    // same denied addresses twice.
-    if (!cursor) break;
-    if (i === maxPages - 1 && conn.pageInfo.hasNextPage) out.truncated = true;
+  const next = conn.pageInfo.endCursor;
+  if (!next || next === cursor) {
+   out.truncated = true;
+   break;
+  }
+  cursor = next;
+  if (i === maxPages - 1) {
+   out.truncated = true;
+   out.next_cursor = cursor;
+  }
   }
   // Every field was read and none is a GlobalPauseKey: the issuer never
   // paused the coin, and the chain reads that as not paused.
-  if (complete && !pauseSeen) out.globally_paused = false;
+ if (complete && !pauseSeen && startCursor === null) out.globally_paused = false;
   return out;
 }

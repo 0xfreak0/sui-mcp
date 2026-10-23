@@ -117,6 +117,8 @@ export interface CapabilityAudit {
    */
   coins_without_located_mint_authority?: UnlocatedMintAuthority[];
   note?: string;
+ /** Counts still outside the current read limits; raise the corresponding argument to inspect more. */
+ limits_hit?: { publish_pages?: number; authority_structs?: number; registry_probes?: number; witness_checks?: number };
 }
 
 /** A coin the package defines whose TreasuryCap was not found. */
@@ -825,6 +827,7 @@ export async function auditPackageCapabilities(
   publisher?: string | null,
   /** The package's own modules, for the authority-struct scan. Omit to skip it. */
   modules?: CapCandidateModule[],
+ limits: { publish_pages?: number; authority_structs?: number; registry_probes?: number; witness_checks?: number } = {},
 ): Promise<CapabilityAudit> {
   // 1. Scan the publish tx for created cap-like objects (paginating a few pages),
   // and for the coins it created: a CoinMetadata, TreasuryCap, Coin or
@@ -836,7 +839,7 @@ export async function auditPackageCapabilities(
   let after: string | null = null;
   let pages = 0;
   try {
-    for (; pages < 6; pages++) {
+  for (; pages < (limits.publish_pages ?? 6); pages++) {
       const data: PublishScanResult = await gqlQuery<PublishScanResult>(PUBLISH_SCAN_QUERY, { p: packageId, after });
       const published = data.package?.packageAt;
       const changes = published?.previousTransaction?.effects?.objectChanges;
@@ -855,7 +858,17 @@ export async function auditPackageCapabilities(
         if (coin) publishedCoins.add(coin);
       }
       if (!changes.pageInfo.hasNextPage) break;
-      after = changes.pageInfo.endCursor;
+   const next = changes.pageInfo.endCursor;
+   if (!next || next === after) {
+    return { checked: false, capabilities: [], note: "Publish transaction object changes could not advance; capability audit is incomplete." };
+   }
+   after = next;
+  }
+  if (pages === (limits.publish_pages ?? 6)) {
+   return {
+    checked: false, capabilities: [], limits_hit: { publish_pages: 1 },
+    note: `Publish transaction object changes exceeded ${limits.publish_pages ?? 6} pages; capability audit is incomplete. Raise publish_pages to read the rest.`
+   };
     }
   } catch (err) {
     return { checked: false, capabilities: [], note: `Capability audit failed: ${(err as Error).message}` };
@@ -891,8 +904,8 @@ export async function auditPackageCapabilities(
   const seen = new Set(capObjects.map((c) => c.id));
   if (modules?.length) {
     const candidates = findAuthorityStructs(modules);
-    structsSkipped = Math.max(0, candidates.length - MAX_AUTHORITY_STRUCTS);
-    const scanned = candidates.slice(0, MAX_AUTHORITY_STRUCTS);
+  structsSkipped = Math.max(0, candidates.length - (limits.authority_structs ?? MAX_AUTHORITY_STRUCTS));
+  const scanned = candidates.slice(0, limits.authority_structs ?? MAX_AUTHORITY_STRUCTS);
     // A struct may have been defined by an earlier version, and an object is
     // indexed under the id that defined its type (the rule an event's type
     // follows), so a scan under the requested id finds nothing. The origins
@@ -1013,8 +1026,8 @@ export async function auditPackageCapabilities(
         witness: s.witness,
       }))
       .filter((c): c is { type: string; witness: boolean } => !!c.type && !coinTypes.has(c.type));
-    registryProbesSkipped = Math.max(0, candidates.length - MAX_REGISTRY_PROBES);
-    const probed = candidates.slice(0, MAX_REGISTRY_PROBES);
+  registryProbesSkipped = Math.max(0, candidates.length - (limits.registry_probes ?? MAX_REGISTRY_PROBES));
+  const probed = candidates.slice(0, limits.registry_probes ?? MAX_REGISTRY_PROBES);
     let registryRead = false;
     if (probed.length) {
       try {
@@ -1034,9 +1047,9 @@ export async function auditPackageCapabilities(
     // know is asked of the node, which also knows a coin by its top-level
     // CoinMetadata or TreasuryCap.
     const unregistered = registryRead ? probed.filter((c) => c.witness && !coinTypes.has(c.type)) : [];
-    witnessChecksSkipped = Math.max(0, unregistered.length - MAX_WITNESS_CHECKS);
+  witnessChecksSkipped = Math.max(0, unregistered.length - (limits.witness_checks ?? MAX_WITNESS_CHECKS));
     await Promise.all(
-      unregistered.slice(0, MAX_WITNESS_CHECKS).map(async ({ type }) => {
+   unregistered.slice(0, limits.witness_checks ?? MAX_WITNESS_CHECKS).map(async ({ type }) => {
         try {
           if (await coinExists(type)) coinTypes.add(type);
         } catch (err) {
@@ -1172,17 +1185,17 @@ export async function auditPackageCapabilities(
   const noteParts: string[] = [];
   if (structsSkipped > 0) {
     noteParts.push(
-      `${structsSkipped} additional authority-named struct type(s) were not scanned (capped at ${MAX_AUTHORITY_STRUCTS}); their instances may be missing.`,
+   `${structsSkipped} additional authority-named struct type(s) were not scanned (limit ${limits.authority_structs ?? MAX_AUTHORITY_STRUCTS}); their instances may be missing.`,
     );
   }
   if (registryProbesSkipped > 0) {
     noteParts.push(
-      `${registryProbesSkipped} additional struct type(s) were not checked for a coin (capped at ${MAX_REGISTRY_PROBES}); a coin one of them names, and its mint authority, may be missing.`,
+   `${registryProbesSkipped} additional struct type(s) were not checked for a coin (limit ${limits.registry_probes ?? MAX_REGISTRY_PROBES}); a coin one of them names, and its mint authority, may be missing.`,
     );
   }
   if (witnessChecksSkipped > 0) {
     noteParts.push(
-      `${witnessChecksSkipped} additional one-time-witness struct type(s) the coin registry does not know were not asked of the node (capped at ${MAX_WITNESS_CHECKS}); a coin one of them names, and its mint authority, may be missing.`,
+   `${witnessChecksSkipped} additional one-time-witness struct type(s) the coin registry does not know were not asked of the node (limit ${limits.witness_checks ?? MAX_WITNESS_CHECKS}); a coin one of them names, and its mint authority, may be missing.`,
     );
   }
   const incompleteScans = [...incomplete].map(([type, reasons]) => ({ type, reason: reasons.join("; ") }));
@@ -1207,6 +1220,13 @@ export async function auditPackageCapabilities(
     ...(userHeldTypes.length ? { user_held_types: userHeldTypes } : {}),
     ...(incompleteScans.length ? { incomplete_scans: incompleteScans } : {}),
     ...(unlocated.length ? { coins_without_located_mint_authority: unlocated } : {}),
+  ...((structsSkipped || registryProbesSkipped || witnessChecksSkipped) ? {
+   limits_hit: {
+    ...(structsSkipped ? { authority_structs: structsSkipped } : {}),
+    ...(registryProbesSkipped ? { registry_probes: registryProbesSkipped } : {}),
+    ...(witnessChecksSkipped ? { witness_checks: witnessChecksSkipped } : {}),
+   },
+  } : {}),
     ...(noteParts.length ? { note: noteParts.join(" ") } : {}),
   };
 }

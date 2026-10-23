@@ -189,6 +189,8 @@ const TRANSITION_BUDGET = 80;
  *  `remaining` in `findOwnerTransitions`, which reports running out of
  *  either the same way: `truncated: true`, with the ranges it stopped in. */
 const TRANSITION_TIME_BUDGET_MS = 20_000;
+const MAX_TRANSITION_READS = 500;
+const MAX_TRANSITION_TIME_MS = 120_000;
 
 /** Convert bisection's `{checkpoint, owner}` transitions into the same
  *  `OwnerChange` shape `computeOwnerChanges` produces, by reading the exact
@@ -233,8 +235,12 @@ export function registerObjectHistoryTools(server: McpServer) {
         .string()
         .optional()
         .describe("`next_cursor` from the previous page. Continues in the same direction; pass the same `order`."),
+   transition_reads: numArg().int().min(1).max(MAX_TRANSITION_READS).optional()
+    .describe("Checkpoint probes for owner-change search (default 80, max 500). Raise when owner_change_unpinned lists unresolved ranges."),
+   transition_time_ms: numArg().int().min(1_000).max(MAX_TRANSITION_TIME_MS).optional()
+    .describe("Wall-clock budget for owner-change search in milliseconds (default 20000, max 120000). Raise on a slow endpoint."),
     },
-    async ({ object_id, limit, order, cursor }) => {
+  async ({ object_id, limit, order, cursor, transition_reads, transition_time_ms }) => {
       try {
         const limitRows = limit ?? 25;
         const newest = order === "newest";
@@ -350,8 +356,8 @@ export function registerObjectHistoryTools(server: McpServer) {
         let unresolved: { lo: CheckpointState; hi: CheckpointState }[] = [];
         if (span) {
           const budget: TransitionBudget = {
-            remaining: TRANSITION_BUDGET,
-            deadlineMs: Date.now() + TRANSITION_TIME_BUDGET_MS,
+      remaining: transition_reads ?? TRANSITION_BUDGET,
+      deadlineMs: Date.now() + (transition_time_ms ?? TRANSITION_TIME_BUDGET_MS),
           };
           const search = await findOwnerTransitionsFromEnd(
             span.lo,
@@ -565,6 +571,18 @@ export function registerObjectHistoryTools(server: McpServer) {
                       },
                     }
                   : {}),
+        ...(searchTruncated && ((transition_reads ?? TRANSITION_BUDGET) < MAX_TRANSITION_READS ||
+         (transition_time_ms ?? TRANSITION_TIME_BUDGET_MS) < MAX_TRANSITION_TIME_MS)
+         ? {
+          owner_change_next_call: {
+           tool: "trace_object_history",
+           repeat_with: {
+            transition_reads: Math.min(MAX_TRANSITION_READS, (transition_reads ?? TRANSITION_BUDGET) * 2),
+            transition_time_ms: Math.min(MAX_TRANSITION_TIME_MS, (transition_time_ms ?? TRANSITION_TIME_BUDGET_MS) * 2),
+           },
+          },
+         }
+         : {}),
                 owner_change_count: ownerChanges.length,
                 ...(!ownerChangesComplete
                   ? {

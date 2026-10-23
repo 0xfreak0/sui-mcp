@@ -34,6 +34,32 @@ const { auditPackageCapabilities, classifyCapType, classifyCapabilityRisk, NEVER
 
 const P2 = "0x0000000000000000000000000000000000000000000000000000000000000002";
 
+describe("auditPackageCapabilities — publish page budget", () => {
+ it("reports an incomplete scan and reads the next page when publish_pages is raised", async () => {
+  gqlQuery.mockReset();
+  gqlQuery.mockImplementation(async (_query: string, vars: { after?: string | null }) => ({
+   package: {
+    packageAt: {
+     previousTransaction: {
+      effects: {
+       objectChanges: gqlPage([], vars.after
+        ? { hasNextPage: false }
+        : { hasNextPage: true, endCursor: "next" }),
+      },
+     },
+    },
+   },
+  }));
+  const first = await auditPackageCapabilities("0xpkg", null, undefined, { publish_pages: 1 });
+  expect(first).toMatchObject({ checked: false, limits_hit: { publish_pages: 1 } });
+  expect(gqlQuery).toHaveBeenCalledTimes(1);
+  const complete = await auditPackageCapabilities("0xpkg", null, undefined, { publish_pages: 2 });
+  expect(complete).toMatchObject({ checked: true, capabilities: [] });
+  expect(complete.limits_hit).toBeUndefined();
+  expect(gqlQuery).toHaveBeenCalledTimes(3);
+ });
+});
+
 describe("classifyCapType", () => {
   it("identifies framework caps", () => {
     expect(classifyCapType(`${P2}::package::UpgradeCap`)).toBe("upgrade");
@@ -486,6 +512,17 @@ describe("auditPackageCapabilities — authority-struct discovery", () => {
     } finally {
       neverSigned.clear();
     }
+ });
+
+ it("reports authority structs outside the default bound and includes them when raised", async () => {
+  const modules = [{
+   name: "vault",
+   structs: Array.from({ length: 13 }, (_, i) => ({ name: `Authority${i}Cap`, abilities: ["key", "store"] })),
+  }];
+  const bounded = await auditPackageCapabilities(PKG, MULTISIG, modules);
+  expect(bounded.limits_hit).toMatchObject({ authority_structs: 1 });
+  const expanded = await auditPackageCapabilities(PKG, MULTISIG, modules, { authority_structs: 13 });
+  expect(expanded.limits_hit?.authority_structs).toBeUndefined();
   });
 
   it("does not scan standard framework cap names as authority structs", async () => {

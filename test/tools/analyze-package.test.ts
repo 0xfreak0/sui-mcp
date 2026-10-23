@@ -1,9 +1,25 @@
 import { describe, it, expect } from "vitest";
 import {
   analyzePackageModules,
+  capabilityLimitNextCall,
   bytecodeFindings,
   type AnalyzedModule,
 } from "../../src/tools/analyze-package.js";
+
+describe("capabilityLimitNextCall", () => {
+  it("raises only the limits that cut the audit and stops at the schema maximum", () => {
+    expect(capabilityLimitNextCall({ authority_structs: 4, witness_checks: 2 }, {})).toEqual({
+      tool: "analyze_package",
+      repeat_with: { authority_structs: 24, witness_checks: 24 },
+    });
+    expect(capabilityLimitNextCall({ registry_probes: 3, publish_pages: 1 },
+      { registry_probes: 350, publish_pages: 12 })).toEqual({
+        tool: "analyze_package",
+        repeat_with: { registry_probes: 400, publish_pages: 20 },
+      });
+    expect(capabilityLimitNextCall({ authority_structs: 1 }, { authority_structs: 48 })).toBeNull();
+  });
+});
 
 function mod(partial: Partial<AnalyzedModule> & { name: string }): AnalyzedModule {
   return { functions: [], structs: [], ...partial };
@@ -63,6 +79,19 @@ describe("analyzePackageModules", () => {
     const freeze = findings.find((f) => f.code === "freeze-authority");
     expect(freeze?.severity).toBe("high");
     expect(freeze?.evidence).toContain("struct regcoin::DenyCap");
+  });
+
+  it("counts all surface evidence and returns every row in full detail", () => {
+    const structs = Array.from({ length: 15 }, (_, i) => ({
+      name: `Admin${i}Cap`, abilities: ["key"], fields: [],
+    }));
+    const modules = [mod({ name: "vault", structs })];
+    const summary = analyzePackageModules(modules).find((f) => f.code === "privileged-capability");
+    const full = analyzePackageModules(modules, { full: true }).find((f) => f.code === "privileged-capability");
+    expect(summary?.evidence).toHaveLength(12);
+    expect(summary?.evidence_count).toBe(15);
+    expect(full?.evidence).toHaveLength(15);
+    expect(full?.evidence.at(-1)).toBe("struct vault::Admin14Cap");
   });
 
   it("flags freeze authority from a deny_list function param", () => {
@@ -257,4 +286,15 @@ describe("bytecodeFindings", () => {
     expect(scan.weak_leads?.map((l) => [l.check, l.function, l.grade])).toEqual([["sibling-guard-gap", "pool::sweep", "weak"]]);
     expect(scan.weak_leads?.[0].instructions.some((i) => i.includes("Call assert_version"))).toBe(true);
   });
+
+  it("lists every function whose stack was not modelled in the full view", () => {
+    const unknowns = Array.from({ length: 10 }, (_, i) =>
+      `entry public opaque${i}() {\nB0:\n\t0: Unmodelled\n\t1: Ret\n}`);
+    const disassembly = `module 00000000000000000000000000000000000000000000000000000000000000aa.pool {\n${unknowns.join("\n")}\n}`;
+    const compact = bytecodeFindings(new Map([["pool", disassembly]])).scan.functions_partial;
+    const full = bytecodeFindings(new Map([["pool", disassembly]]), { full: true }).scan.functions_partial;
+    expect(compact).toMatchObject({ count: 10 });
+    expect(compact?.names).toHaveLength(8);
+    expect(full?.names).toEqual(unknowns.map((_, i) => `pool::opaque${i}`));
+});
 });

@@ -76,4 +76,20 @@ describe("get_package_dependency_graph", () => {
     expect(math.error).toBeTruthy();
     expect(math.dependencies).toBeUndefined();
   });
+
+  it("names unexpanded branches and a callable path beyond depth three", async () => {
+    const ids = ["a", "b", "c", "d", "e"].map(pad);
+    mockSui.ledgerService.getObject.mockImplementation(async ({ objectId }: { objectId: string }) => {
+      const index = ids.indexOf(objectId);
+      return packageObject(1n, ["m"], index < ids.length - 1 ? [[ids[index + 1], 1n]] : []);
+});
+const data = JSON.parse((await tools.get("get_package_dependency_graph")!({ package_id: ids[0], depth: 3 })).content[0].text);
+expect(data.complete).toBe(false);
+expect(data.unexpanded).toEqual([{
+  package_id: ids[4],
+  next_call: { tool: "get_package_dependency_graph", args: { package_id: ids[4], depth: 3, network: "mainnet" } },
+}]);
+const rest = JSON.parse((await tools.get("get_package_dependency_graph")!(data.unexpanded[0].next_call.args)).content[0].text);
+expect(rest.complete).toBe(true);
+});
 });

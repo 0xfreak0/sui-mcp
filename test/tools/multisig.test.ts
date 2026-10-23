@@ -20,7 +20,7 @@ const sentPage = (signatures: string[], digest: string) => ({
   },
 });
 
-beforeEach(() => mockGqlQuery.mockReset());
+beforeEach(() => { mockGqlQuery.mockReset(); });
 
 describe("analyze_multisig", () => {
   it("answers after one page for a wallet that signs with its own single key", async () => {
@@ -48,5 +48,29 @@ describe("analyze_multisig", () => {
     });
     const res = await analyze({ address: fixtures.ed25519.address });
     expect(res.content[0].text).toMatch(/none carries its own signature: they were authorized by 0xa1eb94d1/);
+  });
+
+  it("continues past a scanned segment with only foreign signatures without claiming the address never sent", async () => {
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { before: string | null }) => ({
+      transactions: {
+        pageInfo: { hasPreviousPage: !vars.before, startCursor: vars.before ? null : "older" },
+        nodes: [{
+          digest: vars.before ? "tx-old" : "tx-new", effects: null, gasInput: null,
+          signatures: fixtures.ms_2of3.signatures.map((signatureBytes) => ({ signatureBytes }))
+        }],
+      },
+    }));
+    const initial = JSON.parse((await analyze({ address: fixtures.ed25519.address, max_transactions: 1 })).content[0].text);
+    expect(initial).toMatchObject({
+      committee: null, history_complete: false,
+      next_call: { tool: "analyze_multisig", repeat_with: { cursor: "older" } },
+    });
+    const last = JSON.parse((await analyze({
+      address: fixtures.ed25519.address, max_transactions: 1, cursor: initial.next_call.repeat_with.cursor,
+    })).content[0].text);
+    expect(last.history_complete).toBe(false);
+    expect(last.next_call).toBeUndefined();
+    expect(last.note).toMatch(/combine it with prior segments/);
+    expect(mockGqlQuery.mock.calls.map(([, vars]) => vars.before)).toEqual([null, "older"]);
   });
 });

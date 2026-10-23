@@ -2,7 +2,7 @@ import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { guardiansFlagsForPackage } from "../utils/guardians.js";
 import { z } from "zod";
 import { resolvePublisher } from "../utils/publisher.js";
-import { boolArg } from "./args.js";
+import { boolArg, numArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { GrpcTypes } from "@mysten/sui/grpc";
 import { errorResult, describeError } from "../utils/errors.js";
@@ -62,6 +62,8 @@ export interface Finding {
   title: string;
   detail: string;
   evidence: string[];
+ /** All matched evidence rows, including the ones omitted in summary detail. */
+ evidence_count?: number;
   /** Bytecode leads: the function, a grade and the instructions behind it. */
   leads?: CodeLead[];
   /** Leads across the lineage's versions: older versions and the functions in them. */
@@ -80,6 +82,11 @@ export type VersionLeadView = UngatedVersionLead & {
 const isPublic = (f: AnalyzedFunction) =>
   f.isEntry || f.visibility === "public" || f.visibility === "public(friend)";
 
+const surfaceEvidence = (items: string[], full: boolean) => ({
+ evidence: full ? items : items.slice(0, 12),
+ ...(items.length > 12 ? { evidence_count: items.length } : {}),
+});
+
 /**
  * Heuristic surface scan over a package's normalized modules.
  *
@@ -88,7 +95,8 @@ const isPublic = (f: AnalyzedFunction) =>
  * identifiable from structure alone (capabilities, freeze/mint authority, fund
  * handling), and says nothing about whether their *use* is safe.
  */
-export function analyzePackageModules(modules: AnalyzedModule[]): Finding[] {
+
+export function analyzePackageModules(modules: AnalyzedModule[], options: { full?: boolean } = {}): Finding[] {
   const findings: Finding[] = [];
 
   const allFns = modules.flatMap((m) =>
@@ -114,10 +122,10 @@ export function analyzePackageModules(modules: AnalyzedModule[]): Finding[] {
       title: "Freeze / denylist authority present",
       detail:
         "The package exposes a coin denylist / DenyCap surface. A privileged holder can block specific addresses from transacting the asset (regulated-coin pattern).",
-      evidence: [
+   ...surfaceEvidence([
         ...denyStructs.map((s) => `struct ${s.qualified}`),
         ...denyFns.map((f) => `fn ${f.qualified}`),
-      ].slice(0, 12),
+   ], !!options.full),
     });
   }
 
@@ -131,10 +139,10 @@ export function analyzePackageModules(modules: AnalyzedModule[]): Finding[] {
       title: "Mint authority — supply can be increased",
       detail:
         "A privileged holder (TreasuryCap or a public mint entry) can increase supply. Confirm the cap's custody and whether minting is capped.",
-      evidence: [
+   ...surfaceEvidence([
         ...mintFns.map((f) => `fn ${f.qualified}`),
         ...treasuryFns.map((f) => `fn ${f.qualified} (takes TreasuryCap)`),
-      ].slice(0, 12),
+   ], !!options.full),
     });
   }
 
@@ -150,7 +158,7 @@ export function analyzePackageModules(modules: AnalyzedModule[]): Finding[] {
       title: "Privileged capability types — centralized control",
       detail:
         "The package defines admin/owner capability objects. Holders can invoke gated functions. Who holds them determines how centralized the package is.",
-      evidence: capStructs.map((s) => `struct ${s.qualified}`).slice(0, 12),
+   ...surfaceEvidence(capStructs.map((s) => `struct ${s.qualified}`), !!options.full),
     });
   }
 
@@ -165,7 +173,7 @@ export function analyzePackageModules(modules: AnalyzedModule[]): Finding[] {
       title: "Public API moves coins / balances",
       detail:
         "Public or entry functions accept Coin/Balance/SUI. This is normal for DeFi/marketplace code, but is where fund-safety review should focus.",
-      evidence: fundFns.map((f) => `fn ${f.qualified}`).slice(0, 12),
+   ...surfaceEvidence(fundFns.map((f) => `fn ${f.qualified}`), !!options.full),
     });
   }
 
@@ -178,7 +186,7 @@ export function analyzePackageModules(modules: AnalyzedModule[]): Finding[] {
       title: "Uses on-chain randomness",
       detail:
         "Functions consume 0x2::random::Random. Check for test-and-abort patterns that could let callers retry unfavorable outcomes.",
-      evidence: randomFns.map((f) => `fn ${f.qualified}`).slice(0, 12),
+   ...surfaceEvidence(randomFns.map((f) => `fn ${f.qualified}`), !!options.full),
     });
   }
 
@@ -191,7 +199,7 @@ export function analyzePackageModules(modules: AnalyzedModule[]): Finding[] {
       title: "Hot-potato types (no abilities)",
       detail:
         "Structs with no abilities must be consumed in the same transaction — a must-use enforcement pattern (e.g. flash loans, receipts).",
-      evidence: hotPotatoes.map((s) => `struct ${s.qualified}`).slice(0, 12),
+   ...surfaceEvidence(hotPotatoes.map((s) => `struct ${s.qualified}`), !!options.full),
     });
   }
 
@@ -316,7 +324,7 @@ export function bytecodeFindings(
       leads: counts,
       ...(weak.length ? { weak_leads: weak } : {}),
       functions_analyzed: report.functions_analyzed,
-      ...(partial.length ? { functions_partial: { count: partial.length, names: partial.slice(0, MAX_LEADS) } } : {}),
+   ...(partial.length ? { functions_partial: { count: partial.length, names: options.full ? partial : partial.slice(0, MAX_LEADS) } } : {}),
       read: "Each lead names a function and the instructions behind it, `module::function: offset: instruction`; read them with disassemble_module function_name. A weak lead is a shape that is often deliberate: a skipped check of one object's own state (a version or pause check), a check only a bare majority of the siblings make, or a function that takes an owned object of the package or a non-copyable struct of another package, either of which may gate it. Weak leads raise no finding; confirm what gates the call before reading one as a flaw. A skipped version check matters when an older version of the package, which stays callable, still mutates the same shared objects.",
       note: "These checks follow data flow for three shapes only. A function with no lead has not been cleared: arithmetic, pricing, ordering and logic errors, and checks made in other packages, are outside them.",
     },
@@ -398,10 +406,27 @@ function publicApi(mod: AnalyzedModule): string[] {
     });
 }
 
+const AUDIT_LIMITS = { publish_pages: [6, 20], authority_structs: [12, 48], registry_probes: [200, 400], witness_checks: [12, 48] } as const;
+
+export function capabilityLimitNextCall(
+ hit: { publish_pages?: number; authority_structs?: number; registry_probes?: number; witness_checks?: number } | undefined,
+ current: { publish_pages?: number; authority_structs?: number; registry_probes?: number; witness_checks?: number },
+) {
+ if (!hit) return null;
+ const repeat_with: Record<string, number> = {};
+ for (const name of Object.keys(AUDIT_LIMITS) as Array<keyof typeof AUDIT_LIMITS>) {
+  if (!hit[name]) continue;
+  const [initial, maximum] = AUDIT_LIMITS[name];
+  const value = current[name] ?? initial;
+  if (value < maximum) repeat_with[name] = Math.min(maximum, value * 2);
+ }
+ return Object.keys(repeat_with).length ? { tool: "analyze_package", repeat_with } : null;
+}
+
 export function registerAnalyzePackageTools(server: McpServer) {
   server.tool(
     "analyze_package",
-    "Scan a Move package's API, struct shapes and heuristic risks: freeze/denylist, mint and admin authority, fund handling, randomness and hot-potato types. Bytecode leads cover discarded checks, missing sibling guards and unchecked shared-state writes. It flags older public functions that mutate a shared type without a check most of the newest version's public functions make. It reads all versions up to 30; for longer lineages, it reads the oldest 29 and the newest. Older versions remain callable on the same objects, regardless of the ID passed. Leads are graded strong, medium or weak: weak leads raise no finding; none prove a flaw or clear a package. This is a surface scan, not a security audit. It audits current UpgradeCap/TreasuryCap/deny/admin holders, including caps minted after publish; per-user cap types are counted, not listed by holder. Failed instance scans, unread defining versions and unresolvable generic CoinRegistry types appear in incomplete_scans. Unlocated mint authority means unknown (medium), except proven fixed/burn-only supply or SUI (info: cannot mint). It distinguishes the lineage deployer from this version's publisher; get_upgrade_history joins each version to publishers, signing schemes and cap holders. Summary limits bytecode leads, including weak ones; bytecode_scan.read and omitted.next_call guide follow-up. Use modules for selected signatures and struct fields or detail:'full' for all modules, caps and leads.",
+  "Scan a Move package's API, struct shapes and heuristic risks: freeze/denylist, mint and admin authority, fund handling, randomness and hot-potato types. Bytecode leads cover discarded checks, missing sibling guards and unchecked shared-state writes. It flags older public functions that mutate a shared type without a check most of the newest version's public functions make. It reads up to 30 versions by default, oldest 29 and newest when the lineage is longer; raise max_versions_compared to include more. Older versions remain callable on the same objects, regardless of the ID passed. Leads are graded strong, medium or weak: weak leads raise no finding; none prove a flaw or clear a package. This is a surface scan, not a security audit. It audits current UpgradeCap/TreasuryCap/deny/admin holders, including caps minted after publish; per-user cap types are counted, not listed by holder. Failed instance scans, unread defining versions and unresolvable generic CoinRegistry types appear in incomplete_scans. Unlocated mint authority means unknown (medium), except proven fixed/burn-only supply or SUI (info: cannot mint). It distinguishes the lineage deployer from this version's publisher; get_upgrade_history joins each version to publishers, signing schemes and cap holders. Summary limits bytecode leads, including weak ones; bytecode_scan.read and omitted.next_call guide follow-up. Use modules for selected signatures and struct fields or detail:'full' for all modules, caps and leads.",
     {
       package_id: z
         .string()
@@ -412,6 +437,16 @@ export function registerAnalyzePackageTools(server: McpServer) {
       audit_capabilities: boolArg()
         .optional()
         .describe("Audit who holds the package's UpgradeCap/TreasuryCap/admin caps (default: true)"),
+   publish_pages: numArg().int().min(1).max(20).optional()
+    .describe("Publish transaction object-change pages to inspect (default 6, max 20). Raise when capabilities.limits_hit.publish_pages is set."),
+   authority_structs: numArg().int().min(1).max(48).optional()
+    .describe("Authority-named types to scan (default 12, max 48). Raise when capabilities.limits_hit.authority_structs is set."),
+   registry_probes: numArg().int().min(1).max(400).optional()
+    .describe("Key structs to check for a registered coin (default 200, max 400). Raise when capabilities.limits_hit.registry_probes is set."),
+   witness_checks: numArg().int().min(1).max(48).optional()
+    .describe("Unregistered witness types to check for a coin (default 12, max 48). Raise when capabilities.limits_hit.witness_checks is set."),
+   max_versions_compared: numArg().int().min(2).max(120).optional()
+    .describe("Older package versions compared with the newest (default 30, max 120); bytecode_scan.version_gates.next_call raises this when versions remain."),
       detail: z
         .enum(["summary", "full"])
         .optional()
@@ -423,7 +458,8 @@ export function registerAnalyzePackageTools(server: McpServer) {
         .optional()
         .describe("Only these modules' full signatures and struct shapes; others omitted. Omit for all modules at the chosen detail."),
     },
-    async ({ package_id, include_disassembly, audit_capabilities, detail, modules: wantedModules }) => {
+  async ({ package_id, include_disassembly, audit_capabilities, detail, modules: wantedModules,
+   publish_pages, authority_structs, registry_probes, witness_checks, max_versions_compared }) => {
       try {
         const packageId = await resolvePackageId(package_id);
         const { response: res } = await sui.movePackageService.getPackage({
@@ -433,10 +469,10 @@ export function registerAnalyzePackageTools(server: McpServer) {
         if (!pkg) return errorResult(`Package not found: ${packageId}`);
 
         const modules = pkg.modules.map(normalizeModule);
-        const findings = analyzePackageModules(modules);
+    const full = detail === "full";
+    const findings = analyzePackageModules(modules, { full });
         const flaggedBy = guardiansFlagsForPackage(pkg.storageId ?? packageId);
 
-        const full = detail === "full";
         const fullModule = (m: AnalyzedModule) => ({
           name: m.name,
           public_api: publicApi(m),
@@ -491,12 +527,16 @@ export function registerAnalyzePackageTools(server: McpServer) {
         // publish-transaction scan alone). The lineage's other versions are
         // read alongside it, for checks older versions lack.
         const [capabilities, versionGates] = await Promise.all([
-          audit_capabilities === false ? undefined : auditPackageCapabilities(packageId, rootPublisher.publisher, modules),
-          scanVersionGates(versionId, bytecode.texts ? { package_id: versionId, disassembly: bytecode.texts } : undefined).then(
+     audit_capabilities === false ? undefined : auditPackageCapabilities(packageId, rootPublisher.publisher, modules,
+      { publish_pages, authority_structs, registry_probes, witness_checks }),
+     scanVersionGates(versionId, bytecode.texts ? { package_id: versionId, disassembly: bytecode.texts } : undefined,
+      max_versions_compared).then(
             (gates) => ({ gates, unavailable: null }),
             (err: unknown) => ({ gates: null, unavailable: err instanceof Error ? err.message : String(err) }),
           ),
         ]);
+    const auditNextCall = capabilityLimitNextCall(capabilities?.limits_hit,
+     { publish_pages, authority_structs, registry_probes, witness_checks });
         const gate = versionGates.gates ? versionGateFinding(versionGates.gates, normalizeSuiAddress(versionId), full) : null;
         if (gate?.finding) findings.push(gate.finding);
         const weakLeads = [...(scan?.scan.weak_leads ?? []), ...(gate?.weak ?? [])];
@@ -566,6 +606,15 @@ export function registerAnalyzePackageTools(server: McpServer) {
                         version_count: versionGates.gates.version_count,
                         versions_compared: versionGates.gates.versions_compared,
                         ...(versionGates.gates.versions_not_compared ? { versions_not_compared: versionGates.gates.versions_not_compared } : {}),
+          ...(versionGates.gates.versions_not_compared && (max_versions_compared ?? 30) < 120
+           ? {
+            next_call: {
+             tool: "analyze_package", repeat_with: {
+              max_versions_compared: Math.min(120, (max_versions_compared ?? 30) * 2),
+             }
+            }
+           }
+           : {}),
                         ...(versionGates.gates.unreadable ? { unreadable: versionGates.gates.unreadable } : {}),
                         note: "Each older version was compared with the newest for a check most of the newest version's public functions on a shared type make; `ungated-older-version` lists the versions whose public functions on that type skip it. A check written inline (a comparison and a branch to abort) is not compared.",
                       }
@@ -577,9 +626,11 @@ export function registerAnalyzePackageTools(server: McpServer) {
             : {}),
           ...(capabilities
             ? {
-                capabilities: full
-                  ? capabilities
-                  : { ...capabilities, capabilities: groupCapabilities(capabilities.capabilities) },
+       capabilities: {
+        ...capabilities,
+        capabilities: full ? capabilities.capabilities : groupCapabilities(capabilities.capabilities),
+        ...(auditNextCall ? { next_call: auditNextCall } : {}),
+       },
               }
             : {}),
           ...(flaggedBy.length ? { flagged_by: flaggedBy } : {}),
@@ -597,7 +648,10 @@ export function registerAnalyzePackageTools(server: McpServer) {
         // `detail: 'full'` lists them all.
         const { payload: out } = capPayload(
           "analyze_package",
-          { package_id, include_disassembly, audit_capabilities, modules: wantedModules },
+     {
+      package_id, include_disassembly, audit_capabilities, modules: wantedModules,
+      publish_pages, authority_structs, registry_probes, witness_checks, max_versions_compared
+     },
           payload,
           {
             "bytecode_scan.weak_leads": {

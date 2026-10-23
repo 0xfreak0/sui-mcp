@@ -35,11 +35,12 @@ export interface VersionGateScan {
 export async function scanVersionGates(
   packageId: string,
   known?: { package_id: string; disassembly: Map<string, string> },
+ maxVersions = MAX_VERSIONS_COMPARED,
 ): Promise<VersionGateScan | null> {
   const all = await fetchPackageVersions(packageId);
   if (!all || all.length < 2 || new Set(all.map((v) => normalizeSuiAddress(v.address))).size < 2) return null;
   const sorted = [...all].sort((a, b) => a.version - b.version);
-  const picked = sorted.length <= MAX_VERSIONS_COMPARED ? sorted : [...sorted.slice(0, MAX_VERSIONS_COMPARED - 1), sorted[sorted.length - 1]];
+ const picked = sorted.length <= maxVersions ? sorted : [...sorted.slice(0, maxVersions - 1), sorted[sorted.length - 1]];
   const skipped = sorted.filter((v) => !picked.includes(v));
   const unreadable: { version: number; error: string }[] = [];
   const code: VersionCode[] = [];

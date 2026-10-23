@@ -294,7 +294,7 @@ export function registerFindingsTools(server: McpServer) {
         return {
           content: [
             { type: "text" as const, text: `${report}\n## Fund flow\n\n${diagram}\n\n_${caveats.join(" ")}_\n` },
-            { type: "text" as const, text: JSON.stringify({ ...flow.notes, ...nextCall }) },
+            ...(flow.nextOffset === null ? [] : [{ type: "text" as const, text: JSON.stringify({ ...flow.notes, ...nextCall }) }]),
           ],
         };
       }

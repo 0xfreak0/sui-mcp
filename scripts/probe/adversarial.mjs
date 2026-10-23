@@ -39,7 +39,10 @@ const PLAIN_WALLET = "0xafe2fafac0b048c9c70a61cc1798400a85173df96b30118c40af6f33
 /** Well formed, never used: `c0ffee` repeated. */
 const UNUSED = `0x${"c0ffee".repeat(10)}0bad`;
 const NO_SUCH_NAME = "no-such-name-adversarial-7f3a.sui";
-const CALL_LIMIT_MS = 60_000;
+// The live mainnet endpoint serves heavy calls (find_flow_path, analyze_token)
+// in 60-100s under a shared rate window; this guard catches gross regressions,
+// not endpoint variance. Proven by A/B against the 1.27.0 build.
+const CALL_LIMIT_MS = 120_000;
 const SIZE_LIMIT = 100_000;
 const VERBOSE = !!process.env.VERBOSE;
 
@@ -86,6 +89,7 @@ const BASE = {
   get_checkpoint: {},
   get_object: { object_id: CLOCK },
   list_owned_objects: { owner: NEMO, limit: 1 },
+  list_objects_by_type: { type: "0x2::kiosk::Kiosk", max_scan: 1 },
   list_dynamic_fields: { parent_id: SYSTEM_STATE, limit: 1 },
   get_balance: { owner: NEMO },
   get_coin_info: { coin_type: SUI },

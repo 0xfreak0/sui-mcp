@@ -32,11 +32,30 @@ describe("configured coin scan completeness", () => {
     expect(query).toHaveBeenCalledTimes(2);
   });
 
+  it("reaches regulated coins past the former 25-page limit", async () => {
+    let page = 0;
+    query.mockImplementation(() => {
+      page++;
+      return response(page < 26, page < 26 ? `page-${page}` : null);
+    });
+    const scan = await cachedConfiguredCoins();
+    expect(scan.complete).toBe(true);
+    expect(query).toHaveBeenCalledTimes(26);
+  });
+
   it("does not restart a scan when more pages have no cursor", async () => {
     query.mockResolvedValueOnce(response(true, null));
     const scan = await listConfiguredCoins();
     expect(scan.complete).toBe(false);
     expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not repeat a page when the endpoint repeats a cursor", async () => {
+    query.mockResolvedValueOnce(response(true, "next"))
+      .mockResolvedValueOnce(response(true, "next"));
+    const scan = await listConfiguredCoins();
+    expect(scan.complete).toBe(false);
+    expect(query).toHaveBeenCalledTimes(2);
   });
 
   it("retries a partial cached scan rather than claiming a clean result", async () => {

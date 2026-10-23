@@ -243,6 +243,16 @@ describe("valueMovedObjects", () => {
     expect(r.rows).toEqual([]);
     expect(r.unread.map((u) => u.what)).toEqual([ID(23)]);
   });
+ it("retrieves every valued object beyond the first fifty through an offset page", async () => {
+  const moved = Array.from({ length: 52 }, (_, i) => ({ object_id: ID(500 + i), type: STAKE, from: A, to: B, version: "2" }));
+  const first = await valueMovedObjects(moved, "100");
+  expect(first.rows).toHaveLength(50);
+  expect(first.unread.map((u) => u.what)).toEqual([ID(550), ID(551)]);
+  const later = await valueMovedObjects(moved, "100", undefined, undefined, undefined, 50);
+  expect(later.rows.map((r) => r.object_id)).toEqual([ID(550), ID(551)]);
+  expect(later.unread).toHaveLength(50);
+ });
+
 });
 
 describe("objectValueByAddress", () => {

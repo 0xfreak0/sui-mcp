@@ -78,6 +78,19 @@ describe("deposit verdict windows", () => {
     expect(result.balance_reconstruction).toMatchObject({ complete: false, scanned_transactions: 1, max_transactions: 1 });
   });
 
+  it("honours a separate historical page budget when reconstructing balances", async () => {
+    serve();
+    const base = gqlQuery.getMockImplementation()!;
+    gqlQuery.mockImplementation(async (q: string, v: Record<string, any>) => {
+      const r = await base(q, v);
+      if (v?.filter?.afterCheckpoint === 20) r.transactions.pageInfo = { hasPreviousPage: true, startCursor: "older" };
+      return r;
+    });
+    const result = await classifyDepositAddress(address, { ...opts, from: 10, to: 21, maxBalanceTransactions: 100000, maxBalanceReads: 1 });
+    expect(result.balance_reconstruction).toMatchObject({ complete: false, reads: 1, max_reads: 1, max_transactions: 100000 });
+    expect(result.checks.full_balance_sweeps).toBeNull();
+  });
+
   it("selects observations by resolved bounds, keeping a lower now distinct from unbounded history", async () => {
     serve();
     await classifyDepositAddress(address, opts);

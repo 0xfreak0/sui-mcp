@@ -108,10 +108,14 @@ export interface EdgeBuildOptions {
   expand?: boolean;
   /** Candidate first-funder verifications to spend while expanding. */
   expandBudget?: number;
+ /** Candidate index from a prior expansion_scan.next_call; each page rechecks the seeds. */
+ expandOffset?: number;
   /** Hard ceiling on GraphQL requests for the whole build. */
   queryBudget?: number;
   /** Reciprocal counterparties to measure for popularity (default 15). */
   reciprocalBudget?: number;
+ /** Candidate index from a prior reciprocal_scan.next_call. */
+ reciprocalOffset?: number;
 }
 
 /** An intermediary that was measured and thrown away, with the reason. */
@@ -180,6 +184,8 @@ export interface EdgeBuildResult {
    * funding, seed-profile or intermediary read left evidence unread.
    */
   truncated: boolean;
+ expansion_scan?: { total: number; offset: number; checked: number; next_offset?: number };
+ reciprocal_scan?: { total: number; offset: number; checked: number; next_offset?: number };
   notes: string[];
 }
 
@@ -1239,12 +1245,17 @@ export async function buildWalletEdges(
   const maxSeedScan = opts.maxSeedScan ?? 100;
   const expand = opts.expand !== false;
   const expandBudget = opts.expandBudget ?? 25;
+ const expandOffset = opts.expandOffset ?? 0;
   const budget = new Budget(opts.queryBudget ?? 150);
 
  const uniqueSeeds = [...new Set(seeds)].sort();
   const reciprocalBudget = opts.reciprocalBudget ?? 15;
+ const reciprocalOffset = opts.reciprocalOffset ?? 0;
   const reciprocalCandidates: Array<{ seed: string; other: string; digests: string[]; alreadyBoth: boolean }> = [];
   let unprobedReciprocal = 0;
+ let reciprocalIndex = 0;
+ let reciprocalScan: EdgeBuildResult["reciprocal_scan"];
+ let expansionScan: EdgeBuildResult["expansion_scan"];
   const edges = new EdgeSet();
   const excluded: ExcludedIntermediary[] = [];
   const used: UsedIntermediary[] = [];
@@ -1699,7 +1710,8 @@ export async function buildWalletEdges(
     }
     let verified = 0;
     const confirmed = new Map<string, string[]>();
-    for (const c of candidates) {
+  for (let index = expandOffset; index < candidates.length; index++) {
+   const c = candidates[index]!;
       if (verified >= expandBudget || budget.truncated) break;
       verified++;
       const f = await firstFunderOf(c.address, budget);
@@ -1712,11 +1724,14 @@ export async function buildWalletEdges(
       confirmed.set(c.funder, [...(confirmed.get(c.funder) ?? []), c.address]);
       examined.add(c.address);
     }
-    if (candidates.length > verified) {
-      notes.push(
-        `${candidates.length - verified} sibling candidates were left unverified (expansion budget ${expandBudget}). ` +
-          "They are neither confirmed nor ruled out — raise expand_budget to check them.",
-      );
+  const remaining = Math.max(0, candidates.length - expandOffset - verified);
+  expansionScan = {
+   total: candidates.length, offset: expandOffset, checked: verified,
+   ...(remaining && verified ? { next_offset: expandOffset + verified } : {})
+  };
+  if (remaining) {
+   notes.push(`${remaining} sibling candidates remain after this expansion page (${verified} checked). ` +
+    "Follow expansion_scan.next_call, or raise expand_budget and query_budget. Separate pages do not combine cluster verdicts.");
     }
     for (const [funder, found] of confirmed) {
       await emitCoFunded(
@@ -1759,6 +1774,7 @@ export async function buildWalletEdges(
       const digests = [outDigest];
       const back = prof.paidBy.get(other);
       if (back) digests.push(back);
+   if (reciprocalIndex++ < reciprocalOffset) continue;
       if (reciprocalCandidates.length < reciprocalBudget) {
         reciprocalCandidates.push({ seed, other, digests, alreadyBoth: Boolean(back) });
       } else {
@@ -1819,11 +1835,13 @@ export async function buildWalletEdges(
     edges.add("reciprocal", c.seed, c.other, RECIPROCAL_DETAIL, c.digests);
     examined.add(c.other);
   }
+ reciprocalScan = {
+  total: reciprocalIndex, offset: reciprocalOffset, checked: reciprocalCandidates.length,
+  ...(unprobedReciprocal && reciprocalCandidates.length ? { next_offset: reciprocalOffset + reciprocalCandidates.length } : {})
+ };
   if (unprobedReciprocal > 0) {
-    notes.push(
-      `${unprobedReciprocal} counterparties were not checked for reciprocal flow (budget ${reciprocalBudget}). ` +
-        "They are neither confirmed nor ruled out — raise reciprocal_budget to check them.",
-    );
+  notes.push(`${unprobedReciprocal} reciprocal counterparties remain after this page. ` +
+   "Follow reciprocal_scan.next_call, or raise reciprocal_budget and query_budget. Separate pages do not combine cluster verdicts.");
   }
 
   // Who first-funded whom.
@@ -1894,8 +1912,12 @@ export async function buildWalletEdges(
     excluded_intermediaries: excluded,
     used_intermediaries: used,
     first_funders: Object.fromEntries(firstFunders),
+  ...(expansionScan ? { expansion_scan: expansionScan } : {}),
+  ...(reciprocalScan ? { reciprocal_scan: reciprocalScan } : {}),
     queries_used: budget.used,
-  truncated: budget.truncated || unreadFundingLookups > 0 || unreadSeedScans > 0 || unreadIntermediaries > 0 || originUnreadLookups > 0 || unreadConsolidation > 0,
+  truncated: budget.truncated || Boolean(expansionScan && (expansionScan.offset > 0 || expansionScan.total > expansionScan.offset + expansionScan.checked)) ||
+   reciprocalOffset > 0 || unprobedReciprocal > 0 || unreadFundingLookups > 0 || unreadSeedScans > 0 ||
+   unreadIntermediaries > 0 || originUnreadLookups > 0 || unreadConsolidation > 0,
     notes,
   };
 }

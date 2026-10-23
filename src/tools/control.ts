@@ -25,6 +25,20 @@ interface SenderPage {
 const PAGE_SIZE = 50;
 const DEFAULT_SCAN = 5000;
 
+function encodeScanCursor(segment: number, after?: string): string {
+  return Buffer.from(JSON.stringify([segment, after ?? null])).toString("base64url");
+}
+
+function decodeScanCursor(cursor: string, segments: number): { segment: number; after?: string } {
+  const parsed: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  if (!Array.isArray(parsed) || parsed.length !== 2 ||
+    !Number.isInteger(parsed[0]) || parsed[0] < 0 || parsed[0] >= segments ||
+    (parsed[1] !== null && (typeof parsed[1] !== "string" || !parsed[1]))) {
+    throw new Error("Invalid cursor; follow the unmodified scan.next_call.");
+  }
+  return { segment: parsed[0] as number, ...(parsed[1] === null ? {} : { after: parsed[1] as string }) };
+}
+
 export function registerControlTools(server: McpServer) {
   server.tool(
     "sample_control_addresses",
@@ -71,8 +85,10 @@ export function registerControlTools(server: McpServer) {
         .max(50000)
         .optional()
         .describe("Events to scan when building the population (default 5000)."),
+      cursor: z.string().min(1).optional()
+        .describe("Opaque cursor from scan.next_call. Each call draws a separate slice of the same population."),
     },
-    async ({ module, event_type, size, exclude, from, to, seed, max_events }) => {
+    async ({ module, event_type, size, exclude, from, to, seed, max_events, cursor }) => {
       try {
         if (!module && !event_type) {
           return errorResult(
@@ -104,15 +120,20 @@ export function registerControlTools(server: McpServer) {
             : [{ afterCheckpoint: window.after?.checkpoint ?? null, beforeCheckpoint: window.before?.checkpoint ?? null }];
 
         const budget = max_events ?? DEFAULT_SCAN;
+        const start = cursor ? decodeScanCursor(cursor, segments.length) : { segment: 0, after: undefined };
         const senders: string[] = [];
         let scanned = 0;
         // True when any segment stopped mid-scan on budget, or a later
         // segment was skipped entirely because budget was already spent.
         let truncated = false;
+        let nextCursor: string | null = null;
+        let cursorStalled = false;
 
-        for (const seg of segments) {
+        for (let index = start.segment; index < segments.length; index++) {
+          const seg = segments[index];
           if (scanned >= budget) {
             truncated = true;
+            nextCursor = encodeScanCursor(index, index === start.segment ? start.after : undefined);
             break;
           }
           const filter: Record<string, unknown> = {};
@@ -121,23 +142,36 @@ export function registerControlTools(server: McpServer) {
           if (seg.afterCheckpoint != null) filter.afterCheckpoint = seg.afterCheckpoint;
           if (seg.beforeCheckpoint != null) filter.beforeCheckpoint = seg.beforeCheckpoint;
 
-          let cursor: string | undefined;
+          let after: string | undefined = index === start.segment ? start.after : undefined;
           let hasNext = true;
           while (hasNext && scanned < budget) {
             const page: SenderPage = await gqlQuery(SENDER_QUERY, {
               filter,
               first: Math.min(PAGE_SIZE, budget - scanned),
-              after: cursor,
+              after,
             });
             for (const n of page.events.nodes) {
               scanned++;
               if (n.sender?.address) senders.push(n.sender.address);
             }
             hasNext = page.events.pageInfo.hasNextPage;
-            cursor = page.events.pageInfo.endCursor;
-            if (!cursor) break;
+            const endCursor = page.events.pageInfo.endCursor;
+            if (hasNext && (!endCursor || endCursor === after)) {
+              truncated = true;
+              cursorStalled = true;
+              break;
           }
-          if (hasNext) truncated = true;
+            after = endCursor;
+          }
+          if (hasNext) {
+            truncated = true;
+            if (after && !cursorStalled) nextCursor = encodeScanCursor(index, after);
+            break;
+          }
+          if (index + 1 < segments.length && scanned >= budget) {
+            truncated = true;
+            nextCursor = encodeScanCursor(index + 1);
+          }
         }
 
         const result = sampleControl(senders, size ?? 25, { exclude, seed });
@@ -156,6 +190,14 @@ export function registerControlTools(server: McpServer) {
                 // sample either way — but it is drawn from whichever slice of
                 // the window the scan reached, so say so.
                 population_truncated: truncated,
+                ...(nextCursor || cursorStalled ? {
+                  scan: {
+                    ...(nextCursor ? { next_call: { tool: "sample_control_addresses", repeat_with: { cursor: nextCursor } } } : {}),
+                    note: cursorStalled
+                      ? "The event connection reported another page without an advancing cursor; this slice cannot be resumed safely."
+                      : "The sample and population size cover this segment only; samples from separate segments are not one random draw from their union.",
+                  },
+                } : {}),
                 ...result,
                 how_to_use:
                   "Run the same test on this control that you ran on the cohort — find_funding_sources over both, then compare how many share a funder. A cohort rate that matches the control's is not evidence, however striking the cohort looked alone.",

@@ -11,9 +11,10 @@ import {
 import { loadProtocolRegistry } from "../protocols/registry.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-const VERSIONS_QUERY = `query ($addr: SuiAddress!, $last: Int!) {
-  packageVersions(address: $addr, last: $last) {
+const VERSIONS_QUERY = `query ($addr: SuiAddress!, $after: String) {
+  packageVersions(address: $addr, first: 50, after: $after) {
     nodes { address version }
+    pageInfo { hasNextPage endCursor }
   }
 }`;
 
@@ -22,7 +23,10 @@ const PROBE_QUERY = `query ($f: EventFilter) {
 }`;
 
 interface VersionsResult {
-  packageVersions: { nodes: Array<{ address: string; version: number }> } | null;
+  packageVersions: {
+    nodes: Array<{ address: string; version: number }>;
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+  } | null;
 }
 interface ProbeResult {
   events: { nodes: Array<{ contents?: { type?: { repr: string } } }> };
@@ -51,8 +55,10 @@ export function registerPackageLineageTools(server: McpServer) {
         .max(20)
         .optional()
         .describe("Most recent versions to probe (default 8). Older ones are rarely still live."),
+      version_offset: numArg().int().min(0).optional()
+        .describe("Skip this many newest versions in the combined lineage (default 0). Follow versions_page.next_call to probe older versions."),
     },
-    async ({ protocol, package_id, since, max_versions }) => {
+    async ({ protocol, package_id, since, max_versions, version_offset }) => {
       try {
         if (!protocol && !package_id) {
           return errorResult("Provide protocol or package_id.");
@@ -83,17 +89,25 @@ export function registerPackageLineageTools(server: McpServer) {
         let seedError: unknown;
         for (const seed of seeds) {
           try {
-            const r = await gqlQuery<VersionsResult>(VERSIONS_QUERY, {
-              addr: seed,
-              last: max_versions ?? 8,
-            });
-            for (const n of r.packageVersions?.nodes ?? []) byAddress.set(n.address, n);
+            let after: string | null = null;
+            for (; ;) {
+              const r: VersionsResult = await gqlQuery<VersionsResult>(VERSIONS_QUERY, { addr: seed, after });
+              const conn: VersionsResult["packageVersions"] = r.packageVersions;
+              if (!conn) break;
+              for (const n of conn.nodes) byAddress.set(n.address, n);
+              if (!conn.pageInfo.hasNextPage) break;
+              if (!conn.pageInfo.endCursor || conn.pageInfo.endCursor === after) {
+                throw new Error(`Package versions for ${seed} have more pages but no advancing cursor.`);
+              }
+              after = conn.pageInfo.endCursor;
+            }
           } catch (err) {
             // A seed that is not a package (or does not exist) contributes
             // nothing rather than failing the whole lookup.
             seedError ??= err;
           }
         }
+        if (seedError) throw seedError;
         // No versions at all: an empty lineage reported as "nothing emitting"
         // reads as a dead protocol when the ID was never a package.
         if (byAddress.size === 0) {
@@ -103,8 +117,12 @@ export function registerPackageLineageTools(server: McpServer) {
           );
         }
 
+        const versions = [...byAddress.values()].sort((a, b) => b.version - a.version || a.address.localeCompare(b.address));
+        const offset = version_offset ?? 0;
+        if (offset >= versions.length) return errorResult(`version_offset ${offset} is past the ${versions.length} known package versions.`);
+        const page = versions.slice(offset, offset + (max_versions ?? 8));
         const entries: LineageEntry[] = [];
-        for (const v of byAddress.values()) {
+        for (const v of page) {
           let emitting = false;
           let sample: string | undefined;
           try {
@@ -128,6 +146,15 @@ export function registerPackageLineageTools(server: McpServer) {
               text: JSON.stringify({
                 queried: { protocol, package_id },
                 seeds_from_registry: package_id ? undefined : seeds,
+                versions_page: {
+                  offset,
+                  listed: page.length,
+                  total: versions.length,
+                  ...(offset + page.length < versions.length
+                    ? { next_call: { tool: "resolve_protocol_packages", repeat_with: { version_offset: offset + page.length } } }
+                    : {}),
+                  note: "Activity covers the package versions probed on this page, not unprobed versions of the lineage.",
+                },
                 probe_window: { after_checkpoint: afterCheckpoint, latest_checkpoint: latest.seq },
                 ...summary,
                 ...(summary.emitting_package_ids.length

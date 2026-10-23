@@ -45,6 +45,8 @@ export interface StateSnapshot {
   objects: ObjectState[];
   /** Candidates past the read cap, left unread. */
   skipped: Array<{ object_id: string; object_type: string | null; role: ObjectState["role"] }>;
+ /** Candidates omitted by per-kind read limits (excludes layouts that could not be fetched). */
+ capped?: number;
   /** Candidates no node returned at one of the versions needed. */
   unavailable: string[];
   /** Object types whose field layout could not be read: their `Balance<T>` fields compare as plain numbers. */

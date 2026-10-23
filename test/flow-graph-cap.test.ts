@@ -28,9 +28,11 @@ const { registerFlowGraphTools } = await import("../src/tools/flow-graph.js");
 
 type Handler = (a: Record<string, unknown>) => Promise<{ content: { text: string }[] }>;
 let traceFlowGraph!: Handler;
+let findFlowPath!: Handler;
 registerFlowGraphTools({
   tool: (name: string, _d: string, _s: unknown, handler: Handler) => {
     if (name === "trace_flow_graph") traceFlowGraph = handler;
+  if (name === "find_flow_path") findFlowPath = handler;
   },
 } as never);
 
@@ -69,8 +71,7 @@ beforeEach(() => {
   });
 });
 
-const run = async (args: Record<string, unknown>) =>
-  { const res = await traceFlowGraph({ digest: "USxhdMQhkMoYC52vEK6giwuQeu2F5SWuXeqS3EeyidB", min_share: 0.0001, max_nodes: 150, ...args }); if (!res.content[1]) throw new Error(res.content[0].text); return JSON.parse(res.content[1].text); };
+const run = async (args: Record<string, unknown>) => { const res = await traceFlowGraph({ digest: "USxhdMQhkMoYC52vEK6giwuQeu2F5SWuXeqS3EeyidB", min_share: 0.0001, max_nodes: 150, ...args }); if (!res.content[1]) throw new Error(res.content[0].text); return JSON.parse(res.content[1].text); };
 
 describe("trace_flow_graph output budget", () => {
   it("keeps the exit and the largest shares, and states what the default left out", async () => {
@@ -91,4 +92,42 @@ describe("trace_flow_graph output budget", () => {
     expect(summary.terminals).toEqual(full.terminals);
     expect(JSON.stringify(summary).length).toBeLessThan(JSON.stringify(full).length);
   });
+
+ it("lets a caller raise a transaction-read stop without changing other budgets", async () => {
+  const limited = await run({ max_tx_reads: 1 });
+  const expanded = await run({ max_tx_reads: 4000 });
+  expect(limited.coverage.truncated).toBe(true);
+  expect(expanded.coverage.truncated).toBe(false);
+});
+ it("pages terminal entries and pruned branch examples independently", async () => {
+  const first = await run({});
+  const terminal = first.terminals.find((g: { entry_count: number }) => g.entry_count > 15);
+  expect(terminal.entries).toHaveLength(15);
+  expect(terminal.entries_next_call).toMatchObject({ tool: "trace_flow_graph", repeat_with: { terminal_entry_offset: 15 } });
+  const later = await run({ terminal_entry_offset: 15 });
+  const laterGroup = later.terminals.find((g: { reason: string }) => g.reason === terminal.reason);
+  expect(laterGroup.entries[0].node).not.toBe(terminal.entries[0].node);
+  expect(laterGroup.entry_offset).toBe(15);
+
+  const pruned = await run({ min_share: 0.03 });
+  expect(pruned.largest_pruned_page.count).toBeGreaterThan(10);
+  expect(pruned.largest_pruned_page.next_call).toMatchObject({ tool: "trace_flow_graph", repeat_with: { pruned_offset: 10 } });
+  const prunedLater = await run({ min_share: 0.03, pruned_offset: 10 });
+  expect(prunedLater.largest_pruned[0].address).not.toBe(pruned.largest_pruned[0].address);
+ });
+});
+
+describe("find_flow_path path paging", () => {
+ it("keeps a found result distinct from an empty page beyond the first path", async () => {
+  const args = { from: ATTACKER, to: RECIPIENTS[44], window_start: 100, max_nodes: 100, min_share: 0.0001 };
+  const first = await findFlowPath(args);
+  const firstPage = JSON.parse(first.content[1].text);
+  expect(firstPage.found).toBe(true);
+  expect(firstPage.path_count).toBeGreaterThan(0);
+  expect(firstPage.paths).toHaveLength(1);
+
+  const later = await findFlowPath({ ...args, path_offset: 1 });
+  const laterPage = JSON.parse(later.content[1].text);
+  expect(laterPage).toMatchObject({ found: true, path_count: firstPage.path_count, path_offset: 1, paths: [] });
+ });
 });

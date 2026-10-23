@@ -145,6 +145,32 @@ describe("summarize_address_flows objects", () => {
     expect(recipient.objects).toHaveLength(1);
   });
 
+ it("pages successful transaction object reads beyond the 300-transaction budget", async () => {
+  const template = (await mockGqlQuery("transactions(filter")).transactions.nodes[0];
+  mockGqlQuery.mockImplementation(async (query: string) => {
+   if (!String(query).includes("transactions(filter")) return {};
+   return {
+    transactions: {
+     nodes: Array.from({ length: 301 }, (_, i) => ({ ...template, digest: `${DIGEST}-${i}` })),
+     pageInfo: { hasPreviousPage: false, startCursor: null },
+    },
+   };
+  });
+  batchGetTransactions.mockResolvedValue({ response: { transactions: [] } });
+  const call = handlers.get("summarize_address_flows")!;
+  const first = JSON.parse((await call({ address: V, max_transactions: 500 })).content[0].text);
+  expect(first.objects_page).toMatchObject({
+   total_transactions: 301,
+   transaction_offset: 0,
+   next_call: { tool: "summarize_address_flows", repeat_with: { object_transaction_offset: 300 } },
+  });
+  expect(first.totals_usd.objects_partial).toBe(true);
+  const last = JSON.parse((await call({ address: V, max_transactions: 500, object_transaction_offset: 300 })).content[0].text);
+  expect(last.objects_page).toMatchObject({ transaction_offset: 300, transactions_selected: 1 });
+  expect(last.objects_page.next_call).toBeUndefined();
+  expect(last.totals_usd.objects_partial).toBe(true);
+ });
+
   it("counts a position that arrived through a Move call in a transaction someone else signed", async () => {
     // The collector's view: the victim V signed, no TransferObjects command.
     mockGqlQuery.mockImplementation(async (query: string) => {
@@ -228,7 +254,8 @@ describe("summarize_address_flows objects", () => {
       points: new Map(types.map((c) => [c, { price: 2, decimals: 6, publishTime: at, source: "defillama" }])),
       unpriced: [], provider_unavailable: [],
     }));
-    mockGqlQuery.mockResolvedValue({ transactions: {
+  mockGqlQuery.mockResolvedValue({
+   transactions: {
       nodes: [-1, 2].map((amount, i) => ({
         digest: `scale-fixture-${i}`, sender: { address: V }, kind: { commands: gqlPage([]) },
         effects: {
@@ -240,7 +267,8 @@ describe("summarize_address_flows objects", () => {
           ]), events: gqlPage([]),
         },
       })), pageInfo: { hasPreviousPage: false, startCursor: null },
-    } });
+   }
+  });
     const d = JSON.parse((await handlers.get("summarize_address_flows")!({ address: V, coin_type: coin })).content[0].text);
     expect(d.coins[0]).toMatchObject({ in: 2, out: 1, net: 1, usd: { in: 4, out: 2, net: 2 } });
     expect(d.top_recipients[0].coins[0]).toMatchObject({ amount: 1, usd: 2 });
@@ -256,31 +284,48 @@ describe("summarize_address_flows objects", () => {
     }));
     const nodes = Array.from({ length: 80 }, (_, i) => ({
       digest: `synthetic-bridge-${i}`, sender: { address: V }, kind: { commands: gqlPage([]) },
-      effects: { status: "SUCCESS", timestamp, checkpoint: { sequenceNumber: 2000 + i },
+   effects: {
+    status: "SUCCESS", timestamp, checkpoint: { sequenceNumber: 2000 + i },
         gasEffects: { gasSummary: { computationCost: "0", storageCost: "0", storageRebate: "0" } },
         balanceChanges: gqlPage([{ coinType: { repr: SUI }, amount: "-1000000000", owner: { address: V } }]),
-        events: gqlPage([{ contents: { type: { repr: eventType } } }]) },
+    events: gqlPage([{ contents: { type: { repr: eventType } } }])
+   },
     }));
     mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, string>) => {
       if (query.includes("transactions(filter")) return { transactions: { nodes, pageInfo: { hasPreviousPage: false, startCursor: null } } };
       if (query.includes("fragment E on Transaction")) return Object.fromEntries(Object.keys(vars).map((key) => [
-        key.replace("d", "t"), { effects: { events: gqlPage([{ contents: { type: { repr: eventType }, json: {
+    key.replace("d", "t"), {
+     effects: {
+      events: gqlPage([{
+       contents: {
+        type: { repr: eventType }, json: {
           nonce: vars[key], burn_token: SUI, amount: "1000000000", depositor: V,
           mint_recipient: `0x${destination.slice(2).padStart(64, "0")}`, destination_domain: 3,
-        } } }]) } },
+        }
+       }
+      }])
+     }
+    },
       ]));
       return {};
     });
     const call = handlers.get("summarize_address_flows")!;
     const summary = JSON.parse((await call({ address: V })).content[0].text);
     const full = JSON.parse((await call({ address: V, detail: "full" })).content[0].text);
+  const later = JSON.parse((await call({ address: V, digest_offset: 5, detail: "full" })).content[0].text);
+  expect(full.bridge_exits.by_bridge[0].digests).toHaveLength(5);
+  expect(full.digest_listing.next_call).toMatchObject({ tool: "summarize_address_flows", repeat_with: { digest_offset: 5 } });
+  expect(later.bridge_exits.by_bridge[0].digests).toEqual(full.bridge_exits.transactions.slice(5, 10).map((tx: { digest: string }) => tx.digest));
+  expect(later.bridge_exits.by_bridge[0].digests_before_page).toBe(5);
     expect(summary.bridge_exits.transaction_count).toBe(80);
     expect(summary.bridge_exits.transactions).toHaveLength(80);
     expect(summary.bridge_exits.transactions.map((tx: { digest: string; beneficiaries: Array<{ address: string }> }) =>
       [tx.digest, tx.beneficiaries[0]?.address])).toEqual(full.bridge_exits.transactions.map((tx: { digest: string; beneficiaries: Array<{ address: string }> }) =>
       [tx.digest, tx.beneficiaries[0]?.address]));
-    expect(summary.bridge_exits.by_bridge[0]).toMatchObject({ transactions: 80, sent: [{ amount: 80, usd: 320 }],
-      destinations: [{ address: destination, transactions: 80, sent: [{ amount: 80, usd: 320 }] }] });
+  expect(summary.bridge_exits.by_bridge[0]).toMatchObject({
+   transactions: 80, sent: [{ amount: 80, usd: 320 }],
+   destinations: [{ address: destination, transactions: 80, sent: [{ amount: 80, usd: 320 }] }]
+  });
     expect(summary.bridge_exits.by_bridge[0].beneficiary_source).toBe(full.bridge_exits.transactions[0].beneficiaries[0].source);
     expect(summary.totals_usd).toEqual(full.totals_usd);
     expect(summary.bridge_exits.transactions.reduce((total: number, tx: { sent: Array<{ amount: number }> }) =>

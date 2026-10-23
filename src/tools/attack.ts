@@ -22,6 +22,7 @@ import {
   valueMovedObjects,
   valueTransactionObjects,
   SCAN_OBJECT_BUDGET,
+ MAX_OBJECTS_PER_TX,
   type AddressObjectValue,
   type MovedObjectValue,
   type MovedValues,
@@ -261,24 +262,29 @@ export function pageIncidentCoverage(basis: WindowPrices["basis"], offset: numbe
  * from its shared objects' holdings ({@link needsStateLoss}), at most
  * {@link MAX_STATE_READS} of them.
  */
-async function readStateLosses(txs: AttackTx[]): Promise<{ losses: Map<string, StateLoss>; read: number; unread: string[]; failed: string[] }> {
+async function readStateLosses(txs: AttackTx[], multiplier = 1): Promise<{ losses: Map<string, StateLoss>; read: number; unread: string[]; failed: string[]; capped: string[] }> {
   const want = txs.filter((tx) => needsStateLoss(tx));
   const reading = want.slice(0, MAX_STATE_READS);
   const losses = new Map<string, StateLoss>();
   const failed: string[] = [];
+ const capped: string[] = [];
   for (let i = 0; i < reading.length; i += STATE_READ_CONCURRENCY) {
     await Promise.all(
       reading.slice(i, i + STATE_READ_CONCURRENCY).map(async (tx) => {
         try {
-          const loss = stateLossOf(await readObjectStates(tx));
+     const snapshot = await readObjectStates(tx, { multiplier });
+     if (snapshot.capped) capped.push(tx.digest);
+     else {
+      const loss = stateLossOf(snapshot);
           if (loss) losses.set(tx.digest, loss);
+     }
         } catch {
           failed.push(tx.digest);
         }
       }),
     );
   }
-  return { losses, read: reading.length - failed.length, unread: want.slice(MAX_STATE_READS).map((t) => t.digest), failed };
+ return { losses, read: reading.length - failed.length, unread: want.slice(MAX_STATE_READS).map((t) => t.digest), failed, capped };
 }
 
 /**
@@ -409,12 +415,14 @@ export function registerAttackTools(server: McpServer) {
         .string()
         .optional()
         .describe("Profit address; default sender. May switch to largest priced gainer (>= $1) if sender has only a SUI payment/no coin change and no priced object movement, or gives away valued objects without taking value. Unpriced gains outside sender/chosen gainer block it, excluding flagged coins and sender-paid coin types. Reports attacker_defaulted_from_sender; pass an address to override."),
+   state_read_multiplier: numArg().int().min(1).optional().describe("Raise the per-kind state-object and dynamic-field read budgets together (default 1: shared 24, holding/child 48, created/caps 12, price rows 32). Check state_deltas.skipped and raise if needed."),
+   object_offset: numArg().int().min(0).optional().describe("First custody-changing object to value (50 per page); follow object_values_page.next_call. Profit and object USD values on a page are partial until all pages are read."),
       detail: z
         .enum(["summary", "full"])
         .optional()
         .describe("'summary' (default): ~40k chars across lists; keeps anomaly/flash-linked pools, holders and addresses, sender and profit address. Totals/anomalies cover all rows; omitted counts the rest. 'full': all rows."),
     },
-    async ({ digest: rawDigest, attacker, detail }) => {
+  async ({ digest: rawDigest, attacker, state_read_multiplier, object_offset, detail }) => {
       try {
         const digest = normalizeDigest(rawDigest);
         if (!isDigest(digest)) return errorResult(invalidDigestMessage(digest));
@@ -440,12 +448,15 @@ export function registerAttackTools(server: McpServer) {
         // Decimals first: `valueDeltas` scales every amount it reports. A
         // failed transaction changed no object but its gas coin.
         const noObjects: MovedValues = { rows: [], unread: [] };
+    const movedCandidates = tx.success ? movedObjectsOf(tx) : [];
+    const objectOffset = object_offset ?? 0;
+    if (objectOffset && objectOffset >= movedCandidates.length) return errorResult("object_offset is past the last custody-changing object.");
         const [prices, , stateRead, movedValues] = await Promise.all([
           priceUsdAtTime([...coins], atSec),
           prefetchCoinScale(coins),
-          tx.success ? readObjectStates(tx).catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))) : Promise.resolve(undefined),
+     tx.success ? readObjectStates(tx, { multiplier: state_read_multiplier }).catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))) : Promise.resolve(undefined),
           // A failed transaction moved no object.
-          tx.success ? valueMovedObjects(movedObjectsOf(tx), tx.checkpoint) : Promise.resolve(noObjects),
+     tx.success ? valueMovedObjects(movedCandidates, tx.checkpoint, undefined, undefined, undefined, objectOffset) : Promise.resolve(noObjects),
         ]);
         const state = stateRead instanceof Error ? undefined : stateRead;
         const objectValue = objectValueByAddress(movedValues.rows);
@@ -833,6 +844,14 @@ export function registerAttackTools(server: McpServer) {
           ...(movedValues.rows.length || movedValues.unread.length
             ? {
                 object_values: movedValues.rows,
+       object_values_page: {
+        object_count: movedCandidates.length,
+        offset: objectOffset,
+        ...(objectOffset + MAX_OBJECTS_PER_TX < movedCandidates.length ? {
+         next_call: { tool: "analyze_attack_tx", repeat_with: { object_offset: objectOffset + MAX_OBJECTS_PER_TX } },
+        } : {}),
+        note: "Coin changes cover the full transaction. Object values and the profit figure cover only the objects on this page; other pages repeat the coins.",
+       },
                 ...(movedValues.unread.length ? { object_values_unread: movedValues.unread } : {}),
                 object_values_note:
                   "Non-coin objects that entered or left an address in this transaction, or that it kept while the transaction changed their value (changed_in_place: usd is the change, both sides at one set of prices), each valued by its reader at the transaction's checkpoint (its method says when a state was the latest instead). Each address's usd_net counts them; estimates (tier heuristic, NFTs) are kept out of usd_net, and so are rows with `custody` (wrapped into or unwrapped from another object, or from a holder that could not be read), which the holder still owns in another form.",
@@ -871,6 +890,8 @@ export function registerAttackTools(server: McpServer) {
                 state_deltas: {
                   ...(stateFindings ?? { jumps: [], drops: [], wrong_source: [] }),
                   objects_read: state.objects.map((o) => ({ object_id: o.objectId, object_type: o.objectType, role: o.role })),
+        state_read_multiplier: state_read_multiplier ?? 1,
+        ...(state.capped ? { read_more_with: { tool: "analyze_attack_tx", repeat_with: { state_read_multiplier: (state_read_multiplier ?? 1) * 2 } } } : {}),
                   ...(state.skipped.length ? { skipped: state.skipped } : {}),
                   ...(state.unavailable.length ? { unavailable: state.unavailable } : {}),
                   ...(state.layout_unread.length ? { layout_unread: state.layout_unread } : {}),
@@ -936,7 +957,7 @@ export function registerAttackTools(server: McpServer) {
         };
         const { payload: capped } = capPayload(
           "analyze_attack_tx",
-          { digest, attacker },
+     { digest, attacker, state_read_multiplier, object_offset },
           payload,
           {
             swaps: { budget: 8_000, keepOrder: true, keep: (r: Row) => r.pool !== null && named.has(r.pool) } satisfies ListCap<Row>,
@@ -1017,7 +1038,8 @@ export function registerAttackTools(server: McpServer) {
         .min(1)
         .max(1000)
         .optional()
-        .describe("Cap on transactions read in `sender` mode (default 1000, the most). Hitting it is reported."),
+    .describe("Transactions per sender-mode page (default and maximum 1000); follow next_call for the next page."),
+   transaction_cursor: z.string().optional().describe("Opaque cursor from next_call in sender mode; reads the next oldest-first transaction slice in the same window."),
       attacker: z
         .string()
         .optional()
@@ -1027,6 +1049,7 @@ export function registerAttackTools(server: McpServer) {
         .superRefine(refinePoint)
         .optional()
         .describe("Fixed-time valuation for every coin and object (Unix seconds or ISO 8601). Default: hourly coin quotes; objects at their transaction times. Check usd_basis for coarsening."),
+   state_read_multiplier: numArg().int().min(1).optional().describe("Raise each transaction's state-object and dynamic-field budgets together (default 1). A transaction still cut by those limits is named under state_reads.capped and does not contribute partial pool state."),
       max_groups: numArg()
         .int()
         .min(1)
@@ -1039,12 +1062,13 @@ export function registerAttackTools(server: McpServer) {
         .optional()
         .describe("'summary' (default): largest rows fitting about 40k characters. 'full': consecutive group and historical pricing coverage pages under 500k characters; follow omitted.next_call to read the rest. Totals always cover every group."),
     },
-    async ({ digests, sender, start, end, max_transactions, attacker, price_at, max_groups, group_offset, coverage_offset, detail }) => {
+  async ({ digests, sender, start, end, max_transactions, transaction_cursor, attacker, price_at, state_read_multiplier, max_groups, group_offset, coverage_offset, detail }) => {
       try {
         if (group_offset !== undefined && detail !== "full") return errorResult("group_offset requires detail: 'full'.");
         if (coverage_offset !== undefined && detail !== "full") return errorResult("coverage_offset requires detail: 'full'.");
         if (!digests && !sender) return errorResult("Give `digests`, or `sender` with an optional window.");
         if (digests && sender) return errorResult("Give `digests` or `sender`, not both.");
+    if (digests && transaction_cursor) return errorResult("transaction_cursor applies only in sender mode.");
         if (digests && (start !== undefined || end !== undefined)) {
           return errorResult("`start` and `end` bound the `sender` window. With `digests`, every listed transaction is read, so drop them.");
         }
@@ -1060,6 +1084,7 @@ export function registerAttackTools(server: McpServer) {
         let invalid: string[] = [];
         let window: Record<string, unknown> | null = null;
         let truncated = false;
+    let nextTransactionCursor: string | undefined;
         if (digests) {
           const uniq = [...new Set(digests.map(normalizeDigest))];
           invalid = uniq.filter((d) => !isDigest(d));
@@ -1080,15 +1105,17 @@ export function registerAttackTools(server: McpServer) {
               ...(beforeCp !== null ? { beforeCheckpoint: beforeCp } : {}),
             },
             maxTransactions,
+      transaction_cursor,
           );
           list = r.digests;
           truncated = r.truncated;
+     nextTransactionCursor = r.nextCursor;
           window = { from: start ?? null, to: end ?? null, after_checkpoint: afterCp, before_checkpoint: beforeCp };
         }
         if (list.length === 0) return errorResult("No transactions to read.");
 
         const read = await readAttackTransactions(list);
-        const [{ protocolOf, unread: custodySkipped }, stateRead] = await Promise.all([prefetchFor(read.txs), readStateLosses(read.txs)]);
+    const [{ protocolOf, unread: custodySkipped }, stateRead] = await Promise.all([prefetchFor(read.txs), readStateLosses(read.txs, state_read_multiplier)]);
         let agg = aggregateIncident(read.txs, attackerId ?? undefined, stateRead.losses);
 
 
@@ -1313,9 +1340,12 @@ export function registerAttackTools(server: McpServer) {
               ...(unpricedHere ? { unpriced_coins: unpricedHere } : {}),
               attacker: perCoin(a),
               pool: perCoin(p),
-              ...(unpricedHere || a.coins.some((c) => c.stale_priced_raw) || p.coins.some((c) => c.stale_priced_raw) ? { price_coverage: {
+       ...(unpricedHere || a.coins.some((c) => c.stale_priced_raw) || p.coins.some((c) => c.stale_priced_raw) ? {
+        price_coverage: {
                 attacker: a.coins.map((c) => ({ coin_type: c.coin_type, priced_raw: c.priced_raw, unpriced_raw: c.unpriced_raw, ...(c.stale_priced_raw ? { stale_priced_raw: c.stale_priced_raw } : {}) })),
-                pool: p.coins.map((c) => ({ coin_type: c.coin_type, priced_raw: c.priced_raw, unpriced_raw: c.unpriced_raw, ...(c.stale_priced_raw ? { stale_priced_raw: c.stale_priced_raw } : {}) })) } } : {}),
+         pool: p.coins.map((c) => ({ coin_type: c.coin_type, priced_raw: c.priced_raw, unpriced_raw: c.unpriced_raw, ...(c.stale_priced_raw ? { stale_priced_raw: c.stale_priced_raw } : {}) }))
+        }
+       } : {}),
               ...(g.recorded_loss_usd
                 ? {
                     recorded_loss_usd: Number(g.recorded_loss_usd.toFixed(2)),
@@ -1360,7 +1390,7 @@ export function registerAttackTools(server: McpServer) {
         });
         const pricedCoins = coinRows.filter((c) => c.usd !== null).sort((a, b) => Math.abs(b.usd ?? 0) - Math.abs(a.usd ?? 0));
         const unpricedRemainder = coinRows.filter((c) => c.usd === null || coinTotal.unpriced.includes(c.coin_type));
-        const partial = unpricedRemainder.length > 0 || allGroups.some((g) => g.unpriced_coins) || objectsUnpriced > 0 || objectsUnread > 0;
+    const partial = unpricedRemainder.length > 0 || allGroups.some((g) => g.unpriced_coins) || objectsUnpriced > 0 || objectsUnread > 0 || stateRead.unread.length > 0 || stateRead.failed.length > 0 || stateRead.capped.length > 0;
 
         // Transfers out, one row per coin and set of recipients.
         const sentRows = new Map<string, { coin: string; to: Map<string, bigint>; amount: bigint; digests: string[] }>();
@@ -1438,6 +1468,7 @@ export function registerAttackTools(server: McpServer) {
         if (truncated) lines.push(`⚠ Stopped at max_transactions=${maxTransactions}; the window holds more.`);
         if (stateRead.unread.length) lines.push(`⚠ ${stateRead.unread.length} transaction(s) past the state-read cap are grouped by their events only; see state_reads.`);
 
+    const objectValuePageDigests = [...new Set(txObjects.unread.filter((u) => u.reason.startsWith("outside valued-object page ")).map((u) => u.digest))];
         const payload = {
           transactions_requested: list.length,
           transactions_read: read.txs.length,
@@ -1446,6 +1477,17 @@ export function registerAttackTools(server: McpServer) {
           ...(read.missing.length ? { not_found: read.missing } : {}),
           ...(read.events_undecoded.length ? { events_undecoded: read.events_undecoded } : {}),
           ...(window ? { window, ...(truncated ? { window_truncated: true } : {}) } : {}),
+     ...(nextTransactionCursor && sender ? {
+      next_call: {
+       tool: "summarize_incident_losses", args: {
+        sender, ...(start !== undefined ? { start } : {}), ...(end !== undefined ? { end } : {}),
+        max_transactions: maxTransactions, transaction_cursor: nextTransactionCursor,
+        ...(attacker ? { attacker } : {}), ...(price_at !== undefined ? { price_at } : {}),
+        ...(state_read_multiplier ? { state_read_multiplier } : {}), ...(max_groups ? { max_groups } : {}),
+        ...(detail ? { detail } : {}),
+       }
+      }
+     } : {}),
           attacker: defaultedFrom?.address ?? attackerId ?? "each transaction's sender",
           ...(defaultedFrom
             ? {
@@ -1501,7 +1543,25 @@ export function registerAttackTools(server: McpServer) {
             ? {
                 objects: objectRows,
                 ...(txObjects.unread.length ? { objects_unread: txObjects.unread } : {}),
+       ...(objectValuePageDigests.length ? {
+        objects_unread_follow_up_calls: objectValuePageDigests.map((digest) => ({
+         tool: "analyze_attack_tx", args: { digest, object_offset: MAX_OBJECTS_PER_TX },
+        }))
+       } : {}),
                 ...(txObjects.skipped.length ? { objects_skipped_transactions: txObjects.skipped } : {}),
+       ...(txObjects.skipped.length ? {
+        objects_follow_up_calls: Array.from(
+         { length: Math.ceil(txObjects.skipped.length / MAX_OBJECT_VALUE_TXS) },
+         (_, i) => ({
+          tool: "summarize_incident_losses", args: {
+           digests: txObjects.skipped.slice(i * MAX_OBJECT_VALUE_TXS, (i + 1) * MAX_OBJECT_VALUE_TXS),
+           ...(attacker ? { attacker } : {}),
+           ...(price_at !== undefined ? { price_at } : {}),
+           ...(state_read_multiplier ? { state_read_multiplier } : {}),
+          }
+         }),
+        )
+       } : {}),
                 objects_note:
                   `Non-coin objects the attacker received ("in", counted as gains), consumed ("consumed": deleted or wrapped, counted as losses), kept while the transaction changed their value ("changed", the signed change counted), or handed to another address ("sent_on", moving value on, kept out of the totals as coins sent on are), each valued by its reader at its transaction's checkpoint and priced ${priceAt !== null ? `at ${new Date(priceAt * 1000).toISOString()} (price_at)` : "at its own transaction's time"}; each row states its method. NFTs are not valued across many transactions; analyze_attack_tx values them one transaction at a time, as estimates.` +
                   (txObjects.skipped.length ? ` Objects of the ${txObjects.skipped.length} transaction(s) in objects_skipped_transactions, past the first ${MAX_OBJECT_VALUE_TXS} transactions or ${SCAN_OBJECT_BUDGET} objects, were not valued and are not in the totals; pass fewer digests to value them.` : ""),
@@ -1514,12 +1574,26 @@ export function registerAttackTools(server: McpServer) {
                 unattributed_note: "These succeeded but named no pool in their events or changed objects, no holding of theirs fell, and they sent nothing on. Their balance changes are in the totals and in no pool group.",
               }
             : {}),
-          ...(stateRead.read || stateRead.unread.length || stateRead.failed.length
+     ...(stateRead.read || stateRead.unread.length || stateRead.failed.length || stateRead.capped.length
             ? {
                 state_reads: {
                   read: stateRead.read,
-                  ...(stateRead.unread.length ? { unread: stateRead.unread } : {}),
+        ...(stateRead.unread.length ? {
+         unread: stateRead.unread,
+         follow_up_calls: Array.from({ length: Math.ceil(stateRead.unread.length / MAX_STATE_READS) }, (_, i) => ({
+          tool: "summarize_incident_losses", args: {
+           digests: stateRead.unread.slice(i * MAX_STATE_READS, (i + 1) * MAX_STATE_READS),
+           ...(attacker ? { attacker } : {}),
+           ...(price_at !== undefined ? { price_at } : {}),
+           ...(state_read_multiplier ? { state_read_multiplier } : {}),
+          },
+         })),
+        } : {}),
                   ...(stateRead.failed.length ? { failed: stateRead.failed } : {}),
+        ...(stateRead.capped.length ? {
+         capped: stateRead.capped,
+         read_more_with: { tool: "summarize_incident_losses", repeat_with: { state_read_multiplier: (state_read_multiplier ?? 1) * 2 } },
+        } : {}),
                   note: `Transactions no event decodes into pool amounts have their changed shared objects read at the input and output versions, and are grouped by the holders whose Balance<T> holdings fell (pool_basis "state"). At most ${MAX_STATE_READS} are read per call; the digests in unread were not, and their groups come from events alone. Pass them as digests to read them.`,
                 },
               }
@@ -1536,15 +1610,15 @@ export function registerAttackTools(server: McpServer) {
           ...custodySkippedNote(custodySkipped),
         };
 
-        // A group row lists its first transactions; transaction_count and
-        // the stored full view carry every one.
+    // A summary group row lists its first transactions; transaction_count
+    // and detail: "full" expose every digest.
         const shownGroups = groups.map((g) =>
           g.transactions.length > GROUP_DIGESTS ? { ...g, transactions: g.transactions.slice(0, GROUP_DIGESTS) } : g,
         );
         type Group = (typeof groups)[number];
         type Unpriced = (typeof unpricedRemainder)[number];
         type Sent = (typeof transfersOut)[number];
-        const args = { digests, sender, start, end, max_transactions, attacker, price_at, max_groups, network: getNetwork() };
+    const args = { digests, sender, start, end, max_transactions, transaction_cursor, attacker, price_at, state_read_multiplier, max_groups, network: getNetwork() };
         const offset = group_offset ?? 0;
         const coverage = detail === "full" && (
           coverage_offset !== undefined ||
@@ -1555,7 +1629,11 @@ export function registerAttackTools(server: McpServer) {
         }
         const visible = detail === "full"
           ? { ...payload, group_offset: offset, groups: groups.slice(offset), ...(coverage ? { usd_basis: coverage.basis } : {}) }
-          : { ...payload, groups: shownGroups };
+     : {
+      ...payload, groups: shownGroups, ...(groups.some((g) => g.transactions.length > GROUP_DIGESTS) ? {
+       group_digest_listing: { digests_per_group: GROUP_DIGESTS, next_call: { tool: "summarize_incident_losses", repeat_with: { detail: "full" } } },
+      } : {})
+     };
         const { payload: capped } = capPayload(
           "summarize_incident_losses",
           args,
@@ -1651,10 +1729,12 @@ export function registerAttackTools(server: McpServer) {
               lists,
               ...(nextCall ? { next_call: nextCall } : {}),
               ...(previousCall ? { previous_call: previousCall } : {}),
-              ...(storedId ? { result: {
+       ...(storedId ? {
+        result: {
                 uri: resultUri(storedId),
                 read: current?.result?.read ?? "Read a list's page URI with omitted=1 to retrieve only rows not listed here.",
-              } } : {}),
+        }
+       } : {}),
             },
             ...body,
           };

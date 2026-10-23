@@ -383,25 +383,47 @@ function objectLead(
   };
 }
 
-/** Objects whose next transaction is looked up per trace hop. */
-const MAX_TRACKED_OBJECTS = 5;
 
 /**
  * The earliest transaction at or after `checkpoint` that touches any of
  * `objectIds`, other than those already read. Null when none does.
  */
-async function nextObjectTransaction(objectIds: string[], checkpoint: number | undefined, visited: ReadonlySet<string>): Promise<string | null> {
+type ObjectTransactionPage = {
+ transactions: {
+  nodes: Array<{ digest: string; effects: { checkpoint: { sequenceNumber: number } | null } | null }>;
+  pageInfo: { hasNextPage: boolean; endCursor: string | null };
+ };
+};
+
+export async function nextObjectTransaction(objectIds: string[], checkpoint: number | undefined, visited: ReadonlySet<string>): Promise<string | null> {
   let best: { digest: string; checkpoint: number } | null = null;
-  for (const id of objectIds.slice(0, MAX_TRACKED_OBJECTS)) {
-    const d = await gqlQuery<{
-      transactions: { nodes: Array<{ digest: string; effects: { checkpoint: { sequenceNumber: number } | null } | null }> };
-    }>(
-      `query($f: TransactionFilter!) { transactions(first: 5, filter: $f) { nodes { digest effects { checkpoint { sequenceNumber } } } } }`,
-      { f: { affectedObject: id, ...(checkpoint !== undefined ? { afterCheckpoint: Math.max(0, checkpoint - 1) } : {}) } },
+ for (const id of objectIds) {
+  let cursor: string | null = null;
+  for (; ;) {
+   const d: ObjectTransactionPage = await gqlQuery<ObjectTransactionPage>(
+    `query($f: TransactionFilter!, $first: Int!, $after: String) {
+          transactions(first: $first, after: $after, filter: $f) {
+            nodes { digest effects { checkpoint { sequenceNumber } } }
+            pageInfo { hasNextPage endCursor }
+          }
+        }`,
+    { f: { affectedObject: id, ...(checkpoint !== undefined ? { afterCheckpoint: Math.max(0, checkpoint - 1) } : {}) }, first: Math.min(50, visited.size + 1), after: cursor },
     );
+   // The first read includes one more row than the trace has visited.
+   // Follow pageInfo rather than trusting the row count: a filtered
+   // GraphQL read can be short while later matching transactions exist.
     const next = d.transactions.nodes.find((n) => !visited.has(n.digest));
-    const cp = next?.effects?.checkpoint?.sequenceNumber;
-    if (next && cp !== undefined && (!best || cp < best.checkpoint)) best = { digest: next.digest, checkpoint: cp };
+   if (next) {
+    const cp = next.effects?.checkpoint?.sequenceNumber;
+    if (cp === undefined || cp === null) throw new Error(`Checkpoint unavailable for object transaction ${next.digest}.`);
+    if (!best || cp < best.checkpoint) best = { digest: next.digest, checkpoint: cp };
+    break;
+   }
+   if (!d.transactions.pageInfo.hasNextPage) break;
+   const after: string | null = d.transactions.pageInfo.endCursor;
+   if (!after || after === cursor) throw new Error(`Object transaction cursor did not advance for ${id}.`);
+   cursor = after;
+  }
   }
   return best?.digest ?? null;
 }

@@ -44,9 +44,9 @@ function storeRequired() {
 const CASE_GRAPH_DIGESTS = 50;
 
 /** The case's transfers, read from the transactions its findings cite. */
-async function caseFlowGraph(findings: Finding[]) {
+async function caseFlowGraph(findings: Finding[], offset: number) {
   const all = [...new Set(findings.flatMap((f) => f.digests))];
-  const digests = all.slice(0, CASE_GRAPH_DIGESTS);
+  const digests = all.slice(offset, offset + CASE_GRAPH_DIGESTS);
   const read = await Promise.all(digests.map((d) => fetchTx(d).catch(() => null)));
   const txs: CaseTx[] = [];
   const unread: string[] = [];
@@ -92,8 +92,9 @@ async function caseFlowGraph(findings: Finding[]) {
     graph,
     notes: {
       ...(unread.length ? { unread_digests: unread } : {}),
-      ...(all.length > digests.length ? { digests_capped: all.length } : {}),
+      graph_scope: { total_digests: all.length, digest_offset: offset, digests_read: digests.length },
     },
+    nextOffset: offset + digests.length < all.length ? offset + digests.length : null,
   };
 }
 
@@ -233,6 +234,7 @@ export function registerFindingsTools(server: McpServer) {
       include_appendix: boolArg()
         .optional()
         .describe("Append the full-address list (default true)."),
+      digest_offset: numArg().int().min(0).optional().describe("First cited transaction to read for mermaid or graph_json (50 per page). Follow next_call to cover later digests."),
       format: z
         .enum(["markdown", "mermaid", "graph_json", "csv"])
         .optional()
@@ -240,8 +242,11 @@ export function registerFindingsTools(server: McpServer) {
           "markdown (default): the report. mermaid: the report plus a fund-flow diagram of transfers between the case's addresses in the findings' transactions, including flows with protocols' shared objects; it reads those transactions from the chain. graph_json: that diagram as {nodes, edges}. csv: one row per finding.",
         ),
     },
-    async ({ case_name, include_appendix, format }) => {
+    async ({ case_name, include_appendix, format, digest_offset }) => {
       const blocked = storeRequired();
+      if (digest_offset !== undefined && format !== "mermaid" && format !== "graph_json") {
+        return errorResult("digest_offset applies only to mermaid and graph_json.");
+      }
       if (blocked) return blocked;
 
       const findings = loadFindings(case_name);
@@ -249,6 +254,9 @@ export function registerFindingsTools(server: McpServer) {
         return errorResult(
           `No findings recorded for case '${case_name}'. Use list_findings with no arguments to see existing cases.`,
         );
+      }
+      if (digest_offset && digest_offset >= new Set(findings.flatMap((f) => f.digests)).size) {
+        return errorResult("digest_offset is past the last cited transaction.");
       }
 
       if (format === "csv") {
@@ -269,9 +277,10 @@ export function registerFindingsTools(server: McpServer) {
         };
       }
       if (format === "mermaid" || format === "graph_json") {
-        const flow = await caseFlowGraph(findings);
+        const flow = await caseFlowGraph(findings, digest_offset ?? 0);
+        const nextCall = flow.nextOffset === null ? {} : { next_call: { tool: "export_case", repeat_with: { digest_offset: flow.nextOffset } } };
         if (format === "graph_json") {
-          return { content: [{ type: "text" as const, text: JSON.stringify({ ...toGraphJson(flow.graph), ...flow.notes }) }] };
+          return { content: [{ type: "text" as const, text: JSON.stringify({ ...toGraphJson(flow.graph), ...flow.notes, ...nextCall }) }] };
         }
         const report = renderCaseReport({ caseName: case_name, findings, includeAppendix: include_appendix });
         const diagram = flow.graph.edges.length
@@ -280,10 +289,13 @@ export function registerFindingsTools(server: McpServer) {
         const caveats = [
           "Solid arrows are transfers read from the chain in the findings' transactions, each recipient paired with the largest payer of that coin. Dashed arrows are cross-chain links a finding records.",
           ...(flow.notes.unread_digests ? [`Not read: ${flow.notes.unread_digests.join(", ")}.`] : []),
-          ...(flow.notes.digests_capped ? [`Only the first ${CASE_GRAPH_DIGESTS} transactions were read.`] : []),
+          ...(flow.nextOffset !== null ? [`Diagram covers digests ${digest_offset ?? 0}–${(digest_offset ?? 0) + flow.notes.graph_scope.digests_read - 1} of ${flow.notes.graph_scope.total_digests}; follow next_call for the rest.`] : []),
         ];
         return {
-          content: [{ type: "text" as const, text: `${report}\n## Fund flow\n\n${diagram}\n\n_${caveats.join(" ")}_\n` }],
+          content: [
+            { type: "text" as const, text: `${report}\n## Fund flow\n\n${diagram}\n\n_${caveats.join(" ")}_\n` },
+            { type: "text" as const, text: JSON.stringify({ ...flow.notes, ...nextCall }) },
+          ],
         };
       }
 

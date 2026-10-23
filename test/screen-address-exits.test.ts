@@ -9,6 +9,13 @@ const mockGetCoinInfo = vi.fn();
 vi.mock("../src/clients/grpc.js", () => ({ sui: { stateService: { getCoinInfo: mockGetCoinInfo } }, archive: {} }));
 
 const { screenAddress } = await import("../src/utils/screening.js");
+const { registerScreeningTools } = await import("../src/tools/screening.js");
+const handlers = new Map<string, (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>>();
+registerScreeningTools({
+ tool: (name: string, _description: string, _schema: unknown, handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>) => {
+  handlers.set(name, handler);
+ },
+} as never);
 const { resetLiveCoinScale } = await import("../src/utils/valuation.js");
 
 /**
@@ -125,6 +132,52 @@ beforeEach(() => {
 });
 
 describe("screenAddress bridge exits", () => {
+ it("makes destination-read caps explicit and allows the caller to read every exit", async () => {
+  const screen = handlers.get("screen_address")!;
+  const limited = JSON.parse((await screen({ address: ATTACKER, direction: "out", hops: 1 })).content[0].text);
+  expect(limited).toMatchObject({
+   bridge_exits_seen: 15,
+   bridge_exits_with_destination_read: 10,
+   bridge_destinations_incomplete: true,
+   next_call: { tool: "screen_address", repeat_with: { max_bridge_lookups: 15 } },
+  });
+  const complete = JSON.parse((await screen({ address: ATTACKER, direction: "out", hops: 1, max_bridge_lookups: 15 })).content[0].text);
+  expect(complete.bridge_exits_with_destination_read).toBe(15);
+  expect(complete.bridge_destinations_incomplete).toBeUndefined();
+ });
+
+ it("pages every bridge group's digests rather than losing exits after twenty", async () => {
+  mockGqlQuery.mockImplementation(async (query: string) =>
+   query.includes("transactions(filter")
+    ? { transactions: { nodes: Array.from({ length: 26 }, (_, i) => cctpBurn(i)), pageInfo: { hasPreviousPage: false, startCursor: null } } }
+    : { transaction: { effects: { events: { pageInfo: { hasNextPage: false }, nodes: [] } } } },
+  );
+  const screen = handlers.get("screen_address")!;
+  const args = { address: ATTACKER, direction: "out", hops: 1, max_bridge_lookups: 1 };
+  const first = JSON.parse((await screen(args)).content[0].text);
+  const later = JSON.parse((await screen({ ...args, digest_offset: 20 })).content[0].text);
+  expect(first.exposures.find((e: { label: string }) => e.label === "Circle CCTP").digests).toHaveLength(20);
+  expect(first.digest_listing.next_call).toMatchObject({ tool: "screen_address", repeat_with: { digest_offset: 5 } });
+  expect(later.exposures.find((e: { label: string }) => e.label === "Circle CCTP").digests).toEqual(Array.from({ length: 6 }, (_, i) => `cctpBurn${20 + i}`));
+  expect(later.digest_listing).toBeUndefined();
+ });
+
+ it("does not call a failed destination read a cleared bridge", async () => {
+  mockGqlQuery.mockImplementation(async (query: string) => {
+   if (query.includes("transactions(filter")) return { transactions: { nodes: [cctpBurn(0)], pageInfo: { hasPreviousPage: false, startCursor: null } } };
+   throw new Error("bridge event service unavailable");
+  });
+  const screen = handlers.get("screen_address")!;
+  const report = JSON.parse((await screen({ address: ATTACKER, direction: "out", hops: 1, max_bridge_lookups: 1 })).content[0].text);
+  expect(report).toMatchObject({
+   bridge_exits_seen: 1,
+   bridge_exits_with_destination_read: 0,
+   bridge_destinations_incomplete: true,
+   bridge_destinations_unread: [{ digest: "cctpBurn0", reason: "read_failed", next_call: { tool: "resolve_bridge_transfer", args: { digest: "cctpBurn0" } } }],
+   next_call: { tool: "resolve_bridge_transfer", args: { digest: "cctpBurn0" } },
+  });
+ });
+
   it("counts each exit once under its carrier and reads a destination for every bridge group", async () => {
     const r = await screenAddress(ATTACKER, {
       hops: 1,

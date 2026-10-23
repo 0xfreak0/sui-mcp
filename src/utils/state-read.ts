@@ -213,7 +213,7 @@ const keepsCoin = (l: CoinLayout) => Object.keys(l.balances).length + Object.key
  * JSON, and the first {@link MAX_SHARED_READ} are read in full at both
  * versions. Every candidate left unread is listed in `skipped`.
  */
-export async function readObjectStates(tx: Pick<AttackTx, "objects">): Promise<StateSnapshot> {
+export async function readObjectStates(tx: Pick<AttackTx, "objects">, options: { multiplier?: number } = {}): Promise<StateSnapshot> {
   const seen = new Set<string>();
   const unique = tx.objects.filter((o) => {
     const id = o.objectId ? normalizeSuiAddress(o.objectId) : "";
@@ -222,8 +222,11 @@ export async function readObjectStates(tx: Pick<AttackTx, "objects">): Promise<S
     return true;
   });
   const skipped: StateSnapshot["skipped"] = [];
+ let capped = 0;
+ const multiplier = options.multiplier ?? 1;
   const cut = (list: AttackObject[], max: number, role: ObjectState["role"]) => {
     for (const o of list.slice(max)) skipped.push({ object_id: o.objectId, object_type: o.objectType, role });
+  capped += Math.max(0, list.length - max);
     return list.slice(0, max);
   };
   const layoutUnread = new Set<string>();
@@ -233,8 +236,11 @@ export async function readObjectStates(tx: Pick<AttackTx, "objects">): Promise<S
   // supply; the layouts are read per distinct type, before any object.
   const fields = unique.filter((o) => o.parent && o.objectType && DYNAMIC_FIELD.test(o.objectType));
   const allFieldTypes = [...new Set(fields.map((o) => o.objectType!))];
-  const fieldTypes = allFieldTypes.slice(0, MAX_VALUE_TYPES);
-  for (const o of fields) if (!fieldTypes.includes(o.objectType!)) skipped.push({ object_id: o.objectId, object_type: o.objectType, role: "holding" });
+ const fieldTypes = allFieldTypes.slice(0, MAX_VALUE_TYPES * multiplier);
+ for (const o of fields) if (!fieldTypes.includes(o.objectType!)) {
+  skipped.push({ object_id: o.objectId, object_type: o.objectType, role: "holding" });
+  capped++;
+ }
   const fieldLayouts = new Map(await Promise.all(fieldTypes.map(async (t) => [t, await fieldValueLayout(t)] as const)));
   for (const [t, r] of fieldLayouts) if (!r?.complete) layoutUnread.add(t);
   // A field whose value type could not be read may hold coins: listed, not read.
@@ -243,26 +249,26 @@ export async function readObjectStates(tx: Pick<AttackTx, "objects">): Promise<S
     const r = fieldLayouts.get(o.objectType!);
     return r != null && keepsCoin(r.layout);
   });
-  const holdingsRead = cut(holdings, MAX_HOLDINGS_READ, "holding");
+ const holdingsRead = cut(holdings, MAX_HOLDINGS_READ * multiplier, "holding");
   const keyed = fields.filter((o) => KEYED_BY_TYPE.test(o.objectType!) && o.outputVersion && !holdings.includes(o));
-  const keyedRead = keyed.slice(0, MAX_KEYED_READ);
+ const keyedRead = cut(keyed.filter((o) => fieldTypes.includes(o.objectType!)), MAX_KEYED_READ * multiplier, "holding");
   // An object another object owns that is not a dynamic field: a pool or a
   // vault kept as a dynamic object field, or a position in a table.
   const children = unique.filter((o) => o.parent && !o.shared && o.objectType && !DYNAMIC_FIELD.test(o.objectType) && !COIN.test(o.objectType) && o.inputVersion && o.outputVersion);
-  const childrenRead = cut(children, MAX_CHILDREN_READ, "child");
+ const childrenRead = cut(children, MAX_CHILDREN_READ * multiplier, "child");
   const created = unique.filter((o) => !o.shared && !o.parent && !o.inputVersion && o.outputVersion && o.objectType && !COIN.test(o.objectType));
-  const createdRead = cut(created, MAX_CREATED_READ, "created");
+ const createdRead = cut(created, MAX_CREATED_READ * multiplier, "created");
   // A treasury cap held by an address mints outside any shared object.
   const treasuries = unique.filter((o) => !o.shared && !o.parent && o.inputVersion && o.outputVersion && o.objectType && TREASURY_CAP.test(o.objectType));
-  const treasuriesRead = cut(treasuries, MAX_CREATED_READ, "supply");
+ const treasuriesRead = cut(treasuries, MAX_CREATED_READ * multiplier, "supply");
 
   const outputReq = (o: AttackObject) => ({ objectId: o.objectId, version: BigInt(o.outputVersion!) });
   const inputReq = (o: AttackObject) => ({ objectId: o.objectId, version: BigInt(o.inputVersion!) });
   let sharedRead = shared;
-  if (shared.length > MAX_SHARED_READ) {
+ if (shared.length > MAX_SHARED_READ * multiplier) {
     const sizes = await readVersions(shared.map(outputReq), REBATE_MASK);
     const rebate = (o: AttackObject) => sizes.get(key(o.objectId, o.outputVersion!))?.storageRebate ?? 0n;
-    sharedRead = cut([...shared].sort((a, b) => (rebate(b) > rebate(a) ? 1 : rebate(b) < rebate(a) ? -1 : 0)), MAX_SHARED_READ, "shared");
+  sharedRead = cut([...shared].sort((a, b) => (rebate(b) > rebate(a) ? 1 : rebate(b) < rebate(a) ? -1 : 0)), MAX_SHARED_READ * multiplier, "shared");
   }
 
   const whole = [...sharedRead, ...childrenRead, ...treasuriesRead];
@@ -302,5 +308,5 @@ export async function readObjectStates(tx: Pick<AttackTx, "objects">): Promise<S
     const a = json(after, o, o.outputVersion);
     return a === undefined || a === null ? [] : [{ objectId: o.objectId, objectType: o.objectType, after: a }];
   });
-  return { objects, skipped, unavailable, layout_unread: [...layoutUnread], keyed: keyedRows };
+ return { objects, skipped, capped, unavailable, layout_unread: [...layoutUnread], keyed: keyedRows };
 }

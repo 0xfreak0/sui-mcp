@@ -293,23 +293,22 @@ export async function digestsSentBy(
   sender: string,
   window: { afterCheckpoint?: number; beforeCheckpoint?: number },
   max: number,
-): Promise<{ digests: string[]; truncated: boolean }> {
+ cursor?: string,
+): Promise<{ digests: string[]; truncated: boolean; nextCursor?: string }> {
   const filter: Record<string, unknown> = { sentAddress: sender };
   if (window.afterCheckpoint !== undefined) filter.afterCheckpoint = window.afterCheckpoint;
   if (window.beforeCheckpoint !== undefined) filter.beforeCheckpoint = window.beforeCheckpoint;
   const digests: string[] = [];
-  let after: string | undefined;
+ let after = cursor;
   for (;;) {
     const r = await gqlQuery<{
       transactions: { pageInfo: { hasNextPage: boolean; endCursor?: string | null }; nodes: Array<{ digest: string }> };
-    }>(SENT_QUERY, { filter, first: 50, after });
-    for (const n of r.transactions.nodes) {
-      if (digests.length === max) return { digests, truncated: true };
-      digests.push(n.digest);
-    }
+  }>(SENT_QUERY, { filter, first: Math.min(50, max - digests.length), after });
+  for (const n of r.transactions.nodes) digests.push(n.digest);
     if (!r.transactions.pageInfo.hasNextPage) return { digests, truncated: false };
     const next = r.transactions.pageInfo.endCursor;
-    if (!next) return { digests, truncated: true };
+  if (!next || next === after) return { digests, truncated: true };
+  if (digests.length === max) return { digests, truncated: true, nextCursor: next };
     after = next;
   }
 }

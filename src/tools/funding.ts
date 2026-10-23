@@ -586,6 +586,13 @@ export function registerFundingTools(server: McpServer) {
       measure_fanout: boolArg()
         .optional()
         .describe("Measure fan-out for funders shared by 2+ addresses (default true)."),
+   max_shared_fanouts: numArg()
+    .int()
+    .min(0)
+    .max(100)
+    .optional()
+    .describe("Shared funders to measure for fan-out (default 10). Every unmeasured funder has a get_address_fanout follow-up."),
+   max_cofunded_lookups: numArg().int().min(0).max(500).optional().describe("Co-funded transactions whose recipient count is measured (default 10, max 500). Unmeasured groups retain a get_transaction follow-up."),
       detail: z
         .enum(["summary", "full"])
         .optional()
@@ -593,7 +600,7 @@ export function registerFundingTools(server: McpServer) {
           "'summary' (default) keeps origin, first funder/hop and dust counts; results and subject_paid_subject fit ~20k chars, prioritizing all shared-funder, subject-link, co-funding, burst and payment results. 'full' lists every chain hop, dust row and list row.",
         ),
     },
-    async ({ addresses, related_addresses, max_hops, depth, measure_fanout, detail }) => {
+  async ({ addresses, related_addresses, max_hops, depth, measure_fanout, max_shared_fanouts, max_cofunded_lookups, detail }) => {
       const full = detail === "full";
       try {
         const maxHops = depth === "first_hop" ? 1 : Math.min(max_hops ?? 5, 12);
@@ -626,6 +633,7 @@ export function registerFundingTools(server: McpServer) {
             origin,
             hops: chain.length,
             stop_reason: stopReason,
+      ...(stopReason.startsWith("hit max_hops") ? { continue_with: { tool: "find_funding_source", args: { address: origin, max_hops: maxHops } } } : {}),
             first_funder: chain[0]?.funded_by ?? null,
             first_hop: chain[0] ?? null,
             ...(dustSkipped.length ? { dust_skipped: dustSkipped } : {}),
@@ -674,8 +682,9 @@ export function registerFundingTools(server: McpServer) {
         // may already have made a hundred queries.
         const fanouts: Record<string, FanoutResult> = {};
         const fanoutsUnread: Record<string, string> = {};
-        if (measure_fanout !== false) {
-          for (const [funder] of shared.slice(0, 10)) {
+    const fanoutLimit = measure_fanout === false ? 0 : (max_shared_fanouts ?? 10);
+    if (fanoutLimit > 0) {
+     for (const [funder] of shared.slice(0, fanoutLimit)) {
             try {
               fanouts[funder] = await measureFanout(funder, 300);
             } catch (err) {
@@ -710,13 +719,14 @@ export function registerFundingTools(server: McpServer) {
         // exactly the two addresses under investigation, and that sorts last.
         // So the truncation dropped the strongest evidence and kept the
         // weakest, silently.
-        const RECIPIENT_LOOKUP_CAP = 10;
+    const recipientLookupCap = max_cofunded_lookups ?? 10;
         const assessed = [];
-        for (const g of coFunded.slice(0, RECIPIENT_LOOKUP_CAP)) {
+    for (const g of coFunded.slice(0, recipientLookupCap)) {
           const total = await countTxRecipients(g.funding_tx);
           const matched = g.addresses.filter((a) => subjectSet.has(a)).length;
           assessed.push({
             ...g,
+      ...(total === null ? { recipient_count_next_call: { tool: "get_transaction", args: { digest: g.funding_tx } } } : {}),
             transaction_recipient_count: total,
             ...assessCoFunding(matched, total),
           });
@@ -728,11 +738,12 @@ export function registerFundingTools(server: McpServer) {
         // the narrow payouts that matter most.
         const reportedCoFunding = [
           ...assessed,
-          ...coFunded.slice(RECIPIENT_LOOKUP_CAP).map((g) => ({
+     ...coFunded.slice(recipientLookupCap).map((g) => ({
             ...g,
             transaction_recipient_count: null,
             strength: "unmeasured" as const,
             why: "Payout size not measured (per-call lookup cap). Weigh this group yourself: a payment to only the addresses under investigation is close to decisive, a wide batch distribution is not.",
+      recipient_count_next_call: { tool: "get_transaction", args: { digest: g.funding_tx } },
           })),
         ];
 
@@ -896,6 +907,8 @@ export function registerFundingTools(server: McpServer) {
               }
             : {}),
           max_hops: maxHops,
+     shared_fanouts_measured: Object.keys(fanouts).length,
+     shared_fanouts_unmeasured: shared.length - Object.keys(fanouts).length,
           addresses_resolved: results.filter((r) => r.hops > 0).length,
           ...(anyUnpriced ? { prices_unavailable_note: PRICES_UNAVAILABLE_NOTE } : {}),
           ...(anyOriginUnread ? { origin_unread_note: ORIGIN_UNREAD_NOTE } : {}),
@@ -905,15 +918,6 @@ export function registerFundingTools(server: McpServer) {
           ...(coFunded.length
             ? {
                 co_funding_group_count: coFunded.length,
-                ...(coFunded.length > RECIPIENT_LOOKUP_CAP
-                  ? {
-                      co_funding_note:
-                        `${coFunded.length} co-funding groups were found; the payout size of the first ` +
-                        `${RECIPIENT_LOOKUP_CAP} was measured and the rest are reported without it. ` +
-                        "Groups are ordered widest-payout-first, so the unmeasured ones are the narrow " +
-                        "payouts — the stronger signal, not the weaker.",
-                    }
-                  : {}),
                 co_funded_in_one_transaction: reportedCoFunding.map((g) => ({
                   ...g,
                   ...(nameMap.get(g.funder) ? { funder_name: nameMap.get(g.funder) } : {}),
@@ -922,7 +926,8 @@ export function registerFundingTools(server: McpServer) {
                   "These addresses were paid by a single transaction, not merely by the same funder over time. " +
                   "Read `strength` before concluding anything: a transaction paying only these addresses is " +
                   "near-decisive, while one paying twenty of which two are yours is a batch distribution that an " +
-                  "unrelated address can land in by chance. `transaction_recipient_count` is the denominator.",
+        "unrelated address can land in by chance. `transaction_recipient_count` is the denominator." +
+        (coFunded.length > recipientLookupCap ? ` ${coFunded.length - recipientLookupCap} of ${coFunded.length} payout sizes were not measured; raise max_cofunded_lookups or inspect each recipient_count_next_call.` : ""),
               }
             : {}),
           ...(subjectLinks.length
@@ -991,6 +996,14 @@ export function registerFundingTools(server: McpServer) {
             // balanced and the other pays many and is paid by few.
             ...(fanouts[funder] ? { fanout: fanoutView(fanouts[funder], popularityOf[funder]) } : {}),
             ...(fanoutsUnread[funder] ? { fanout_unread: fanoutsUnread[funder] } : {}),
+      ...(!fanouts[funder] && !fanoutsUnread[funder]
+       ? {
+        fanout_unmeasured: measure_fanout === false
+         ? "Fan-out measurement was disabled."
+         : `Past the shared-funder measurement limit (${fanoutLimit}); no fan-out conclusion was drawn.`,
+        fanout_next_call: { tool: "get_address_fanout", args: { address: funder, max_transactions: 300 } },
+       }
+       : {}),
           })),
         };
 
@@ -1013,7 +1026,7 @@ export function registerFundingTools(server: McpServer) {
         ]);
         type Result = (typeof summaryRows)[number] & { sponsored_by?: unknown; incomplete_balance_changes?: unknown; origin_unread_at?: unknown };
         type Payment = { first_funding?: boolean };
-        const args = { addresses, related_addresses, max_hops, depth, measure_fanout };
+    const args = { addresses, related_addresses, max_hops, depth, measure_fanout, max_shared_fanouts, max_cofunded_lookups };
         const { payload } = capPayload(
           "find_funding_sources",
           args,
@@ -1147,6 +1160,7 @@ export function registerFundingTools(server: McpServer) {
                 origin: labelFor(origin),
                 hops: chain.length,
                 stop_reason: stopReason,
+        ...(stopReason.startsWith("hit max_hops") ? { continue_with: { tool: "find_funding_source", args: { address: origin, max_hops: maxHops } } } : {}),
                 ...(dustSkipped.length ? { dust_skipped: dustSkipped } : {}),
                 ...(sponsoredBy.length
                   ? { sponsored_by: sponsoredBy, sponsored_by_note: sponsoredByNote(sponsoredBy, deadEnd) }

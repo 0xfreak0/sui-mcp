@@ -72,4 +72,47 @@ describe("readObjectStates", () => {
     expect(snap.skipped).toEqual([expect.objectContaining({ object_id: FIELD, role: "holding" })]);
     expect(snap.layout_unread).toContain(fieldType);
   });
+
+ it("lets an investigator raise the shared-state read cap per transaction", async () => {
+  const type = `0x${"e4".repeat(32)}::pool::Pool`;
+  const objects = Array.from({ length: 25 }, (_, i) => ({
+   objectId: `0x${"e5".repeat(31)}${i.toString(16).padStart(2, "0")}`,
+   objectType: type,
+   shared: true,
+   parent: null,
+   inputVersion: "1",
+   outputVersion: "2",
+  }));
+  getDatatype.mockResolvedValue({ response: { datatype: { fields: [] } } });
+  batchGetObjects.mockImplementation(async ({ requests }: { requests: Array<{ objectId: string; version: bigint }> }) => ({
+   response: { objects: requests.map((r) => ({ result: { oneofKind: "object", object: { objectId: r.objectId, version: r.version, json: undefined } } })) },
+  }));
+  const first = await readObjectStates({ objects });
+  expect(first.objects).toHaveLength(24);
+  expect(first.skipped).toHaveLength(1);
+  const expanded = await readObjectStates({ objects }, { multiplier: 2 });
+  expect(expanded.objects).toHaveLength(25);
+  expect(expanded.skipped).toEqual([]);
+});
+
+ it("discloses price-keyed fields beyond its default 32-row cap", async () => {
+  const type = "0x2::dynamic_field::Field<0x1::type_name::TypeName, u64>";
+  const objects = Array.from({ length: 33 }, (_, i) => ({
+   objectId: `0x${"e6".repeat(31)}${i.toString(16).padStart(2, "0")}`,
+   objectType: type,
+   shared: false,
+   parent: `0x${"e7".repeat(32)}`,
+   inputVersion: "1",
+   outputVersion: "2",
+  }));
+  batchGetObjects.mockImplementation(async ({ requests }: { requests: Array<{ objectId: string; version: bigint }> }) => ({
+   response: { objects: requests.map((r) => ({ result: { oneofKind: "object", object: { objectId: r.objectId, version: r.version, json: undefined } } })) },
+  }));
+  const first = await readObjectStates({ objects });
+  expect(first.capped).toBe(1);
+  expect(first.skipped).toEqual([expect.objectContaining({ object_id: objects[32].objectId })]);
+  const expanded = await readObjectStates({ objects }, { multiplier: 2 });
+  expect(expanded.capped).toBe(0);
+  expect(expanded.skipped).toEqual([]);
+ });
 });

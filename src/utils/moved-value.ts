@@ -169,7 +169,7 @@ export function movedObjects(movements: ObjectMovement[], objects: ChangedObject
 }
 
 /** Objects valued per transaction; the rest are listed as unread. */
-const MAX_OBJECTS_PER_TX = 50;
+export const MAX_OBJECTS_PER_TX = 50;
 
 interface OneValue {
   protocol: string | null;
@@ -234,6 +234,7 @@ export async function valueMovedObjects(
   memo: Map<string, Promise<unknown>> = new Map(),
   /** Object states already read, keyed `id@version`. */
   known: Map<string, ObjectState> = new Map(),
+ objectOffset = 0,
 ): Promise<MovedValues> {
   const readVersions = async (keys: Array<{ object_id: string; version: string }>) => {
     const out = new Map<string, ObjectState>();
@@ -246,10 +247,10 @@ export async function valueMovedObjects(
     return out;
   };
   const unread: MovedValues["unread"] = [];
-  for (const m of moved.slice(MAX_OBJECTS_PER_TX)) {
-    unread.push({ what: m.object_id, reason: `past the first ${MAX_OBJECTS_PER_TX} valued objects of this transaction` });
+ for (const m of [...moved.slice(0, objectOffset), ...moved.slice(objectOffset + MAX_OBJECTS_PER_TX)]) {
+  unread.push({ what: m.object_id, reason: `outside valued-object page ${objectOffset}–${objectOffset + MAX_OBJECTS_PER_TX - 1} of this transaction` });
   }
-  const readable = moved.slice(0, MAX_OBJECTS_PER_TX).filter((m) => {
+ const readable = moved.slice(objectOffset, objectOffset + MAX_OBJECTS_PER_TX).filter((m) => {
     if (m.version !== null) return true;
     unread.push({ what: m.object_id, reason: "the transaction did not record the object's version" });
     return false;
@@ -369,8 +370,7 @@ export async function valueMovedObjects(
           .filter(([, v]) => v !== 0n)
           .map(([coin_type, v]) => ({ coin_type, amount: v.toString() })),
         method: m.before_version
-          ? `Amounts after the transaction minus amounts before (protocol state as of the previous checkpoint), both sides at ${priceNote}. ${
-              sameReading(after.method, before!.method) ? `Both sides read as follows. ${after.method}` : `After: ${after.method} Before: ${before!.method}`
+     ? `Amounts after the transaction minus amounts before (protocol state as of the previous checkpoint), both sides at ${priceNote}. ${sameReading(after.method, before!.method) ? `Both sides read as follows. ${after.method}` : `After: ${after.method} Before: ${before!.method}`
             }`
           : after.method,
         ...(usd === null && (after.unpriced_reason || before?.unpriced_reason)
@@ -425,7 +425,7 @@ export async function valueTransactionObjects(
   // Every transaction's object versions and checkpoints (and the one before
   // each, for kept objects) in batched reads before any is valued.
   const versionKeys = valued.flatMap((t) =>
-    t.moved.flatMap((m) =>
+  t.moved.slice(0, MAX_OBJECTS_PER_TX).flatMap((m) =>
       [m.version, m.before_version, m.prior_version].filter((v): v is string => typeof v === "string").map((version) => ({ object_id: m.object_id, version })),
     ),
   );

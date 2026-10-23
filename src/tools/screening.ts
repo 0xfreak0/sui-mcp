@@ -23,7 +23,7 @@ const SCREEN_CAVEATS = [
   "Each address is read over a window of its most recent transactions (see windows); older activity is not screened when a window is truncated.",
   "Indirect hops expand only the highest-value counterparties of each hop (max_expand); unexpanded_counterparties says how many were not followed.",
   "Paths respect time order: an outgoing hop must happen after the previous one, an incoming hop before it. Leg amounts are what each leg moved, not the share of the subject's funds that reached the end of the path.",
-  "Bridge exits are detected from curated Move-call and event markers, one per transaction under the protocol that carried it: a Mayan order that settles over Wormhole and Circle CCTP counts once, under Mayan, with those two named in `route`. Any other bridge used in the same transaction is named in `also_exited`. Destinations are read from the exit's own events (chain-derived) for every bridge that writes one on Sui, every recipient of the transaction included, up to 10 exit transactions taken from each bridge group in turn, and screened. A Wormhole message whose payload this server cannot attribute, a non-OFT LayerZero message and a Meson swap are reported without a destination; run resolve_bridge_transfer on them.",
+ "Bridge exits are detected from curated Move-call and event markers, one per transaction under the protocol that carried it. Destinations are read from exit events up to max_bridge_lookups and screened. bridge_destinations_unread names exits not read, with calls for the remaining transactions.",
   "Exposure is not a risk verdict. An exchange or bridge counterparty is ordinary; an exploiter or sanctioned counterparty is a lead to examine, with the path and digests to do it.",
 ];
 
@@ -41,17 +41,19 @@ export function registerScreeningTools(server: McpServer) {
         .max(5000)
         .optional()
         .describe("Newest transactions to read within the window (default 50)."),
-      max_balance_transactions: numArg().int().min(50).max(10000).optional()
+   max_balance_transactions: numArg().int().min(50).max(100000).optional()
         .describe("Later transactions to undo for historical sweep balances (default 1000). An incomplete reconstruction withholds that check."),
+   max_balance_reads: numArg().int().min(1).max(2000).optional()
+    .describe("Historical balance reconstruction pages (default 200, up to 50 transactions each); raise with max_balance_transactions for a busy wallet."),
       detail: z.enum(["summary", "full"]).optional().describe("Summary caps evidence lists with omissions; full returns every scanned sweep, deposit and other outflow."),
     },
-    async ({ address, from, to, max_transactions, max_balance_transactions, detail }) => {
+  async ({ address, from, to, max_transactions, max_balance_transactions, max_balance_reads, detail }) => {
       try {
         const result = await classifyDepositAddress(address, {
-          last: max_transactions ?? 50, from, to, maxBalanceTransactions: max_balance_transactions,
+     last: max_transactions ?? 50, from, to, maxBalanceTransactions: max_balance_transactions, maxBalanceReads: max_balance_reads,
         });
         const { payload } = capPayload("classify_deposit_address",
-          { address, from, to, max_transactions, max_balance_transactions },
+     { address, from, to, max_transactions, max_balance_transactions, max_balance_reads },
           {
           ...result,
           interpretation:
@@ -95,8 +97,15 @@ export function registerScreeningTools(server: McpServer) {
         .max(20)
         .optional()
         .describe("Counterparties expanded per hop, highest value first (default 8)."),
+   max_bridge_lookups: numArg()
+    .int()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("Exit transactions whose on-chain destinations are read (default 10, max 300). Unread exits leave bridge screening incomplete."),
+   digest_offset: numArg().int().min(0).optional().describe("First digest shown for each exposure or path leg (default 0; five per leg, 20 per bridge group). Follow digest_listing.next_call."),
     },
-    async ({ address, hops, direction, max_transactions, max_expand }) => {
+  async ({ address, hops, direction, max_transactions, max_expand, max_bridge_lookups, digest_offset }) => {
       let account;
       try {
         account = parseAccountId(address, currentSuiChain());
@@ -131,19 +140,24 @@ export function registerScreeningTools(server: McpServer) {
           subjectTransactions: max_transactions ?? 300,
           hopTransactions: 50,
           maxExpand: max_expand ?? 8,
-          maxBridgeLookups: 10,
+     maxBridgeLookups: max_bridge_lookups ?? 10,
+     digestOffset: digest_offset,
         });
         const byCategory: Record<string, number> = {};
         for (const e of result.exposures) byCategory[e.category] = (byCategory[e.category] ?? 0) + 1;
         const incomplete = result.windows.some((w) => w.incomplete_transactions.length > 0);
+    const bridgeDestinationsIncomplete = result.bridge_exits_with_destination_read < result.bridge_exits_seen;
         const summary = [
           subjectLabel ? `The address itself is labelled ${subjectLabel.label} [${subjectLabel.category}]${subjectLabel.evidence ? ` (${subjectLabel.evidence})` : ""}.` : "",
           result.exposures.length === 0
             ? incomplete
               ? "No exposure found in the fully read transactions; screening is incomplete (see windows.incomplete_transactions)."
+       : bridgeDestinationsIncomplete
+        ? "No exposure found in the transactions read; bridge destinations were not all screened (see bridge_destinations_incomplete)."
               : "No exposure to a labelled or sanctioned account within the screened window."
             : `${result.exposures.length} exposure(s): ${Object.entries(byCategory).map(([c, n]) => `${n} ${c}`).join(", ")}.`,
           incomplete && result.exposures.length > 0 ? "Screening is incomplete (see windows.incomplete_transactions)." : "",
+     bridgeDestinationsIncomplete ? `${result.bridge_exits_seen - result.bridge_exits_with_destination_read} bridge exit destination(s) were not read; sanctions screening is incomplete.` : "",
         ].filter(Boolean).join(" ");
         return json({
           subject,
@@ -154,6 +168,16 @@ export function registerScreeningTools(server: McpServer) {
           unexpanded_counterparties: result.unexpanded_counterparties,
           bridge_exits_seen: result.bridge_exits_seen,
           bridge_exits_with_destination_read: result.bridge_exits_with_destination_read,
+     ...(result.digest_page_remaining ? {
+      digest_listing: { digest_offset: digest_offset ?? 0, next_call: { tool: "screen_address", repeat_with: { digest_offset: (digest_offset ?? 0) + 5 } } },
+     } : {}),
+     ...(bridgeDestinationsIncomplete ? {
+      bridge_destinations_incomplete: true,
+      bridge_destinations_unread: result.bridge_destinations_unread,
+      next_call: result.bridge_destinations_unread.some((row) => row.reason === "lookup_budget") && (max_bridge_lookups ?? 10) < 300
+       ? { tool: "screen_address", repeat_with: { max_bridge_lookups: Math.min(300, result.bridge_exits_seen) } }
+       : result.bridge_destinations_unread[0]?.next_call,
+     } : {}),
           tier: "Paths and bridge destinations are chain-derived; each label's evidence field says what it rests on.",
           coverage,
           caveats: SCREEN_CAVEATS,

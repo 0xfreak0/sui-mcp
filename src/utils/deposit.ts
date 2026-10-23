@@ -442,8 +442,7 @@ export function decideDepositVerdict(
       const carried = sweeps.filter((s) => s.left_for_next_sweep);
       const next = carried[0]?.left_for_next_sweep;
       const carriedText = next
-        ? ` ${carried.length} of them left a balance that is a deposit the next sweep takes (left_for_next_sweep; e.g. ${carried[0]!.digest} left ${next.left}, which arrived in ${next.arrived_in.join(", ")} just before it and ${
-            next.swept_by ? `was swept into the same destination by ${next.swept_by}` : "is not swept yet in the window"
+    ? ` ${carried.length} of them left a balance that is a deposit the next sweep takes (left_for_next_sweep; e.g. ${carried[0]!.digest} left ${next.left}, which arrived in ${next.arrived_in.join(", ")} just before it and ${next.swept_by ? `was swept into the same destination by ${next.swept_by}` : "is not swept yet in the window"
           }). An exchange sweeps credited deposits, so a deposit that arrives while a sweep is pending waits for the next one.`
         : "";
       reasons.push(
@@ -709,7 +708,7 @@ export async function scanForDeposit(address: string, last = 50, options: Classi
     reconstruction = {
       anchor_checkpoint: anchor, through_checkpoint: through,
       scanned_transactions: 0, max_transactions: options.maxBalanceTransactions ?? 1000,
-      reads: 0, max_reads: 200,
+   reads: 0, max_reads: options.maxBalanceReads ?? 200,
       complete: false,
     };
     if (through < 0) {
@@ -740,7 +739,7 @@ export async function scanForDeposit(address: string, last = 50, options: Classi
           cursor = page.startCursor;
         }
         if (!reconstruction.complete) reconstruction.unavailable =
-          "Later transactions remain unread within the transaction/read budgets, or their continuation cursor is unavailable. Raise max_balance_transactions, choose a later to, or retry an unavailable read; full-balance sweep checks are withheld.";
+     "Later transactions remain unread within the transaction/read budgets, or their continuation cursor is unavailable. Raise max_balance_transactions and max_balance_reads, choose a later to, or retry an unavailable read; full-balance sweep checks are withheld.";
         if ([...currentBalances.values()].some((v) => v < 0n)) {
           reconstruction.complete = false;
           reconstruction.unavailable = "Reconstruction produced a negative balance; full-balance sweep checks are withheld.";
@@ -763,6 +762,7 @@ export interface ClassifyOptions {
   from?: string | number;
   to?: string | number;
   maxBalanceTransactions?: number;
+ maxBalanceReads?: number;
 }
 
 export async function classifyDepositAddress(address: string, options: ClassifyOptions = {}) {

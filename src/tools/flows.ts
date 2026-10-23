@@ -33,7 +33,7 @@ import {
   type FlowTx,
 } from "../utils/address-flows.js";
 import { capPayload, type ListCap } from "../utils/output-cap.js";
-import { readMovedObjects, SCAN_OBJECT_BUDGET, valueTransactionObjects } from "../utils/moved-value.js";
+import { readMovedObjects, MAX_OBJECTS_PER_TX, SCAN_OBJECT_BUDGET, valueTransactionObjects } from "../utils/moved-value.js";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { depositRole, type DepositRoleWindow } from "../utils/deposit-role.js";
 
@@ -157,10 +157,11 @@ function toFlowTx(n: ScanNode, balanceChanges: GqlBalanceChangeNode[], commands:
 }
 
 
-function digestList(digests: string[]) {
+function digestList(digests: string[], offset: number) {
   return {
-    digests: digests.slice(0, DIGESTS_PER_ROW),
-    ...(digests.length > DIGESTS_PER_ROW ? { more_digests: digests.length - DIGESTS_PER_ROW } : {}),
+  digests: digests.slice(offset, offset + DIGESTS_PER_ROW),
+  ...(offset ? { digests_before_page: Math.min(offset, digests.length) } : {}),
+  ...(digests.length > offset + DIGESTS_PER_ROW ? { more_digests: digests.length - offset - DIGESTS_PER_ROW } : {}),
   };
 }
 
@@ -205,6 +206,8 @@ export function registerFlowTools(server: McpServer) {
         .max(50)
         .optional()
         .describe(`Recipients to list, and counterparties to identify in each direction (default ${DEFAULT_TOP}).`),
+   digest_offset: numArg().int().min(0).optional().describe("First digest listed in each transaction-bearing row (default 0, five per row). Follow digest_listing.next_call for later digests."),
+   object_transaction_offset: numArg().int().min(0).optional().describe("First successful transaction to inspect for non-coin objects (300 per page). Follow objects_page.next_call; coin totals still cover the full scan, object totals cover this slice only."),
       detail: z
         .enum(["summary", "full"])
         .optional()
@@ -212,12 +215,18 @@ export function registerFlowTools(server: McpServer) {
           "'summary' (default) keeps ~20k chars of counterparties, coins and unattributed rows by value, retaining all labelled, non-wallet and lookalike addresses. Totals/counts cover all rows; omitted reports the rest. 'full': every row.",
         ),
     },
-    async ({ address, from, to, coin_type, max_transactions, top, detail }) => {
+  async ({ address, from, to, coin_type, max_transactions, top, digest_offset, object_transaction_offset, detail }) => {
       try {
         const window = await resolveWindow(from, to);
         const roleWindow: DepositRoleWindow = { from, to, resolved: window };
         const budget = max_transactions ?? DEFAULT_MAX_TRANSACTIONS;
         const topN = top ?? DEFAULT_TOP;
+    const digestOffset = digest_offset ?? 0;
+    let digestPageRemaining = false;
+    const listedDigests = (digests: string[]) => {
+     if (digests.length > digestOffset + DIGESTS_PER_ROW) digestPageRemaining = true;
+     return digestList(digests, digestOffset);
+    };
         const filter: Record<string, unknown> = { affectedAddress: address };
         if (window.after?.checkpoint != null) filter.afterCheckpoint = window.after.checkpoint;
         if (window.before?.checkpoint != null) filter.beforeCheckpoint = window.before.checkpoint;
@@ -329,7 +338,9 @@ export function registerFlowTools(server: McpServer) {
             // in a transaction someone else signed can hand it an object with
             // no TransferObjects command at all.
             txs.filter((t) => t.status === "success").map((t) => t.digest);
-        const objectRead = objectCandidates.slice(0, MAX_OBJECT_TXS);
+    const objectOffset = object_transaction_offset ?? 0;
+    if (objectOffset && objectOffset >= objectCandidates.length) return errorResult("object_transaction_offset is past the last successful transaction in this scan.");
+    const objectRead = objectCandidates.slice(objectOffset, objectOffset + MAX_OBJECT_TXS);
         const [prices, , objectValues] = await Promise.all([
           windowPrices(timed.map(({ at, summary: s, tx }) => ({
             at, coins: new Set([...s.coins.keys(), ...exits.filter((e) => e.digest === tx.digest).flatMap((e) => [...e.sent.keys(), ...e.retained.keys()])]),
@@ -347,6 +358,8 @@ export function registerFlowTools(server: McpServer) {
             unreadTxs: r.unread,
           })),
         ]);
+    const firstSkippedObject = objectValues.skipped[0];
+    const unreadObjectDigests = [...new Set(objectValues.unread.filter((u) => u.reason.startsWith("outside valued-object page ")).map((u) => u.digest))];
         const scales = new Map<string, number>();
         const human = (coin: string, raw: bigint) =>
           (raw < 0n ? -1 : 1) * toHumanAmount(raw, scales.get(coin) ?? pricingScale(coin).decimals);
@@ -432,7 +445,7 @@ export function registerFlowTools(server: McpServer) {
         // transactions or objects that could not be read, and objects past
         // the scan's budget.
         const objectsPartial =
-          objectCandidates.length > objectRead.length || objectValues.unreadTxs.length > 0 || objectValues.unread.length > 0 || objectValues.skipped.length > 0;
+     objectOffset > 0 || objectCandidates.length > objectRead.length || objectValues.unreadTxs.length > 0 || objectValues.unread.length > 0 || objectValues.skipped.length > 0;
 
         const rank = (m: Map<string, Counterparty>, objects: typeof objectsFrom) =>
           [...m.values()]
@@ -478,7 +491,7 @@ export function registerFlowTools(server: McpServer) {
           transactions: c.digests.length,
           first_at: c.firstAt,
           last_at: c.lastAt,
-          ...digestList(c.digests),
+     ...listedDigests(c.digests),
         });
 
         const coins = [...summary.coins.values()]
@@ -528,7 +541,7 @@ export function registerFlowTools(server: McpServer) {
                 usd: usd === null ? null : round(usd),
                 ...legs.coverage(u.coinType),
                 transactions: u.digests.length,
-                ...digestList(u.digests),
+        ...listedDigests(u.digests),
               };
             })
             .sort((a, b) => (b.usd ?? -1) - (a.usd ?? -1));
@@ -582,6 +595,23 @@ export function registerFlowTools(server: McpServer) {
           window: describeWindow(from, to, window),
           deposit_address: depositRole(address, roleWindow),
           ...(coin_type ? { coin_filter: coinKey(coin_type) } : {}),
+     ...(objectCandidates.length ? {
+      objects_page: {
+       total_transactions: objectCandidates.length,
+       transaction_offset: objectOffset,
+       transactions_selected: objectRead.length,
+       ...((firstSkippedObject ? objectCandidates.indexOf(firstSkippedObject) : objectOffset + objectRead.length) < objectCandidates.length
+        ? {
+         next_call: {
+          tool: "summarize_address_flows", repeat_with: {
+           object_transaction_offset: firstSkippedObject ? objectCandidates.indexOf(firstSkippedObject) : objectOffset + objectRead.length,
+          }
+         }
+        }
+        : {}),
+       note: "Coin totals cover the full scan; object amounts and their USD contribution cover this transaction slice. Do not add page totals, which repeat the coin amounts.",
+      },
+     } : {}),
           coverage: {
             scanned_transactions: txs.length,
             complete: !truncated,
@@ -621,15 +651,20 @@ export function registerFlowTools(server: McpServer) {
                 }
               : {}),
           },
-          ...(objectRows.length || objectValues.unread.length || objectValues.unreadTxs.length || objectValues.skipped.length || objectCandidates.length > objectRead.length
+     ...(objectRows.length || objectValues.unread.length || objectValues.unreadTxs.length || objectValues.skipped.length || objectCandidates.length > objectRead.length || objectOffset
             ? {
                 objects: objectRows,
                 ...(objectValues.unread.length ? { objects_unread: objectValues.unread } : {}),
+       ...(unreadObjectDigests.length ? {
+        objects_unread_follow_up_calls: unreadObjectDigests.map((digest) => ({
+         tool: "analyze_attack_tx", args: { digest, object_offset: MAX_OBJECTS_PER_TX },
+        }))
+       } : {}),
                 ...(objectValues.unreadTxs.length ? { objects_transactions_unread: objectValues.unreadTxs } : {}),
                 ...(objectValues.skipped.length ? { objects_skipped_transactions: objectValues.skipped } : {}),
                 objects_scope:
-                  `Non-coin objects a reader values (staked SUI, LP positions, lending caps, vault receipts; NFTs are not valued here) that entered ("in") or left ("out") this address, or that it kept while a transaction raised ("in") or lowered ("out") their value (changed_in_place, usd the size of the change), in the ${objectRead.length} newest successful transaction(s) of the scan` +
-                  (objectCandidates.length > objectRead.length ? `; ${objectCandidates.length - objectRead.length} older such transaction(s) were not read` : "") +
+        `Non-coin objects a reader values (staked SUI, LP positions, lending caps, vault receipts; NFTs are not valued here) that entered ("in") or left ("out") this address, or that it kept while a transaction raised ("in") or lowered ("out") their value (changed_in_place, usd the size of the change), in ${objectRead.length} successful transaction(s) from index ${objectOffset} of this scan` +
+        (objectCandidates.length > objectOffset + objectRead.length ? `; ${objectCandidates.length - objectOffset - objectRead.length} older such transaction(s) were not read on this page` : "") +
                   (objectValues.skipped.length
                     ? `; the objects of ${objectValues.skipped.length} older transaction(s) past the first ${SCAN_OBJECT_BUDGET} objects were not valued (objects_skipped_transactions), so totals_usd leaves them out (objects_partial); narrow the window to value them`
                     : "") +
@@ -655,9 +690,9 @@ export function registerFlowTools(server: McpServer) {
               ...who(s.address, i < topN ? identities.get(s.address) : undefined, roleWindow),
               ...(i < topN ? {} : kindOf(s.address)),
               transactions: s.digests.length,
-              ...digestList(s.digests),
+       ...listedDigests(s.digests),
             })),
-            sponsored: sponsored.map((s) => ({ address: s.address, transactions: s.digests.length, ...digestList(s.digests) })),
+      sponsored: sponsored.map((s) => ({ address: s.address, transactions: s.digests.length, ...listedDigests(s.digests) })),
           },
           bridge_exits: {
             transaction_count: exits.length,
@@ -673,6 +708,7 @@ export function registerFlowTools(server: McpServer) {
             by_bridge: bridgeGroups.map((g) => ({
               bridge: g.bridge,
               transactions: g.digests.length,
+       ...listedDigests(g.digests),
               sent: amounts(g.sent),
               ...(g.retained.size ? { retained_on_sui: amounts(g.retained) } : {}),
               destinations: g.destinations.map((d) => ({
@@ -689,7 +725,7 @@ export function registerFlowTools(server: McpServer) {
                       shared_note: "These transactions paid more than one destination, so their value is in the bridge total and not split here.",
                     }
                   : {}),
-                ...digestList(d.digests),
+        ...listedDigests(d.digests),
               })),
               ...(g.unresolvedDigests.length ? { no_recipient_read: g.unresolvedDigests } : {}),
               ...(g.cancelledDigests.length
@@ -722,6 +758,7 @@ export function registerFlowTools(server: McpServer) {
                 }
               : {}),
           },
+     ...(digestPageRemaining ? { digest_listing: { digest_offset: digestOffset, next_call: { tool: "summarize_address_flows", repeat_with: { digest_offset: digestOffset + DIGESTS_PER_ROW } }, note: "Each row lists five digests from its own transaction set; follow next_call for later digests." } } : {}),
           ...(inbound.length ? { bridge_entries: inbound } : {}),
           ...(leads.length ? { cross_chain_leads: leads, cross_chain_leads_meaning: CROSS_CHAIN_LEAD_MEANING } : {}),
         };
@@ -827,7 +864,7 @@ export function registerFlowTools(server: McpServer) {
         const coinUsd = (c: CoinRow) => (c.usd === null ? null : c.usd.in + c.usd.out);
         const coinTx = (c: CoinRow) => c.transactions_in + c.transactions_out;
         const brief = (r: Row & { transactions?: number }) => ({ address: r.address, usd: r.usd, transactions: r.transactions });
-        const args = { address, from, to, coin_type, max_transactions, top };
+    const args = { address, from, to, coin_type, max_transactions, top, digest_offset, object_transaction_offset };
         const { payload: out } = capPayload(
           "summarize_address_flows",
           args,

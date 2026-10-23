@@ -27,7 +27,7 @@ import {
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /** Transactions read in full per graph: each is one to three GraphQL requests. */
-const MAX_TX_READS = 400;
+const DEFAULT_TX_READS = 400;
 
 const round4 = (x: number) => Number(x.toFixed(4));
 const pct = (x: number) => `${(x * 100).toFixed(x < 0.01 ? 2 : 1)}%`;
@@ -53,10 +53,11 @@ interface Rendered {
   terminals: Array<Record<string, unknown>>;
   coverage: Record<string, unknown>;
   pruned: Array<Record<string, unknown>>;
+ prunedTotal: number;
 }
 
 /** The engine's graph as the JSON a tool returns: identities attached, amounts formatted, shares rounded. */
-function render(engines: FlowEngine[], ids: Map<string, AddressIdentity>): Rendered {
+function render(engines: FlowEngine[], ids: Map<string, AddressIdentity>, tool: "trace_flow_graph" | "find_flow_path", terminalOffset = 0, prunedOffset = 0): Rendered {
   const nodes: Array<Record<string, unknown>> = [];
   const edges: Array<Record<string, unknown>> = [];
   const terminals: Array<Record<string, unknown>> = [];
@@ -71,17 +72,23 @@ function render(engines: FlowEngine[], ids: Map<string, AddressIdentity>): Rende
         meaning: STOP_MEANING[group.code],
         share: round4(group.share),
         usd: group.usd === null ? null : Number(group.usd.toFixed(2)),
-        entries: group.entries.slice(0, 15).map((en) => ({
+    entries: group.entries.slice(terminalOffset, terminalOffset + 15).map((en) => ({
           node: en.node,
           label: labelOfNode(engine.nodes.get(en.node), en.node, ids),
           share: round4(en.share),
           usd: en.usd === null ? null : Number(en.usd.toFixed(2)),
           ...(en.detail ? { detail: en.detail } : {}),
         })),
-        ...(group.entries.length > 15 ? { more_entries: group.entries.length - 15 } : {}),
+    ...(group.entries.length > terminalOffset + 15
+     ? { entries_next_call: { tool, repeat_with: { terminal_entry_offset: terminalOffset + 15 } } }
+     : {}),
+    entry_count: group.entries.length,
+    entry_offset: terminalOffset,
       });
     }
-    for (const p of [...engine.pruned].sort((a, b) => b.share - a.share).slice(0, 10)) {
+ }
+ const allPruned = engines.flatMap((engine) => engine.pruned).sort((a, b) => b.share - a.share);
+ for (const p of allPruned.slice(prunedOffset, prunedOffset + 10)) {
       pruned.push({
         address: p.address,
     ...(p.object_id ? { object_id: p.object_id, object_type: p.object_type } : { coin: displayCoin(p.coin_type).symbol, coin_type: p.coin_type }),
@@ -89,7 +96,6 @@ function render(engines: FlowEngine[], ids: Map<string, AddressIdentity>): Rende
         usd: p.usd === null ? null : Number(p.usd.toFixed(2)),
         digest: p.digest,
       });
-    }
   }
   const coverage: Record<string, unknown> = {};
   engines.forEach((engine, i) => {
@@ -121,7 +127,7 @@ function render(engines: FlowEngine[], ids: Map<string, AddressIdentity>): Rende
     if (engines.length === 1) Object.assign(coverage, c);
     else coverage[i === 0 ? "forward" : "backward"] = c;
   });
-  return { nodes, edges, terminals, coverage, pruned };
+ return { nodes, edges, terminals, coverage, pruned, prunedTotal: allPruned.length };
 }
 
 function labelOfNode(n: GraphNode | undefined, id: string, ids: Map<string, AddressIdentity>): string {
@@ -443,6 +449,9 @@ export function registerFlowGraphTools(server: McpServer) {
       to: timePointArg().optional().describe("Window end: ISO date or checkpoint. With `address` and backward, where the walk starts. Bounds every search."),
       max_depth: numArg().int().min(1).max(8).optional().describe("Hops to follow from the start (default 4, max 8)."),
       max_nodes: numArg().int().min(1).max(150).optional().describe("Address nodes to expand (default 40, max 150). Expands by depth while all queued nodes fit; otherwise prioritizes the largest share."),
+   max_tx_reads: numArg().int().min(1).max(4000).optional().describe("Full transaction reads before stopping (default 400, max 4000). A budget stop stays incomplete; raise this to continue deeper."),
+   terminal_entry_offset: numArg().int().min(0).optional().describe("First entry in each terminal group (15 per page); follow terminals[].entries_next_call."),
+   pruned_offset: numArg().int().min(0).optional().describe("First pruned branch example (10 per page); follow largest_pruned_page.next_call."),
       min_share: numArg().min(0).max(1).optional().describe("Prune below this fraction of traced value (default 0.01 = 1%); never prune lookalikes. coverage.pruned counts them."),
       min_usd: numArg().min(0).optional().describe("Prune below this USD value at transaction time, except lookalikes. Unpriced branches use min_share."),
       format: FORMAT_ARG,
@@ -453,7 +462,7 @@ export function registerFlowGraphTools(server: McpServer) {
           "'summary' (default): ~20k chars, largest shares first; keeps all bridge exits, sinks, hubs, protocols, consumed and retained nodes, labelled addresses, lookalikes and their incoming edges. Terminals, coverage and shares cover the whole graph; omitted reports missing rows. 'full': every node and edge.",
         ),
     },
-    async ({ digest, address, direction, coin_type, from, to, max_depth, max_nodes, min_share, min_usd, format, detail }) => {
+  async ({ digest, address, direction, coin_type, from, to, max_depth, max_nodes, max_tx_reads, terminal_entry_offset, pruned_offset, min_share, min_usd, format, detail }) => {
       if ((digest ? 1 : 0) + (address ? 1 : 0) !== 1) {
         return errorResult("Give exactly one of `digest` (start from a transaction) or `address` (start from an address's activity).");
       }
@@ -475,7 +484,7 @@ export function registerFlowGraphTools(server: McpServer) {
           ...(window.after?.checkpoint != null ? { afterCheckpoint: window.after.checkpoint } : {}),
           ...(window.before?.checkpoint != null ? { beforeCheckpoint: window.before.checkpoint } : {}),
         },
-        maxTxReads: MAX_TX_READS,
+    maxTxReads: max_tx_reads ?? DEFAULT_TX_READS,
       };
       const engine = new FlowEngine(opts);
       if (digest) {
@@ -499,7 +508,7 @@ export function registerFlowGraphTools(server: McpServer) {
       const poisoning = lookalikeReport(poisonLedger.addresses(), poisonLedger.activity);
 
       const ids = await identitiesFor([engine]);
-      const r = render([engine], ids);
+   const r = render([engine], ids, "trace_flow_graph", terminal_entry_offset, pruned_offset);
       const start = digest ? `tx ${normalizeDigest(digest)}` : `${address} (${displayName(address!, ids)})`;
       const summary = prose(engine, ids, start, poisoning);
       const json = {
@@ -511,8 +520,26 @@ export function registerFlowGraphTools(server: McpServer) {
         coverage: r.coverage,
         address_poisoning: poisoning,
         ...(r.pruned.length ? { largest_pruned: r.pruned } : {}),
+    ...(r.prunedTotal ? {
+     largest_pruned_page: {
+      count: r.prunedTotal,
+      offset: pruned_offset ?? 0,
+      ...((pruned_offset ?? 0) + 10 < r.prunedTotal
+       ? { next_call: { tool: "trace_flow_graph", repeat_with: { pruned_offset: (pruned_offset ?? 0) + 10 } } }
+       : {}),
+     }
+    } : {}),
         nodes: r.nodes,
         edges: r.edges,
+    ...([...engine.edges.values()].some((e) => e.digests.length > 20)
+     ? {
+      digest_listing: {
+       omitted_from_edge_rows: [...engine.edges.values()].reduce((sum, e) => sum + Math.max(0, e.digests.length - 20), 0),
+       next_call: { tool: "trace_flow_graph", repeat_with: { format: "csv" } },
+       note: "CSV lists every digest of every edge; the JSON edge rows list only the first 20 per edge.",
+      }
+     }
+     : {}),
         ...(engine.unpriced.size ? { unpriced_coins: unpricedByReason(engine.unpriced) } : {}),
     ...(engine.unvaluedObjects.length ? { unvalued_objects: engine.unvaluedObjects, object_valuation_incomplete: true } : {}),
         method:
@@ -528,7 +555,7 @@ export function registerFlowGraphTools(server: McpServer) {
       const byShare = (a: Record<string, unknown>, b: Record<string, unknown>) => Number(b.traced_share) - Number(a.traced_share);
       const { payload } = capPayload(
         "trace_flow_graph",
-        { digest, address, direction, coin_type, from, to, max_depth, max_nodes, min_share, min_usd },
+    { digest, address, direction, coin_type, from, to, max_depth, max_nodes, max_tx_reads, terminal_entry_offset, pruned_offset, min_share, min_usd },
         json,
         {
           nodes: {
@@ -570,11 +597,15 @@ export function registerFlowGraphTools(server: McpServer) {
       window_start: timePointArg().optional().describe("Only transactions after this: ISO date or checkpoint. Set it to the incident time to skip the source's older history."),
       window_end: timePointArg().optional().describe("Only transactions before this: ISO date or checkpoint."),
       max_nodes: numArg().int().min(1).max(100).optional().describe("Address nodes to expand on each side (default 30, max 100); larger shares take priority when the queued nodes exceed the remaining limit."),
+   max_tx_reads: numArg().int().min(1).max(4000).optional().describe("Full transaction reads on each search side before stopping (default 400, max 4000). Raise it if a read budget stopped the search."),
       min_share: numArg().min(0).max(1).optional().describe("Skip branches below this fraction of each side's value (default 0.001), except those to a lookalike of a reached address."),
+   path_offset: numArg().int().min(0).optional().describe("First path to show when more than five are found; follow next_call for later paths."),
+   terminal_entry_offset: numArg().int().min(0).optional().describe("First entry in each terminal group (15 per page); follow explored.terminals[].entries_next_call."),
+   pruned_offset: numArg().int().min(0).optional().describe("First pruned branch example (10 per page); follow explored.largest_pruned_page.next_call."),
       format: FORMAT_ARG,
    detail: z.enum(["summary", "full"]).optional().describe("summary (default) caps the unvalued-object list; full lists every unvalued object."),
     },
-  async ({ from, to, max_hops, coin_type, window_start, window_end, max_nodes, min_share, format, detail }) => {
+  async ({ from, to, max_hops, coin_type, window_start, window_end, max_nodes, max_tx_reads, min_share, path_offset, terminal_entry_offset, pruned_offset, format, detail }) => {
       let target: Target;
       let window;
       try {
@@ -594,7 +625,7 @@ export function registerFlowGraphTools(server: McpServer) {
           ...(window.after?.checkpoint != null ? { afterCheckpoint: window.after.checkpoint } : {}),
           ...(window.before?.checkpoint != null ? { beforeCheckpoint: window.before.checkpoint } : {}),
         },
-        maxTxReads: MAX_TX_READS,
+    maxTxReads: max_tx_reads ?? DEFAULT_TX_READS,
       };
       const forward = new FlowEngine({
         ...base,
@@ -632,8 +663,8 @@ export function registerFlowGraphTools(server: McpServer) {
 
       const engines = backward ? [forward, backward] : [forward];
       const ids = await identitiesFor(engines);
-      const r = render(engines, ids);
-      const rendered = paths.slice(0, 5).map((p) => ({
+   const r = render(engines, ids, "find_flow_path", terminal_entry_offset, pruned_offset);
+   const rendered = paths.slice(path_offset ?? 0, (path_offset ?? 0) + 5).map((p) => ({
         hops: p.steps.length,
         ...(p.meets ? { meets_at: p.meets } : {}),
         steps: p.steps.map(({ engine, step }) => {
@@ -658,12 +689,12 @@ export function registerFlowGraphTools(server: McpServer) {
         }),
       }));
       const toAccount = "sui" in target ? target.account : (target.account ?? target.foreign);
-      const found = rendered.length > 0;
+   const found = paths.length > 0;
       const unread = engines.flatMap((engine) => engine.ledger.summary().find((group) => group.code === "read_failed")?.entries ?? []);
    const unvalued = engines.flatMap((engine) => engine.unvaluedObjects);
       const lines = [
         found
-          ? `PATH FOUND — ${shortAddress(from)} → ${toAccount}: ${rendered.length} path(s), shortest ${Math.min(...rendered.map((p) => p.hops))} transfer(s).`
+     ? `PATH FOUND — ${shortAddress(from)} → ${toAccount}: ${paths.length} path(s), ${rendered.length} shown, shortest ${paths[0].steps.length} transfer(s).`
      : unread.length || unvalued.length
       ? `SEARCH INCOMPLETE from ${shortAddress(from)} to ${toAccount}: no path established; some value is unread or unvalued.`
             : `NO PATH within budget from ${shortAddress(from)} to ${toAccount}.`,
@@ -739,7 +770,23 @@ export function registerFlowGraphTools(server: McpServer) {
         to: toAccount,
         max_hops: hops,
         ...(window_start || window_end ? { window: describeWindow(window_start, window_end, window) } : {}),
+    ...(found ? {
+     path_count: paths.length,
+     path_offset: path_offset ?? 0,
+     ...((path_offset ?? 0) + rendered.length < paths.length
+      ? { next_call: { tool: "find_flow_path", repeat_with: { path_offset: (path_offset ?? 0) + 5 } } }
+      : {}),
+    } : {}),
         found,
+    ...(rendered.some((p) => p.steps.some((s) => s.digest_count > 5))
+     ? {
+      digest_listing: {
+       omitted_from_path_steps: rendered.reduce((sum, p) => sum + p.steps.reduce((n, s) => n + Math.max(0, s.digest_count - 5), 0), 0),
+       next_call: { tool: "find_flow_path", repeat_with: { format: "csv" } },
+       note: "CSV lists every digest of every explored edge; the JSON path steps list only the first five per edge.",
+      }
+     }
+     : {}),
         ...(found
           ? { paths: rendered }
           : {
@@ -753,6 +800,16 @@ export function registerFlowGraphTools(server: McpServer) {
           backward_levels: bLevels,
           coverage: r.coverage,
           terminals: r.terminals,
+     ...(r.pruned.length ? { largest_pruned: r.pruned } : {}),
+     ...(r.prunedTotal ? {
+      largest_pruned_page: {
+       count: r.prunedTotal,
+       offset: pruned_offset ?? 0,
+       ...((pruned_offset ?? 0) + 10 < r.prunedTotal
+        ? { next_call: { tool: "find_flow_path", repeat_with: { pruned_offset: (pruned_offset ?? 0) + 10 } } }
+        : {}),
+      }
+     } : {}),
      ...(unvalued.length ? { unvalued_objects: unvalued, object_valuation_incomplete: true } : {}),
           ...(nodeLimited ? { node_limited: nodeLimited } : {}),
         },
@@ -761,7 +818,7 @@ export function registerFlowGraphTools(server: McpServer) {
       };
    const { payload } = capPayload(
     "find_flow_path",
-    { from, to, max_hops, coin_type, window_start, window_end, max_nodes, min_share },
+    { from, to, max_hops, coin_type, window_start, window_end, max_nodes, max_tx_reads, min_share, path_offset, terminal_entry_offset, pruned_offset },
     json,
     {
      "explored.unvalued_objects": {
@@ -774,7 +831,7 @@ export function registerFlowGraphTools(server: McpServer) {
    );
    if ((format ?? "json") === "json") return { content: [{ type: "text" as const, text: summary }, { type: "text" as const, text: JSON.stringify(payload) }] };
       // Diagrams draw the paths only: the explored graph is in the JSON.
-      const onPath = new Set(paths.slice(0, 5).flatMap((p) => p.steps.flatMap((s) => [s.step.from, s.step.to])));
+   const onPath = new Set(paths.slice(path_offset ?? 0, (path_offset ?? 0) + 5).flatMap((p) => p.steps.flatMap((s) => [s.step.from, s.step.to])));
       const g = exportGraph(engines, ids, onPath.size ? onPath : undefined);
       if (format === "mermaid") return { content: [{ type: "text" as const, text: summary }, { type: "text" as const, text: toMermaid(g) }] };
    if (format === "graph_json") return { content: [{ type: "text" as const, text: JSON.stringify({ ...toGraphJson(g), found, explored: payload.explored }) }] };

@@ -2978,6 +2978,11 @@ specific venue in `protocol`. It resumes only unfinished type selectors,
 so callers must collect each venue's result and finish its `offset` pages
 before following the venue cursor. Complete selectors are not re-read.
 
+Aftermath `type_names` can contain nested Move types with every package
+address missing its `0x` prefix. Normalize each address token, not just the
+outer type, before deciding a pool's coins are unreadable; a malformed
+type leaves the venue incomplete rather than proving the queried pair absent.
+
 `analyze_token` has two default wall-clock budgets, checked between pages:
 `DISCOVERY_TIME_BUDGET_MS` (30 s) for pool discovery and
 `LIQUIDITY_TIME_BUDGET_MS` (35 s) shared by the position and LP-token scans.

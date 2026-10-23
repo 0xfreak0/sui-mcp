@@ -60,6 +60,29 @@ describe("find_pools", () => {
     expect(data.venues.find((venue: { venue: string }) => venue.venue === "cetus").status).toBe("complete");
   });
 
+  it("reads an Aftermath pool whose other type names contain nested unprefixed addresses", async () => {
+    const aftermath = "0xefe170ec0be4d762196bedecd7a065816576198a6527c99282a2551aaa7da38c::pool::Pool";
+    mockGqlQuery.mockResolvedValue(page([{
+      address: "0xa1",
+      asMoveObject: {
+        contents: {
+          type: { repr: `${aftermath}<0xa::af_lp::AF_LP>` },
+          json: {
+            type_names: [
+              SUI.slice(2),
+              USDC.slice(2),
+              `0x3::lp::LP<${SUI.slice(2)},${USDC.slice(2)}>`,
+            ]
+          },
+        }
+      },
+    }]));
+
+    const data = JSON.parse((await tools.get("find_pools")!({ token_a: SUI, token_b: USDC, protocol: "aftermath" })).content[0].text);
+    expect(data.venues[0].status).toBe("complete");
+    expect(data.pools).toEqual([expect.objectContaining({ pool_id: "0xa1", token_a: SUI, token_b: USDC })]);
+  });
+
   it("says when a search failed instead of reporting no pools", async () => {
     mockGqlQuery.mockImplementation(async (query: string) => {
       if (query.includes("object(address")) throw new Error("Rate-limited by graphql.mainnet.sui.io (HTTP 429)");

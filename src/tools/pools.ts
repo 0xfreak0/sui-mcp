@@ -392,7 +392,10 @@ const AFTERMATH_POOL = `${AFTERMATH_AMM_PACKAGE}::pool::Pool`;
 const POOL_COIN_ARG = coinTypeArg();
 
 function canonicalPoolCoinType(value: string): string | null {
- const parsed = POOL_COIN_ARG.safeParse(value.startsWith("0x") ? value : `0x${value}`);
+ // Aftermath stores TypeName text without 0x on every address, including
+ // those nested inside an LP or staked-coin type argument.
+ const type = value.replace(/(^|[<,]\s*)([0-9a-fA-F]{1,64})(?=::)/g, (_match, prefix: string, address: string) => `${prefix}0x${address}`);
+ const parsed = POOL_COIN_ARG.safeParse(type);
  if (!parsed.success) return null;
  try {
   return normalizeStructTag(parsed.data);

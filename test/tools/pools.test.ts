@@ -116,6 +116,7 @@ describe("find_pools", () => {
     for (let call = 0; call < 20; call++) {
       const data = JSON.parse((await tools.get("find_pools")!(args)).content[0].text);
       expect(data.total).toBe(900);
+      expect(data.offset).toBe(seen.length);
       expect(JSON.stringify(data).length).toBeLessThan(50_000);
       seen.push(...data.pools.map((pool: { pool_id: string }) => pool.pool_id));
       if (!data.omitted) break;

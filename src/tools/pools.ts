@@ -317,6 +317,7 @@ export function registerPoolTools(server: McpServer) {
       total: result.pools.length,
             ...(incomplete ? { total_is_lower_bound: true, total_note: "Lower bound: one or more venue searches did not finish. On a venue continuation, total counts only pools found in that call." } : {}),
       ...payload,
+      offset: start,
             ...(incomplete
                 ? {
                     incomplete: true,

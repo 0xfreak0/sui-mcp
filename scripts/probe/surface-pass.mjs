@@ -351,19 +351,47 @@ try {
   }
 
   const venueNames = ["cetus", "deepbook", "turbos", "bluemove", "bluefin", "momentum", "flowx_clmm", "flowx_v2", "magma", "aftermath", "kriya_v2"];
-  ck("find_pools completes every current venue", sameSet((pools.venues ?? []).map((v) => v.venue), venueNames) && pools.venues.every((v) => v.status === "complete"), JSON.stringify(pools.venues));
   const listedPools = [...(pools.pools ?? [])];
   let next = pools.omitted?.next_call;
-  while (next && listedPools.length < pools.total) {
+  while (next) {
     const page = await call(next.tool, next.args);
-    if (page.total !== pools.total || !page.pools?.length || page.offset !== listedPools.length || !sameSet((page.venues ?? []).map((v) => v.venue), venueNames) || page.venues.some((v) => fullSet.has(v.venue) && v.status !== "complete")) {
-      throw new Error(`find_pools continuation at ${listedPools.length} is incomplete`);
+    if (page.total !== pools.total || !page.pools?.length || page.offset !== listedPools.length ||
+      !sameSet((page.venues ?? []).map((v) => v.venue), venueNames)) {
+      throw new Error(`find_pools list continuation at ${listedPools.length} is incomplete`);
     }
     listedPools.push(...page.pools);
     next = page.omitted?.next_call;
   }
-  ck("find_pools returns exactly the raw pools of every protocol and fee tier", !pools.incomplete && listedPools.length === pools.total &&
-    sameSet(listedPools.map((p) => `${p.protocol}:${p.pool_id}`), rawPools.map((p) => `${p.protocol}:${p.pool_id}`)), `${listedPools.length}/${pools.total} vs ${rawPools.length}`);
+  const finalVenues = [];
+  for (const venue of pools.venues ?? []) {
+    let status = venue;
+    let continuation = venue.next_call;
+    for (let steps = 0; continuation && steps < 100; steps++) {
+      const chunk = await call(continuation.tool, continuation.args);
+      if (chunk.venues?.length !== 1 || chunk.venues[0].venue !== venue.venue) {
+        throw new Error(`find_pools venue continuation for ${venue.venue} changed venues`);
+      }
+      const chunkListed = [...(chunk.pools ?? [])];
+      let pageNext = chunk.omitted?.next_call;
+      while (pageNext) {
+        const page = await call(pageNext.tool, pageNext.args);
+        if (page.total !== chunk.total || !page.pools?.length || page.offset !== chunkListed.length) {
+          throw new Error(`find_pools venue ${venue.venue} list continuation is incomplete`);
+        }
+        chunkListed.push(...page.pools);
+        pageNext = page.omitted?.next_call;
+      }
+      listedPools.push(...chunkListed);
+      status = chunk.venues[0];
+      continuation = status.next_call;
+    }
+    if (continuation) throw new Error(`find_pools venue ${venue.venue} did not finish in 100 continuations`);
+    finalVenues.push(status);
+  }
+  ck("find_pools completes every current venue", sameSet(finalVenues.map((v) => v.venue), venueNames) &&
+    finalVenues.every((v) => v.status === "complete"), JSON.stringify(finalVenues));
+  ck("find_pools returns exactly the raw pools of every protocol and fee tier", listedPools.length === rawPools.length &&
+    sameSet(listedPools.map((p) => `${p.protocol}:${p.pool_id}`), rawPools.map((p) => `${p.protocol}:${p.pool_id}`)), `${listedPools.length} vs ${rawPools.length}`);
   const byId = new Map(listedPools.map((p) => [p.pool_id, p]));
   ck("find_pools gives each pool's own token order", rawPools.every((r) => {
     const actual = byId.get(r.pool_id);

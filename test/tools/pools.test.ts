@@ -126,6 +126,42 @@ describe("find_pools", () => {
     expect(seen).toEqual(ids);
   });
 
+  it("resumes only the capped selectors, without repeating pools or skipping the final page", async () => {
+    const bluefin = "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267::pool::Pool";
+    const forward = `${bluefin}<${SUI}, ${USDC}>`;
+    const reverse = `${bluefin}<${USDC}, ${SUI}>`;
+    const reads: Array<{ type: string; after?: string | null }> = [];
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { type: string; after?: string | null }) => {
+      reads.push(vars);
+      if (vars.type === reverse) return page([node("0xreverse", reverse)]);
+      const index = vars.after ? Number(vars.after) : 0;
+      return page([node(`0xforward${index}`, forward)], index < 20 ? String(index + 1) : null);
+    });
+
+    const initial = JSON.parse((await tools.get("find_pools")!({
+      token_a: SUI, token_b: USDC, protocol: "bluefin",
+    })).content[0].text);
+    expect(initial.total).toBe(21);
+    expect(initial.venues[0].status).toBe("incomplete");
+    expect(initial.total_note).toContain("Lower bound");
+    expect(initial.total_is_lower_bound).toBe(true);
+    const continuation = initial.venues[0].next_call;
+    expect(continuation).toMatchObject({ tool: "find_pools", args: { token_a: SUI, token_b: USDC, protocol: "bluefin" } });
+    expect(continuation.args.venue_cursor).toEqual(expect.any(String));
+    const resumed = JSON.parse((await tools.get("find_pools")!(continuation.args)).content[0].text);
+    expect(resumed.venues[0].status).toBe("complete");
+    expect(resumed.venues[0].next_call).toBeUndefined();
+    expect(resumed.total).toBe(1);
+    expect(resumed.total_is_lower_bound).toBeUndefined();
+    expect(reads.filter((r) => r.type === reverse)).toHaveLength(1);
+    expect(reads.filter((r) => r.type === forward).map((r) => r.after)).toEqual([
+      null, ...Array.from({ length: 20 }, (_, i) => String(i + 1)),
+    ]);
+    expect([...initial.pools, ...resumed.pools].map((p: { pool_id: string }) => p.pool_id)).toEqual([
+      ...Array.from({ length: 20 }, (_, i) => `0xforward${i}`), "0xreverse", "0xforward20",
+    ]);
+  });
+
   it("stops a coin's pool discovery at its time budget and marks the venue incomplete", async () => {
     const coin = `0x${"c0".padStart(64, "0")}::coin::COIN`;
     const type = `${CETUS}<${coin}, ${SUI}>`;

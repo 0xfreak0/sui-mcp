@@ -246,14 +246,15 @@ export function registerPoolTools(server: McpServer) {
 
   server.tool(
     "find_pools",
-  "Find pools for an exact token pair across Cetus, DeepBook v2/v3, Turbos, BlueMove v1, Bluefin, Momentum, FlowX CLMM/v2, Magma, Aftermath AMM and Kriya v2. Both token orders are searched. Venue statuses distinguish complete searches from failed or capped reads. The response includes pool IDs and coin types.",
+    "Find pools for an exact token pair across 11 Sui venues. Both token orders are searched. Incomplete venue searches carry a next_call that resumes from their last cursor; offset pages the pools found in one call. Totals are lower bounds until every venue completes.",
     {
    token_a: z.string().describe("First token: verified symbol (e.g. 'SUI') or full coin type"),
    token_b: z.string().describe("Second token: verified symbol (e.g. 'USDC') or full coin type"),
    protocol: z.string().optional().describe(`Filter by venue: ${POOL_PROTOCOLS.join(", ")}. Searches all if omitted.`),
    offset: numArg().int().min(0).optional().describe("Start the pool list at this index (default 0). A response that leaves pools out gives the next offset in omitted.next_call."),
+      venue_cursor: z.string().min(1).max(16_000).optional().describe("Opaque cursor from a venue's next_call. Resumes that venue's search; use the protocol supplied in the call."),
     },
-    async ({ token_a, token_b, protocol: protocolFilter, offset }) => {
+    async ({ token_a, token_b, protocol: protocolFilter, offset, venue_cursor }) => {
    const [resolvedA, resolvedB] = await Promise.all([resolveTokenType(token_a), resolveTokenType(token_b)]);
    if (!resolvedA) return errorResult(`Could not resolve token: ${token_a}. Only curated verified symbols resolve by name; provide the full coin type or use search_token.`);
    if (!resolvedB) return errorResult(`Could not resolve token: ${token_b}. Only curated verified symbols resolve by name; provide the full coin type or use search_token.`);
@@ -264,10 +265,24 @@ export function registerPoolTools(server: McpServer) {
       if (wanted && !POOL_PROTOCOLS.includes(wanted as PoolProtocol)) {
         return errorResult(`Unsupported protocol: ${protocolFilter}. Supported: ${POOL_PROTOCOLS.join(", ")}.`);
       }
-   const result = await searchPoolPairs([[typeA, typeB]], wanted ? [wanted as PoolProtocol] : [...POOL_PROTOCOLS]);
+      if (venue_cursor && !wanted) return errorResult("venue_cursor requires the protocol in the venue's next_call.");
+      let resume: Array<[number, string]> | undefined;
+      if (venue_cursor) {
+        try {
+          resume = parseVenueCursor(venue_cursor);
+        } catch {
+          return errorResult("Invalid venue_cursor; use the unmodified next_call from find_pools.");
+        }
+      }
+      let result: PoolDiscovery;
+      try {
+        result = await searchPoolPairs([[typeA, typeB]], wanted ? [wanted as PoolProtocol] : [...POOL_PROTOCOLS], undefined, resume);
+      } catch (err) {
+        return errorResult(describeError(err, getNetwork()));
+      }
    // A common pair has over a thousand pools on one venue; the list pages, the counts cover every pool.
    const start = offset ?? 0;
-   const callArgs = { token_a, token_b, ...(protocolFilter ? { protocol: protocolFilter } : {}) };
+      const callArgs = { token_a, token_b, ...(protocolFilter ? { protocol: protocolFilter } : {}), ...(venue_cursor ? { venue_cursor } : {}) };
    const nextCall = (from: number): NextCall => ({ tool: "find_pools", args: { ...callArgs, offset: from } });
    const page = result.pools.slice(start);
    const indices = new Map(page.map((row, index) => [row, start + index]));
@@ -285,22 +300,28 @@ export function registerPoolTools(server: McpServer) {
     omitted.lists.pools.next_call = next;
     omitted.lists.pools.from += start;
    }
+      const venues = result.venues.map((venue) => {
+        if (!venue.next_cursor) return venue;
+        const { next_cursor, ...rest } = venue;
+        return { ...rest, next_call: { tool: "find_pools", args: { token_a, token_b, protocol: venue.venue, venue_cursor: next_cursor } } };
+      });
+      const incomplete = result.venues.some((venue) => venue.status !== "complete");
           return {
     isError: result.pools.length === 0 && result.venues.every((venue) => venue.status === "failed" || venue.status === "unsupported"),
     content: [{
             type: "text" as const,
             text: JSON.stringify({
       query: { token_a: typeA, token_b: typeB, protocol: wanted ?? "all" },
-      venues: result.venues,
+            venues,
       pairs_searched: result.pairs_searched,
       total: result.pools.length,
-      ...(start ? { offset: start } : {}),
+            ...(incomplete ? { total_is_lower_bound: true, total_note: "Lower bound: one or more venue searches did not finish. On a venue continuation, total counts only pools found in that call." } : {}),
       ...payload,
-      ...(result.venues.some((venue) => venue.status !== "complete")
+            ...(incomplete
                 ? {
                     incomplete: true,
         failed_searches: result.venues.filter((venue) => venue.status === "failed").map(({ venue, error }) => ({ protocol: venue, error })),
-        incomplete_note: "Only venues marked complete finished their search. A missing pool in any other venue is not evidence of absence.",
+                incomplete_note: "Only venues marked complete finished their search. Follow each incomplete venue's next_call; a missing pool in an unfinished venue is not evidence of absence.",
                   }
                 : {}),
       hint: result.pools.length > 0
@@ -318,6 +339,19 @@ const POOL_PROTOCOLS = [
  "flowx_clmm", "flowx_v2", "magma", "aftermath", "kriya_v2",
 ] as const;
 type PoolProtocol = (typeof POOL_PROTOCOLS)[number];
+
+/** Only opaque cursors this server emitted may select a later slice of a venue. */
+function parseVenueCursor(cursor: string): Array<[number, string]> {
+  const parsed: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  if (!Array.isArray(parsed) || !parsed.length || parsed.length > 100 ||
+    parsed.some((entry) => !Array.isArray(entry) || entry.length !== 2 ||
+      !Number.isSafeInteger(entry[0]) || entry[0] < 0 || typeof entry[1] !== "string" || !entry[1])) {
+    throw new Error("Invalid venue_cursor");
+  }
+  const resume = parsed as Array<[number, string]>;
+  if (new Set(resume.map(([index]) => index)).size !== resume.length) throw new Error("Duplicate venue selector");
+  return resume;
+}
 
 export interface PoolCandidate {
  pool_id: string;
@@ -337,6 +371,8 @@ export interface PoolVenueStatus {
  searched: number;
  pages: number;
  error?: string;
+  /** Set only when a page or time limit stopped a cursor-backed search. */
+  next_cursor?: string;
 }
 
 export interface PoolDiscovery {
@@ -407,15 +443,16 @@ interface PoolPageRead {
  pages: number;
  complete: boolean;
  error?: string;
+  cursor?: string;
 }
 
 /** A capped scan keeps its matching rows but cannot certify absence beyond its last cursor. */
-async function readPoolPages(type: string, withJson: boolean, deadline?: number): Promise<PoolPageRead> {
+async function readPoolPages(type: string, withJson: boolean, deadline?: number, initialAfter: string | null = null): Promise<PoolPageRead> {
   const out: PoolNode[] = [];
-  let after: string | null = null;
+  let after: string | null = initialAfter;
   for (let page = 0; page < MAX_POOL_PAGES; page++) {
   if (deadline !== undefined && page > 0 && Date.now() > deadline) {
-   return { nodes: out, pages: page, complete: false, error: `Stopped at the ${DISCOVERY_TIME_BUDGET_MS / 1000} s time budget after ${page} page${page === 1 ? "" : "s"} (${out.length} objects); more pools may remain` };
+      return { nodes: out, pages: page, complete: false, cursor: after ?? undefined, error: `Stopped at the ${DISCOVERY_TIME_BUDGET_MS / 1000} s time budget after ${page} page${page === 1 ? "" : "s"} (${out.length} objects); more pools may remain` };
   }
   let data: { objects: { nodes: PoolNode[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } };
   try {
@@ -437,7 +474,7 @@ async function readPoolPages(type: string, withJson: boolean, deadline?: number)
     after = data.objects.pageInfo.endCursor;
   if (!after) return { nodes: out, pages: page + 1, complete: false, error: "Pool list has more rows but no continuation cursor" };
   }
- return { nodes: out, pages: MAX_POOL_PAGES, complete: false, error: `Stopped after ${MAX_POOL_PAGES} pages (${out.length} objects); more pools remain` };
+  return { nodes: out, pages: MAX_POOL_PAGES, complete: false, cursor: after ?? undefined, error: `Stopped after ${MAX_POOL_PAGES} pages (${out.length} objects); more pools remain` };
 }
 
 function matchesPair(a: string, b: string, pairs: Array<[string, string]>): boolean {
@@ -531,7 +568,7 @@ async function flowxPairs(pairs: Array<[string, string]>): Promise<{ pools: Pool
  return { pools, status };
 }
 
-async function searchVenue(protocol: PoolProtocol, pairs: Array<[string, string]>, deadline?: number): Promise<{ pools: PoolCandidate[]; status: PoolVenueStatus }> {
+async function searchVenue(protocol: PoolProtocol, pairs: Array<[string, string]>, deadline?: number, resume?: Array<[number, string]>): Promise<{ pools: PoolCandidate[]; status: PoolVenueStatus }> {
  if (protocol === "flowx_v2") return flowxPairs(pairs);
  const status: PoolVenueStatus = { venue: protocol, status: "complete", searched: 0, pages: 0 };
  if (protocol === "turbos") status.pages = 1; // PoolConfig fee-tier read.
@@ -553,11 +590,19 @@ async function searchVenue(protocol: PoolProtocol, pairs: Array<[string, string]
   });
  const unique = new Map<string, (typeof selectors)[number]>();
  for (const selector of selectors) unique.set(selector.type, selector);
- const reads = await Promise.all([...unique.values()].map(async ({ type, base }) => ({ type, base, read: await readPoolPages(type, protocol === "aftermath", deadline) })));
- status.searched = unique.size;
- for (const { type, base, read } of reads) {
+  const entries = [...unique.values()];
+  if (resume?.some(([index]) => index >= entries.length)) throw new Error("venue_cursor does not match this venue and coin pair");
+  const requested = resume ? resume.map(([index, after]) => ({ ...entries[index], index, after })) :
+    entries.map((entry, index) => ({ ...entry, index, after: null }));
+  const reads = await Promise.all(requested.map(async ({ type, base, index, after }) => ({
+    type, base, index, read: await readPoolPages(type, protocol === "aftermath", deadline, after),
+  })));
+  status.searched = requested.length;
+  const pending: Array<[number, string]> = [];
+  for (const { type, base, index, read } of reads) {
   status.pages += read.pages;
   if (!read.complete) {
+      if (read.cursor) pending.push([index, read.cursor]);
    const capped = read.error?.startsWith("Stopped ") || read.error?.includes("no continuation cursor");
    if (!capped || status.status !== "failed") status.status = capped ? "incomplete" : "failed";
    status.error = [status.error, `${type}: ${read.error}`].filter(Boolean).join("; ");
@@ -586,10 +631,11 @@ async function searchVenue(protocol: PoolProtocol, pairs: Array<[string, string]
    }
   }
  }
+  if (pending.length && status.status !== "failed") status.next_cursor = Buffer.from(JSON.stringify(pending)).toString("base64url");
  return { pools, status };
 }
 
-async function searchPoolPairs(pairs: Array<[string, string]>, protocols: PoolProtocol[], deadline?: number): Promise<PoolDiscovery> {
+async function searchPoolPairs(pairs: Array<[string, string]>, protocols: PoolProtocol[], deadline?: number, resume?: Array<[number, string]>): Promise<PoolDiscovery> {
  const unique = new Map<string, [string, string]>();
  for (const [a, b] of pairs) unique.set(a < b ? `${a}|${b}` : `${b}|${a}`, [a, b]);
  const distinct = [...unique.values()];
@@ -601,16 +647,20 @@ async function searchPoolPairs(pairs: Array<[string, string]>, protocols: PoolPr
    error: "Verified pool packages and registry IDs are mainnet-only"
   })),
  };
- const outcomes = await Promise.all(protocols.map((protocol) => searchVenue(protocol, distinct, deadline)));
+  if (resume && protocols.length !== 1) throw new Error("venue_cursor requires exactly one venue");
+  const outcomes = await Promise.all(protocols.map((protocol) => searchVenue(protocol, distinct, deadline, resume)));
  const byId = new Map<string, PoolCandidate>();
  for (const outcome of outcomes) for (const pool of outcome.pools) byId.set(pool.pool_id, pool);
  return { pools: [...byId.values()], venues: outcomes.map((outcome) => outcome.status), pairs_searched };
 }
 
 /** Exact SUI/USDC counterpart discovery within `DISCOVERY_TIME_BUDGET_MS`; other pairs are intentionally outside this call's scope. */
-export async function discoverCoinPools(coinType: string): Promise<PoolDiscovery> {
+export async function discoverCoinPools(coinType: string, protocol?: string, venueCursor?: string): Promise<PoolDiscovery> {
  const coin = canonicalPoolCoinType(coinType);
  if (!coin) throw new Error(`Invalid coin type: ${coinType}`);
  const counterparts = [SUI_COIN, USDC_COIN].filter((type) => type !== coin);
- return searchPoolPairs(counterparts.map((other) => [coin, other]), [...POOL_PROTOCOLS], Date.now() + DISCOVERY_TIME_BUDGET_MS);
+  if (protocol && !POOL_PROTOCOLS.includes(protocol as PoolProtocol)) throw new Error(`Unsupported pool venue: ${protocol}`);
+  if (venueCursor && !protocol) throw new Error("venue_cursor requires a pool venue");
+  return searchPoolPairs(counterparts.map((other) => [coin, other]), protocol ? [protocol as PoolProtocol] : [...POOL_PROTOCOLS],
+    Date.now() + DISCOVERY_TIME_BUDGET_MS, venueCursor ? parseVenueCursor(venueCursor) : undefined);
 }

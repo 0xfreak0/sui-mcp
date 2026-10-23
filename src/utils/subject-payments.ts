@@ -17,7 +17,7 @@
 
 import { gqlQuery } from "../clients/graphql.js";
 import { normalizeWatchAddress } from "./watch.js";
-import { completeTxConnections, NESTED_PAGE_SIZE, type GqlConnection } from "./tx-connections.js";
+import { BALANCE_CHANGES_SELECTION, completeTxConnections, NESTED_PAGE_SIZE, type GqlConnection } from "./tx-connections.js";
 import type { GqlBalanceChangeNode } from "./gql-adapters.js";
 import type { FundingChange } from "./funding.js";
 
@@ -195,4 +195,161 @@ export async function findSubjectPayments(subjects: string[]): Promise<SubjectPa
   payments.sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""));
 
   return { payments, pairs_checked: pairs.length, incomplete_pairs: incomplete, invalid, requests };
+}
+
+/** Newest pages read per direction and walked address. */
+export const SET_PAYMENT_PAGES = 3;
+
+/** Transactions per page of the set scan. */
+export const SET_PAGE_SIZE = 50;
+
+const SET_NODES = `nodes { digest sender { address } effects { timestamp ${BALANCE_CHANGES_SELECTION} } }`;
+
+function setPaymentQuery(direction: "sent" | "affected", end: "newest" | "earliest"): string {
+  const filter = direction === "sent" ? "sentAddress" : "affectedAddress";
+  return end === "newest"
+    ? `query ($addr: SuiAddress!, $before: String) { transactions(filter: { ${filter}: $addr }, last: ${SET_PAGE_SIZE}, before: $before) { pageInfo { hasPreviousPage startCursor } ${SET_NODES} } }`
+    : `query ($addr: SuiAddress!) { transactions(filter: { ${filter}: $addr }, first: ${SET_PAGE_SIZE}) { pageInfo { hasNextPage } ${SET_NODES} } }`;
+}
+
+type SetNode = PairNode & { sender?: { address: string } | null };
+
+interface SetPage {
+  nodes: SetNode[];
+  pageInfo?: { hasPreviousPage?: boolean; startCursor?: string | null; hasNextPage?: boolean };
+}
+
+export interface SetPaymentScan {
+  payments: SubjectPayment[];
+  /**
+   * A direction whose history was not read end to end: `page_limit` (the
+   * transactions between the earliest page and the newest pages were not
+   * read), `missing_cursor`, or a read error.
+   */
+  incomplete: Array<{ address: string; direction: "sent" | "affected"; reason: string }>;
+  /** Digests whose sender or balance changes could not all be read; other payments may exist. */
+  incomplete_transactions: string[];
+  invalid: string[];
+  requests: number;
+}
+
+/**
+ * Find payments with at least one walked endpoint. Each walked address's sent
+ * and affected histories are read from the newest end for up to
+ * `SET_PAYMENT_PAGES` pages, and from the earliest end for one page when the
+ * newest pages did not reach the start, since a subject's first fundings sit
+ * there. Signed payers and net recipients are intersected with the union of
+ * walked and related subjects. Related addresses are never scanned, so cost
+ * follows the number walked.
+ */
+export async function findSetSubjectPayments(walked: string[], subjects: Iterable<string>): Promise<SetPaymentScan> {
+  const invalid: string[] = [];
+  const valid = new Set<string>();
+  for (const address of subjects) {
+    const normalized = normalizeWatchAddress(address);
+    if (!normalized) invalid.push(address);
+    else valid.add(normalized);
+  }
+  const payments: SubjectPayment[] = [];
+  const incomplete: SetPaymentScan["incomplete"] = [];
+  const incompleteTransactions = new Set<string>();
+  const seen = new Set<string>();
+  let requests = 0;
+
+  const readPage = async (query: string, vars: Record<string, unknown>): Promise<SetPage> => {
+    requests++;
+    const data = await gqlQuery<{ transactions: SetPage | null }>(query, vars);
+    if (!data.transactions || !Array.isArray(data.transactions.nodes)) throw new Error("Transaction connection unavailable");
+    return data.transactions;
+  };
+
+  for (const original of new Set(walked)) {
+    const address = normalizeWatchAddress(original);
+    if (!address) continue;
+    for (const direction of ["sent", "affected"] as const) {
+      const read = new Set<string>();
+
+      const scan = async (nodes: SetNode[]) => {
+        const fresh = nodes.filter((n) => !read.has(n.digest));
+        for (const n of fresh) {
+          read.add(n.digest);
+          if (!n.sender?.address) incompleteTransactions.add(n.digest);
+        }
+        const candidates = fresh.filter((n) => n.sender?.address && valid.has(n.sender.address));
+        if (!candidates.length) return;
+        const connections = candidates.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges }));
+        const completed = await completeTxConnections(connections).catch(() =>
+          connections.map((c) => ({ balanceChanges: c.balanceChanges?.nodes ?? [], balanceChangesTruncated: true, reads: 0 })),
+        );
+        for (const [index, node] of candidates.entries()) {
+          requests += completed[index].reads;
+          const payer = node.sender!.address;
+          const partial = !node.effects?.balanceChanges || completed[index].balanceChangesTruncated;
+          if (partial) incompleteTransactions.add(node.digest);
+          const changes: FundingChange[] = [];
+          const payees = new Set<string>();
+          for (const change of completed[index].balanceChanges) {
+            const owner = change.owner?.address;
+            if (!owner || !valid.has(owner) || !change.amount || !change.coinType?.repr) continue;
+            changes.push({ address: owner, amount: change.amount, coinType: change.coinType.repr });
+            payees.add(owner);
+          }
+          for (const payee of payees) {
+            if (payee === payer || (payer !== address && payee !== address)) continue;
+            const key = `${node.digest}:${payer}:${payee}`;
+            if (seen.has(key)) continue;
+            const payment = paymentInTx(payer, payee, node.digest, node.effects?.timestamp ?? null, changes);
+            if (!payment) continue;
+            if (partial) payment.balance_changes_incomplete = true;
+            seen.add(key);
+            payments.push(payment);
+          }
+        }
+      };
+
+      // Newest pages first. They stop at the first failure, so what they read
+      // is one contiguous run from the newest transaction back.
+      let reason: string | null = null;
+      let reachedStart = false;
+      let before: string | null = null;
+      for (let page = 0; page < SET_PAYMENT_PAGES; page++) {
+        let connection: SetPage;
+        try {
+          connection = await readPage(setPaymentQuery(direction, "newest"), { addr: address, before });
+        } catch (err) {
+          reason = err instanceof Error ? err.message : String(err);
+          break;
+        }
+        await scan(connection.nodes);
+        if (connection.pageInfo?.hasPreviousPage !== true) {
+          reachedStart = true;
+          break;
+        }
+        before = connection.pageInfo?.startCursor ?? null;
+        if (!before) {
+          reason = "missing_cursor";
+          break;
+        }
+        if (page + 1 === SET_PAYMENT_PAGES) reason = "page_limit";
+      }
+      if (!reachedStart) {
+        // The earliest page holds a subject's first fundings. When it reaches
+        // a transaction the newest run already read, or the history ends
+        // inside it, the two runs cover the whole history.
+        try {
+          const earliest = await readPage(setPaymentQuery(direction, "earliest"), { addr: address });
+          const joined = earliest.pageInfo?.hasNextPage !== true || earliest.nodes.some((n) => read.has(n.digest));
+          await scan(earliest.nodes);
+          if (joined) reason = null;
+        } catch (err) {
+          if (reason === "page_limit" || reason === "missing_cursor" || reason === null) {
+            reason = err instanceof Error ? err.message : String(err);
+          }
+        }
+        if (reason) incomplete.push({ address, direction, reason });
+      }
+    }
+  }
+  payments.sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""));
+  return { payments, incomplete, incomplete_transactions: [...incompleteTransactions], invalid, requests };
 }

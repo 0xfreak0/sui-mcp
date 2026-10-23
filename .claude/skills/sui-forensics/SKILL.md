@@ -90,6 +90,9 @@ report to. `was_i_scammed` is its compatibility alias for this release only.
 4. **Attribute with `find_funding_source`**, or `find_funding_sources` for
    several addresses at once, which also reports co-funding and its denominators
    and every payment one subject signed to another (`subject_paid_subject`).
+   It walks up to 100 addresses; for a larger set, split it across calls and
+   pass the rest as `related_addresses` each time, then read
+   `subject_payment_scope` for histories it did not read end to end.
    The walk stops at a funder that paid more than 50 distinct addresses at least
    0.01 SUI or $0.10 each: that is an exchange or service, and its own ancestry
    says nothing about the subject. Addresses it paid only dust are counted apart

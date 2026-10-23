@@ -182,21 +182,46 @@ so the counts and truncation status agree.
 ## Comparing many funding chains
 
 `find_funding_sources` shares reads when chains converge, so it is cheaper
-than a separate single-address call for each subject. It accepts 1–100
-addresses. Full depth is the default, up to `max_hops` (five by default);
-`depth: "first_hop"` stops after one hop. That first hop is often the useful
-one, since deeper chains tend to end at early distribution wallets.
+than a separate single-address call for each subject. It walks 1–100
+`addresses`; `related_addresses` accepts up to 500 other subjects without
+walking them. For a larger set, split the walked addresses across calls and
+pass the other addresses as `related_addresses` each time. Full depth is the
+default, up to `max_hops` (five by default); `depth: "first_hop"` stops after
+one hop.
+
+```json
+{"addresses":["0xw1"],"related_addresses":["0xw2"],"depth":"first_hop"}
+```
+
+When `0xw2` first funded `0xw1`, the result includes
+`"subject_funded_subject":[{"funder":"0xw2","funded":"0xw1","funding_tx":"…"}]`.
+The related address has no funding-chain result of its own.
 
 Like the single walk, it stops at funders that paid more than 50 distinct
-addresses. A shared-funder count stops at the first funder that is itself a
-subject. Each common funder has fan-out and flow shape to distinguish a narrow
-origin from an exchange many unrelated users withdrew from.
+addresses. Each common funder has fan-out and flow shape to distinguish a
+narrow origin from an exchange many unrelated users withdrew from. A chain
+counts toward shared funders up to the first funder that is a walked subject.
+When a walked chain reaches a related address, funders past it count for
+that related address. `shared_funders` groups only walked chains in one call;
+compare `first_funder_by_subject` across split calls to find funders shared
+by subjects walked in different calls.
 
 Co-funding is measured against each transaction's total recipient count.
 Two subjects among two recipients suggests a bespoke payment; two among
-twenty can occur in an unrelated service batch. The tool reports subjects
-directly funding other subjects, and later payments one subject signed to
-another under `subject_paid_subject`, checked pairwise for up to 20 subjects.
+twenty can occur in an unrelated service batch. The tool reports direct
+funding and later signed payments under `subject_paid_subject`. Every ordered
+pair of up to 20 walked addresses is checked directly. Links with related
+addresses, and batches of more than 20 walked addresses, are read from each
+walked address's sent and affected transactions: the newest 150 per
+direction, plus the earliest 50 when the newest did not reach the start.
+This covers payments in either direction between a walked and a related
+address, and between walked addresses. Payments only between related
+addresses belong in a call that walks one of them.
+`subject_payment_scope.incomplete` names each history not read end to end:
+`page_limit` (the transactions between the earliest and newest pages were not
+read), `missing_cursor`, or the read error. `incomplete_transactions` names
+balance changes that could not all be read. An empty payment list with an
+incomplete scope cannot establish absence.
 Fundings within a minute form timing clusters, a lead for scripted setup
 rather than proof. Run the same read on a `sample_control_addresses` control
 group before interpreting rates.

@@ -28,7 +28,7 @@ import {
 } from "../utils/tx-connections.js";
 import type { GqlBalanceChangeNode } from "../utils/gql-adapters.js";
 import { capPayload, type ListCap } from "../utils/output-cap.js";
-import { findSubjectPayments, MAX_PAIRWISE_SUBJECTS, paymentInTx, type SubjectPayment } from "../utils/subject-payments.js";
+import { findSetSubjectPayments, findSubjectPayments, MAX_PAIRWISE_SUBJECTS, SET_PAGE_SIZE, SET_PAYMENT_PAGES, type SubjectPayment } from "../utils/subject-payments.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /**
@@ -559,12 +559,18 @@ export function registerFundingTools(server: McpServer) {
 
   server.tool(
     "find_funding_sources",
-    "(Incident investigation) Trace funding for many addresses together, cheaper than repeated find_funding_source calls. Walks stop at funders that paid over 50 addresses; shared-funder counts stop at the first funder that is itself a subject. Reports common funders with fan-out and flow shape, co-funding compared with each transaction's total recipients, direct subject-to-subject funding, and later signed payments between subjects (subject_paid_subject, checked pairwise for up to 20 subjects). It also groups fundings within one minute as possible scripted setup. A common exchange or shared batch need not imply common control. Compare a sample_control_addresses control group before interpreting any rate.",
+  "(Incident investigation) Trace funding for up to 100 addresses together, cheaper than repeated find_funding_source calls. Walks stop at funders that paid over 50 addresses. Reports common funders with fan-out and flow shape, counted up to the first funder that is a walked subject; co-funding compared with each transaction's total recipients; direct subject-to-subject funding; later signed payments between subjects (subject_paid_subject); and fundings within one minute as possible scripted setup. related_addresses (up to 500) are subjects that are not walked: split a larger set across calls and pass the rest as related_addresses each time. shared_funders groups only walked addresses; compare first_funder_by_subject across calls to find cross-batch matches. Payments among up to 20 walked subjects are checked pairwise; links with related subjects, and larger batches, come from bounded set scans. Read subject_payment_scope for the bound.",
     {
       addresses: addressListArg()
         .min(1)
         .max(100)
         .describe("Addresses to attribute (1-100)."),
+      related_addresses: addressListArg()
+        .max(500)
+        .optional()
+        .describe(
+          "Other subjects (up to 500), not walked: matched as funders and payment parties. A walked chain reaching one counts the rest of the chain as that subject's funding.",
+        ),
       max_hops: numArg()
         .int()
         .positive()
@@ -587,7 +593,7 @@ export function registerFundingTools(server: McpServer) {
           "'summary' (default) keeps origin, first funder/hop and dust counts; results and subject_paid_subject fit ~20k chars, prioritizing all shared-funder, subject-link, co-funding, burst and payment results. 'full' lists every chain hop, dust row and list row.",
         ),
     },
-    async ({ addresses, max_hops, depth, measure_fanout, detail }) => {
+    async ({ addresses, related_addresses, max_hops, depth, measure_fanout, detail }) => {
       const full = detail === "full";
       try {
         const maxHops = depth === "first_hop" ? 1 : Math.min(max_hops ?? 5, 12);
@@ -635,20 +641,28 @@ export function registerFundingTools(server: McpServer) {
         // per-address call can't see.
         //
         // A chain is counted only up to the first funder that is itself a
-        // subject. Everything past it is that subject's own ancestry, already
-        // counted under its own result, and counting it again turns one chain
-        // into "shared funding" of two addresses. The link itself is reported
-        // in subject_funded_subject. Walks also stop at a service-scale funder,
-        // so nothing reached through a hub is counted either.
-        const subjectSet = new Set(addresses);
+        // walked subject. Everything past it is that subject's own ancestry,
+        // already counted under its own result, and counting it again turns
+        // one chain into "shared funding" of two addresses. Past a related
+        // subject the chain is that subject's ancestry too, but no result here
+        // walks it, so its later funders are credited to the related subject:
+        // the same counts a call walking it would give. The link itself is
+        // reported in subject_funded_subject. Walks also stop at a
+        // service-scale funder, so nothing reached through a hub is counted.
+        const walkedSet = new Set(addresses);
+        const relatedSet = new Set((related_addresses ?? []).filter((a) => !walkedSet.has(a)));
+        const subjectSet = new Set([...walkedSet, ...relatedSet]);
         const byFunder = new Map<string, string[]>();
         for (const r of results) {
+          let member = r.address;
           for (const step of r.chain) {
             if (step.funded_by === "unknown") continue;
             const list = byFunder.get(step.funded_by) ?? [];
-            if (!list.includes(r.address)) list.push(r.address);
+            if (!list.includes(member)) list.push(member);
             byFunder.set(step.funded_by, list);
-            if (step.funded_by !== r.address && subjectSet.has(step.funded_by)) break;
+            if (step.funded_by === r.address || step.funded_by === member) continue;
+            if (walkedSet.has(step.funded_by)) break;
+            if (relatedSet.has(step.funded_by)) member = step.funded_by;
           }
         }
         const shared = [...byFunder.entries()]
@@ -682,7 +696,7 @@ export function registerFundingTools(server: McpServer) {
         // folded into shared_funders — otherwise the weaker claim borrows the
         // stronger one's confidence.
         const allSteps = results.flatMap((r) => r.chain);
-        const coFunded = detectCoFunding(allSteps, addresses);
+        const coFunded = detectCoFunding(allSteps, subjectSet);
 
         // Weigh each group against how many addresses its transaction actually
         // paid. The recipient-count lookup is capped, because this runs after a
@@ -726,14 +740,17 @@ export function registerFundingTools(server: McpServer) {
         // money went straight from one address under investigation to another,
         // so there is no base rate it could be confused with. Easy to miss by
         // eye, since the funder sits rows away in the input list.
-        const subjectLinks = detectSubjectLinks(allSteps, addresses);
+        const subjectLinks = detectSubjectLinks(allSteps, subjectSet);
 
         // Every payment between subjects, not only first fundings. A later
         // payment is as chain-derived as a first one, and the walk never sees
-        // it: it reads one inflow per address.
+        // it: it reads one inflow per address. Walked pairs are asked
+        // directly up to MAX_PAIRWISE_SUBJECTS; links with a related subject,
+        // or a larger batch, are read from the walked addresses' histories.
         const subjectPayments: SubjectPayment[] = [];
         let paymentScope: Record<string, unknown> | null = null;
-        if (addresses.length > 1 && addresses.length <= MAX_PAIRWISE_SUBJECTS) {
+        const pairwise = walkedSet.size > 1 && walkedSet.size <= MAX_PAIRWISE_SUBJECTS;
+        if (pairwise) {
           try {
             const scan = await findSubjectPayments(addresses);
             subjectPayments.push(...scan.payments);
@@ -752,19 +769,39 @@ export function registerFundingTools(server: McpServer) {
               error: `Not checked: ${err instanceof Error ? err.message : String(err)}`,
             };
           }
-        } else if (addresses.length > MAX_PAIRWISE_SUBJECTS) {
-          for (const payee of addresses) {
-            const { txs } = await fundingStep(payee, ctx);
-            for (const tx of txs) {
-              if (!tx.sender || tx.sender === payee || !subjectSet.has(tx.sender)) continue;
-              const payment = paymentInTx(tx.sender, payee, tx.digest, tx.timestamp, tx.changes);
-              if (payment) subjectPayments.push(payment);
-            }
-          }
-          paymentScope = {
-            method: `each subject's earliest ${EARLIEST_TXS} transactions`,
-            note: `More than ${MAX_PAIRWISE_SUBJECTS} subjects, so pairs were not queried one by one and later payments are not covered. Split the batch to check every pair.`,
+        }
+        if (subjectSet.size > 1 && (!pairwise || relatedSet.size > 0)) {
+          const method = `earliest ${SET_PAGE_SIZE} and newest ${SET_PAYMENT_PAGES * SET_PAGE_SIZE} sent and affected transactions of each walked address`;
+          const scope = {
+            method: pairwise ? `every ordered pair of walked subjects; ${method}` : method,
+            walked_addresses: walkedSet.size,
+            related_addresses: relatedSet.size,
           };
+          try {
+            const scan = await findSetSubjectPayments(addresses, subjectSet);
+            const known = new Set(subjectPayments.map((p) => `${p.digest}:${p.payer}:${p.payee}`));
+            subjectPayments.push(...scan.payments.filter((p) => !known.has(`${p.digest}:${p.payer}:${p.payee}`)));
+            subjectPayments.sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""));
+            const invalid = [...new Set([...((paymentScope?.invalid_addresses as string[] | undefined) ?? []), ...scan.invalid])];
+            paymentScope = {
+              ...paymentScope,
+              ...scope,
+              requests: scan.requests,
+              ...(scan.incomplete.length ? { incomplete: scan.incomplete } : {}),
+              ...(scan.incomplete_transactions.length ? { incomplete_transactions: scan.incomplete_transactions } : {}),
+              ...(invalid.length ? { invalid_addresses: invalid } : {}),
+              note:
+                "Payments with at least one walked party are checked; a payment between two related addresses needs a call that walks one of them. " +
+                "A history under incomplete was not read end to end: page_limit means the transactions between its earliest and newest pages were not read. " +
+                "Payments there, or in an incomplete_transactions digest, may be missing.",
+            };
+          } catch (err) {
+            paymentScope = {
+              ...paymentScope,
+              ...scope,
+              history_error: `Not checked: ${err instanceof Error ? err.message : String(err)}`,
+            };
+          }
         }
         await prefetchCoinScale(subjectPayments.flatMap((p) => p.received.map((r) => r.coinType)));
         const firstFundingKeys = new Set(subjectLinks.map((l) => `${l.funder}>${l.funded}>${l.funding_tx}`));
@@ -835,6 +872,7 @@ export function registerFundingTools(server: McpServer) {
 
         const base = {
           address_count: addresses.length,
+          ...(relatedSet.size ? { related_address_count: relatedSet.size } : {}),
           depth: depth ?? "full",
           ...(formerNames.length
             ? {
@@ -912,9 +950,9 @@ export function registerFundingTools(server: McpServer) {
                         ...(p.balance_changes_incomplete ? { balance_changes_incomplete: true } : {}),
                       })),
                       subject_payment_note:
-                        "Transactions one address under investigation signed that credited another, with the payee's net " +
-                        "gain per coin. Every payment is listed, not only first fundings, which carry first_funding. Each " +
-                        "digest shows the transfer. A one-way payment carries no clustering weight here or in build_wallet_edges.",
+                        "Transactions a subject signed that credited another subject, with the payee's net gain per coin. " +
+                        "Every payment found within subject_payment_scope is listed; first fundings carry first_funding. " +
+                        "Each digest shows the transfer. A one-way payment carries no clustering weight here or in build_wallet_edges.",
                     }
                   : {}),
                 subject_payment_scope: paymentScope,
@@ -932,6 +970,13 @@ export function registerFundingTools(server: McpServer) {
                   "under co_funded_in_one_transaction, and counting it again would tally one fact as two.",
               }
             : {}),
+     ...(relatedSet.size
+      ? {
+       first_funder_by_subject: Object.fromEntries(results.map((r) => [r.address, r.first_funder])),
+       shared_funders_scope:
+        "shared_funders groups only walked addresses; compare first_funder_by_subject across calls for cross-batch matches. Related addresses are not walked.",
+      }
+      : {}),
           shared_funders: shared.map(([funder, addrs]) => ({
             funder,
             ...(nameMap.get(funder) ? { name: nameMap.get(funder) } : {}),
@@ -968,7 +1013,7 @@ export function registerFundingTools(server: McpServer) {
         ]);
         type Result = (typeof summaryRows)[number] & { sponsored_by?: unknown; incomplete_balance_changes?: unknown; origin_unread_at?: unknown };
         type Payment = { first_funding?: boolean };
-        const args = { addresses, max_hops, depth, measure_fanout };
+        const args = { addresses, related_addresses, max_hops, depth, measure_fanout };
         const { payload } = capPayload(
           "find_funding_sources",
           args,
@@ -994,6 +1039,12 @@ export function registerFundingTools(server: McpServer) {
               keepOrder: true,
               keep: (p: Payment) => p.first_funding === true,
             } satisfies ListCap<Payment>,
+            "subject_payment_scope.incomplete": {
+              budget: 3_000,
+              keepOrder: true,
+              keep: (h: { reason: string }) => h.reason !== "page_limit",
+            } satisfies ListCap<{ reason: string }>,
+            "subject_payment_scope.incomplete_transactions": { budget: 1_500, keepOrder: true },
           },
           { full: false, stored: fullPayload, next_call: { tool: "find_funding_sources", repeat_with: { detail: "full" } } },
         );

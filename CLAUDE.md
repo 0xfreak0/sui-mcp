@@ -1755,17 +1755,38 @@ Rules for `walkFunding` and the batch tool, in `src/tools/funding.ts`:
   reading. Overriding the interpretation alone printed `narrow` beside "weak
   on its own" for the walrus claim-farm funder `0xb4313964…`.
 - **A chain counts toward `shared_funders` only up to the first funder that is
-  itself a subject.** Past that point it is the other subject's ancestry,
+  a walked subject.** Past that point it is the other subject's ancestry,
   already counted under its own result. Counting it again made one chain read
   as two addresses sharing a narrow funder. The link is in
   `subject_funded_subject`.
-- **`subject_paid_subject` asks each ordered pair.** `sentAddress` and
-  `affectedAddress` combine in one filter, so the answer does not depend on how
-  far back either history runs, and ten pairs fit in one aliased document
-  (`src/utils/subject-payments.ts`). Addresses are validated with
-  `normalizeWatchAddress` before batching. Pairs grow with the square of the
-  batch, so above 20 subjects only each subject's earliest transactions are
-  checked, and `subject_payment_scope` says so. It adds no clustering weight.
+- **A related address is a subject that is not walked.** `find_funding_sources`
+  walks at most 100 `addresses`; up to 500 `related_addresses` count as
+  subjects for `subject_funded_subject`, co-funding and `subject_paid_subject`
+  but get no result row. A larger set is split across calls, each passing the
+  rest as related. A walked chain that reaches a related subject credits its
+  later funders to that subject, not to the walked one, so shared-funder
+  counts for those reached chains match a call that walks every address.
+  Stopping there instead lost the funder F of A <- R <- F and B <- F in
+  every split. Shared funders of two addresses walked in different calls
+  are not compared: `first_funder_by_subject` lists every walked subject's
+  first funder even when capped result rows omit some, so callers can
+  compare the maps across calls. It never claims a related address was walked.
+- **`subject_paid_subject` asks each ordered pair of up to 20 walked
+  subjects.** `sentAddress` and `affectedAddress` combine in one filter, so
+  the answer does not depend on how far back either history runs, and ten
+  pairs fit one aliased document (`src/utils/subject-payments.ts`). Links
+  with related subjects, and batches of more than 20 walked subjects, are
+  read from each walked address's sent and affected histories: up to three
+  newest pages of 50 per direction, then the earliest page of 50 when those
+  did not reach the start, since a subject's first fundings sit there. The
+  earliest page meeting a digest the newest pages read closes the gap. Sender
+  and net balance-change recipients are intersected with every subject. A
+  payment between two related addresses needs a call that walks one of them.
+  `subject_payment_scope.incomplete` names each address and direction not
+  read end to end (`page_limit`, `missing_cursor` or the read error) and
+  `incomplete_transactions` the digests whose balance changes were not all
+  read; neither is a negative finding. Addresses are validated with
+  `normalizeWatchAddress` before batching. It adds no clustering weight.
 
 `measureFanout` follows the same asymmetry: `hub` is proven by what was seen,
 while `narrow` or `distributor` off a truncated scan carries

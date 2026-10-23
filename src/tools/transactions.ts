@@ -1284,6 +1284,9 @@ export function registerTransactionTools(server: McpServer) {
                 transactions,
                 has_next_page: hasNextPage,
                 next_cursor: nextCursor,
+                ...(hasNextPage && nextCursor
+                  ? { next_call: { tool: "query_transactions", repeat_with: { order: direction, cursor: nextCursor } } }
+                  : {}),
                 ...(hasNextPage && nodes.length < size && reads >= QUERY_TRANSACTIONS_MAX_READS
                   ? {
                       scan: {

@@ -67,6 +67,12 @@ export interface ValuationContext {
   atCheckpoint?: string;
   /** Unix seconds for historical prices; now when absent. */
   atTime?: number;
+  /** Optional per-call bound for owned-object scans and bounded position readers. */
+  ownedMaxScan?: number;
+  /** Optional number of NFT collection types valued in one call (default 100). */
+  nftMaxCollections?: number;
+  /** Multiplier for a collection market's bounded listing and sale scans (default 1). */
+  nftMarketDepth?: number;
   /**
    * Reads shared across one tool call (prices at one time, for one), so a
    * call valuing many objects does not repeat them. Keys are the reader's.

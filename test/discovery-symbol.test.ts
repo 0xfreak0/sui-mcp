@@ -238,3 +238,25 @@ describe("searchTokens when an off-mainnet metadata page fails", () => {
     });
   });
 });
+
+describe("bounded metadata scan continuation", () => {
+  it("resumes after the last successful page without repeating its matches", async () => {
+    const NEXT = { coinType: "0x8::new::NEXT", name: "Next", symbol: "NEXT" };
+    mockGqlQuery.mockResolvedValueOnce(metadataPage([NEXT]));
+    const continued = await searchTokens("next", "cursor1");
+    expect(continued.tokens.map((token) => token.coin_type)).toEqual([NEXT.coinType]);
+    expect(mockGqlQuery).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ after: "cursor1" }));
+    expect(mockSearchLiveTickers).not.toHaveBeenCalled();
+  });
+
+  it("refuses a non-advancing cursor rather than cycling over the same page", async () => {
+    const COIN = { coinType: "0x9::new::NEW", name: "New", symbol: "NEW" };
+    mockGqlQuery.mockResolvedValueOnce(metadataPage([COIN], true));
+    const continued = await searchTokens("new", "cursor1");
+    expect(continued).toMatchObject({
+      tokens: [{ coin_type: COIN.coinType }],
+      scan: { truncated: true, failed: expect.stringContaining("no advancing cursor") },
+    });
+    expect(mockGqlQuery).toHaveBeenCalledTimes(1);
+  });
+});

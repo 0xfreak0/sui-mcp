@@ -252,6 +252,8 @@ interface Found {
   containers: Container[];
   nested: Array<ObjectToValue & { path: string }>;
   read: Array<{ id: string; kind: ContainerKind; entries_read: number; complete: boolean }>;
+  /** Vector items inspected in this call, raised explicitly for large holdings. */
+  vectorMax: number;
   /** Parts left unread: vector elements, struct levels, containers past a bound. */
   cut: string[];
 }
@@ -265,8 +267,8 @@ function walk(layout: Layout, json: unknown, path: string, depth: number, level:
   if (typeof layout === "string" || json === null || json === undefined) return;
   if ("vector" in layout) {
     if (!Array.isArray(json)) return;
-    json.slice(0, MAX_VECTOR_ITEMS).forEach((item, i) => walk(layout.vector, item, `${path}[${i}]`, depth, level, found));
-    if (json.length > MAX_VECTOR_ITEMS) found.cut.push(`${json.length - MAX_VECTOR_ITEMS} elements of ${path} past the first ${MAX_VECTOR_ITEMS}`);
+    json.slice(0, found.vectorMax).forEach((item, i) => walk(layout.vector, item, `${path}[${i}]`, depth, level, found));
+    if (json.length > found.vectorMax) found.cut.push(`${json.length - found.vectorMax} elements of ${path} past the first ${found.vectorMax}`);
     return;
   }
   if ("enum" in layout) {
@@ -336,8 +338,8 @@ const FIELD_PAGE = `fragment F on DynamicFieldConnection {
 }`;
 
 const ENTRIES_QUERY = `${FIELD_PAGE}
-query($id: SuiAddress!, $after: String, $cp: UInt53) {
-  address(address: $id, atCheckpoint: $cp) { dynamicFields(first: ${GQL_PAGE}, after: $after) { ...F } }
+query($id: SuiAddress!, $after: String, $cp: UInt53, $first: Int) {
+    address(address: $id, atCheckpoint: $cp) { dynamicFields(first: $first, after: $after) { ...F } }
 }`;
 
 function pageEntries(conn: FieldPage, entries: Entry[]): void {
@@ -352,14 +354,15 @@ function pageEntries(conn: FieldPage, entries: Entry[]): void {
 /** A container's entries (or an object's own dynamic fields), up to {@link MAX_ENTRIES}. */
 async function readEntries(id: string, ctx: ValuationContext): Promise<EntriesRead> {
   const entries: Entry[] = [];
+  const max = ctx.ownedMaxScan ?? MAX_ENTRIES;
   let after: string | null = null;
   for (;;) {
-    const d: EntriesPage = await gqlQuery<EntriesPage>(ENTRIES_QUERY, { id, after, cp: ctx.atCheckpoint === undefined ? null : Number(ctx.atCheckpoint) });
+    const d: EntriesPage = await gqlQuery<EntriesPage>(ENTRIES_QUERY, { id, after, cp: ctx.atCheckpoint === undefined ? null : Number(ctx.atCheckpoint), first: Math.min(GQL_PAGE, max - entries.length) });
     const conn = d.address?.dynamicFields;
     if (!conn) return { entries, complete: true };
     pageEntries(conn, entries);
     if (!conn.pageInfo.hasNextPage) return { entries, complete: true };
-    if (!conn.pageInfo.endCursor || entries.length >= MAX_ENTRIES) return { entries, complete: false };
+    if (!conn.pageInfo.endCursor || conn.pageInfo.endCursor === after || entries.length >= max) return { entries, complete: false };
     after = conn.pageInfo.endCursor;
   }
 }
@@ -444,10 +447,11 @@ async function readContainers(found: Found, ctx: ValuationContext): Promise<void
       open.push(c);
     }
     if (open.length === 0) return;
-    const room = MAX_CONTAINERS - found.read.length;
+    const max = ctx.ownedMaxScan ?? MAX_CONTAINERS;
+    const room = max - found.read.length;
     const now = open.filter((c) => c.level <= MAX_CONTAINER_DEPTH).slice(0, Math.max(0, room));
     for (const c of open.filter((c) => !now.includes(c))) {
-      found.cut.push(c.level > MAX_CONTAINER_DEPTH ? `${c.kind} ${c.id}, ${c.level} containers deep` : `${c.kind} ${c.id}, past ${MAX_CONTAINERS} containers per object`);
+      found.cut.push(c.level > MAX_CONTAINER_DEPTH ? `${c.kind} ${c.id}, ${c.level} containers deep` : `${c.kind} ${c.id}, past ${max} containers per object`);
     }
     const reads = await Promise.all(now.map((c) => (c.preread ? Promise.resolve(c.preread) : readEntries(c.id, ctx)).then((r) => ({ c, ...r }))));
     const valueTypes = reads.flatMap((r) => r.entries.map((e) => e.type)).filter((t) => !BALANCE.test(t) && !COIN.test(t) && !nestedReader(t));
@@ -475,7 +479,7 @@ export interface HeldOptions {
  * holds nothing.
  */
 export async function valueHeld(obj: ObjectToValue, ctx: ValuationContext, options: HeldOptions): Promise<ValuerResult> {
-  const found: Found = { legs: new Map(), fields: false, where: [], containers: [], nested: [], read: [], cut: [] };
+  const found: Found = { legs: new Map(), fields: false, where: [], containers: [], nested: [], read: [], cut: [], vectorMax: ctx.ownedMaxScan ?? MAX_VECTOR_ITEMS };
   if (mayHoldValue(obj.json)) {
     await prepareHeldTypes([obj.type]);
     const layout = layouts.get(keyOf(obj.type));
@@ -515,6 +519,7 @@ export async function valueHeld(obj: ObjectToValue, ctx: ValuationContext, optio
     unread.push(...inner.unread);
   }
 
+  if (found.cut.length > 0) unread.push({ what: obj.object_id, reason: `Held balances only partly read: ${found.cut.join("; ")}` });
   const cut = found.cut.length > 0 ? ` A floor: ${found.cut.slice(0, 3).join("; ")}${found.cut.length > 3 ? `; and ${found.cut.length - 3} more` : ""} were not read.` : "";
   if (found.legs.size > 0) {
     const coins = [...found.legs.keys()];
@@ -576,7 +581,7 @@ async function valueHoldings(ctx: ValuationContext): Promise<ValuerResult> {
   let settle: (w: HeldWalk) => void = () => undefined;
   if (ctx.memo) ctx.memo.set(walkKey(ctx.owner), new Promise<HeldWalk>((resolve) => (settle = resolve)));
   try {
-    const walked = await ownedObjectsWalk(ctx.owner, ctx.memo);
+    const walked = await ownedObjectsWalk(ctx.owner, ctx.memo, ctx.ownedMaxScan ?? OWNED_WALK_MAX);
     const candidates = walked.objects.filter((o) => !COIN.test(o.type) && readerFor(o.type, true) === null);
     // A layout is read only for a type whose object's JSON could hold a coin.
     await prepareHeldTypes(candidates.filter((o) => mayHoldValue(o.json)).map((o) => o.type));
@@ -589,7 +594,7 @@ async function valueHoldings(ctx: ValuationContext): Promise<ValuerResult> {
     const rest = candidates.filter((o) => !holding.includes(o) && !FRAMEWORK.test(o.type));
     const firsts = new Map<string, OwnedObjectJson>();
     for (const o of rest) if (!firsts.has(o.type)) firsts.set(o.type, o);
-    const probes = [...firsts.values(), ...rest.filter((o) => firsts.get(o.type) !== o)].slice(0, MAX_FIELD_PROBES);
+    const probes = [...firsts.values(), ...rest.filter((o) => firsts.get(o.type) !== o)].slice(0, ctx.ownedMaxScan ?? MAX_FIELD_PROBES);
     // An object that is itself a table has its entries read as the table's.
     const fieldTargets = [...holding.filter((o) => !containerKind(o.type)), ...probes];
     const fields = await readOwnFieldsBatch(fieldTargets.map((o) => o.objectId));
@@ -617,7 +622,7 @@ async function valueHoldings(ctx: ValuationContext): Promise<ValuerResult> {
     if (!walked.complete) {
       unread.push({
         what: "owned objects",
-        reason: `Only the first ${OWNED_WALK_MAX} objects this address owns were read, so balances held inside the rest are not valued.`,
+        reason: `Only the first ${ctx.ownedMaxScan ?? OWNED_WALK_MAX} objects this address owns were read, so balances held inside the rest are not valued.`,
       });
     }
     return { positions: results.flatMap((r) => r.positions), unread };

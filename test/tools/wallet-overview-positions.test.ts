@@ -41,15 +41,30 @@ let lstUsd: number | null = 4.2;
 registerValuer({ name: "lst", value: async () => ({ positions: [position("lst", lstUsd, { receipt_coin_types: [LST] })], unread: [] }) });
 registerValuer({ name: "stakes", value: async () => ({ positions: [position("staked_sui", 10), position("clmm", null)], unread: [] }) });
 let nftRuns = 0;
-registerValuer({ name: "nft", value: async () => { nftRuns++; return { positions: [position("nft", 50)], unread: [] }; } });
+registerValuer({
+  name: "nft", value: async (ctx) => {
+    nftRuns++;
+    return ctx.nftMaxCollections === 1
+      ? { positions: [position("nft", 50)], unread: [{ what: "nft", reason: "2 items not valued: past the 1 most-held collections." }] }
+      : { positions: [position("nft", 50)], unread: [] };
+  }
+});
 registerValuer({ name: "broken", value: async () => { throw new Error("service down"); } });
+let bounded = false;
+registerValuer({
+  name: "bounded",
+  value: async (ctx) => bounded
+    ? { positions: [], unread: [{ what: "owned objects", reason: `only the first ${ctx.ownedMaxScan ?? 5_000} owned objects were scanned` }] }
+    : { positions: [], unread: [] },
+});
 
-const overview = async (include_nfts = true) =>
-  JSON.parse((await tools.get("get_wallet_overview")!({ address: W, include_prices: true, include_nfts })).content[0].text);
+const overview = async (include_nfts = true, args: Record<string, unknown> = {}) =>
+  JSON.parse((await tools.get("get_wallet_overview")!({ address: W, include_prices: true, include_nfts, ...args })).content[0].text);
 
 describe("get_wallet_overview positions", () => {
   beforeEach(() => {
     lstUsd = 4.2;
+    bounded = false;
     mockGqlQuery.mockResolvedValue({
       address: {
         defaultNameRecord: null,
@@ -147,5 +162,53 @@ describe("get_wallet_overview positions", () => {
     expect(data.holdings_truncated).toBe(false);
     expect(data.holdings.map((h: { coin_type: string }) => h.coin_type)).toEqual([LATE, SUI]);
     expect(data.coins_value_usd).toBe(506);
+  });
+
+  it("continues after twenty balance pages without calling the slice a whole portfolio", async () => {
+    mockGqlQuery.mockImplementation(async (_q: string, v: { balanceAfter?: string; after?: string }) => {
+      const after = v?.after ?? v?.balanceAfter;
+      const index = after ? Number(after.slice(1)) : 0;
+      const coin = `0x${(index + 1).toString(16).padStart(64, "0")}::coin::COIN`;
+      const balances = {
+        nodes: [{ coinType: { repr: coin }, totalBalance: "1000000000", coinBalance: "1000000000", addressBalance: "0" }],
+        pageInfo: { hasNextPage: index < 20, endCursor: index < 20 ? `c${index + 1}` : null },
+      };
+      return v?.after ? { address: { balances } } : {
+        address: { defaultNameRecord: null, balances },
+        transactions: { nodes: [] },
+      };
+});
+    const first = JSON.parse((await tools.get("get_wallet_overview")!({
+      address: W, include_prices: false,
+    })).content[0].text);
+    expect(first.holdings_count).toBe(20);
+    expect(first.holdings_truncated).toBe(true);
+    expect(first.holdings_next_call.args.balance_cursor).toBe("c20");
+    const next = JSON.parse((await tools.get("get_wallet_overview")!({
+      ...first.holdings_next_call.args, include_prices: false,
+    })).content[0].text);
+    expect(next.holdings_count).toBe(1);
+    expect(next.holdings_truncated).toBe(true);
+    expect(next.holdings_next_call).toBeUndefined();
+  });
+  it("offers a raised valuation scan call without discarding the balance block", async () => {
+    bounded = true;
+    const first = await overview(false);
+    expect(first.owned_scan_next_call).toEqual({
+      tool: "get_wallet_overview",
+      args: { address: W, include_prices: true, include_nfts: false, owned_max_scan: 10_000 },
+    });
+    const raised = await overview(false, { owned_max_scan: 10_000 });
+    expect(raised.unread).toContainEqual({ what: "owned objects", reason: "only the first 10000 owned objects were scanned" });
+    expect(raised.owned_scan_next_call.args.owned_max_scan).toBe(20_000);
+  });
+  it("offers a raised NFT collection valuation call with the same balance block", async () => {
+    const first = await overview(true, { nft_max_collections: 1 });
+    expect(first.nft_scan_next_call).toEqual({
+      tool: "get_wallet_overview",
+      args: { address: W, include_prices: true, include_nfts: true, nft_max_collections: 2 },
+    });
+    const next = await overview(true, first.nft_scan_next_call.args);
+    expect(next.nft_scan_next_call).toBeUndefined();
   });
 });

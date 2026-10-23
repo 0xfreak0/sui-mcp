@@ -174,6 +174,9 @@ export function registerEventTools(server: McpServer) {
                 ...(typeResolution ? { event_type_resolution: typeResolution } : {}),
                 ...(moduleFilter?.resolution ? { module_scope: moduleFilter.resolution } : {}),
                 ...objectEvents,
+                ...(objectEvents.has_next_page && objectEvents.next_cursor
+                  ? { next_call: { tool: "query_events", repeat_with: { order: direction, cursor: objectEvents.next_cursor } } }
+                  : {}),
               }),
             }],
           };
@@ -269,6 +272,9 @@ export function registerEventTools(server: McpServer) {
                 events,
                 has_next_page: hasNextPage,
                 next_cursor: nextCursor,
+                ...(hasNextPage && nextCursor
+                  ? { next_call: { tool: "query_events", repeat_with: { order: direction, cursor: nextCursor } } }
+                  : {}),
                 ...(events.length === 0
                   ? {
                       no_results_hint: typeFilter?.resolution?.unverified

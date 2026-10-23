@@ -136,6 +136,36 @@ describe("resolveKioskCapHolder", () => {
     expect(await resolveKioskCapHolder(KIOSK)).toEqual({ status: "cap_not_found", scanned_pages: 1, truncated: false });
   });
 
+  it("can raise the creation-transaction page budget to reach a late cap", async () => {
+    mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown>) => {
+      if (query.includes("objectVersions")) return { objectVersions: { nodes: [{ previousTransaction: { digest: CREATION_TX } }] } };
+      if (query.includes("objectChanges")) {
+        if (vars.after !== "page-2") {
+          const next = vars.after === "page-1" ? "page-2" : "page-1";
+          return { transaction: { effects: { objectChanges: { nodes: [], pageInfo: { hasNextPage: true, endCursor: next } } } } };
+        }
+        return {
+          transaction: {
+            effects: {
+              objectChanges: {
+                nodes: [{
+                  address: CAP, outputState: {
+                    owner: { __typename: "AddressOwner", address: { address: ORIGINAL_HOLDER } },
+                    asMoveObject: { contents: { type: { repr: "0x2::kiosk::KioskOwnerCap" }, json: { for: KIOSK } } },
+                  }
+                }],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              }
+            }
+          }
+        };
+      }
+      return { object: { owner: { __typename: "AddressOwner", address: { address: CURRENT_HOLDER } } } };
+    });
+    expect(await resolveKioskCapHolder(KIOSK, 2)).toEqual({ status: "cap_not_found", scanned_pages: 2, truncated: true });
+    expect(await resolveKioskCapHolder(KIOSK, 3)).toMatchObject({ status: "resolved", result: { cap_id: CAP, holder: { address: CURRENT_HOLDER } } });
+  });
+
   /**
    * A personal kiosk's `KioskOwnerCap` is wrapped inside a `PersonalKioskCap`
    * the wallet owns, so the cap is no longer a top-level object. GraphQL

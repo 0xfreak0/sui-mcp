@@ -127,6 +127,32 @@ describe("get_validators", () => {
     expect(data.validators[2].name).toBe("high");
   });
 
+  it("does not report a segment's count or ranking as the whole validator set", async () => {
+    let pages = 0;
+    mockGqlQuery.mockImplementation(() => {
+      pages++;
+      return Promise.resolve({
+        epoch: {
+          epochId: 700,
+          validatorSet: {
+            activeValidators: gqlPage([makeValidator(`v${pages}`, String(pages), "0")],
+              { hasNextPage: pages <= 20, endCursor: `cur${pages}` }),
+            contents: { json: { total_stake: "1000000" } },
+          },
+        },
+      });
+    });
+    const handler = tools.get("get_validators")!;
+    const initial = JSON.parse((await handler({ detail: "full" })).content[0].text);
+    expect(initial.active_validator_count).toBeNull();
+    expect(initial.scan).toMatchObject({ complete: false, validators_read: 20 });
+    expect(initial.scan.next_call.args.cursor).toBe("cur20");
+    const continued = JSON.parse((await handler(initial.scan.next_call.args)).content[0].text);
+    expect(continued.active_validator_count).toBeNull();
+    expect(continued.scan.complete).toBe(false);
+    expect(continued.validators).toHaveLength(1);
+  });
+
   describe("a set larger than one page", () => {
     // 60 validators with distinct stakes, served in pages of 50. The largest
     // stakes sit on the second page, so a cut made by page order rather than
@@ -236,10 +262,12 @@ describe("get_validators", () => {
       } as unknown as McpServer));
       const network = DEFAULT_NETWORK === "testnet" ? "mainnet" : "testnet";
       mockGqlQuery.mockImplementation(async () => ({
-        epoch: { epochId: getNetwork() === network ? 900 : 500, validatorSet: {
+        epoch: {
+          epochId: getNetwork() === network ? 900 : 500, validatorSet: {
           activeValidators: gqlPage(getNetwork() === network ? all.slice(0, 4) : [makeValidator("other-chain", "1", "1")]),
           contents: { json: { total_stake: "10000000000" } },
-        } },
+          }
+        },
       }));
       const call = wrapped.get("get_validators")!;
       const limited = JSON.parse((await call({ network, limit: 2, sort_by: "commission" })).content[0].text);
@@ -293,6 +321,31 @@ describe("get_validators (detail via address)", () => {
 
     expect(data.in_active_set).toBe(false);
     expect(data.note).toContain("not found");
+  });
+
+  it("keeps missing membership unknown across truncated segments", async () => {
+    let reads = 0;
+    mockGqlQuery.mockImplementation(() => {
+      reads++;
+      return Promise.resolve({
+        epoch: {
+          epochId: 700,
+          validatorSet: {
+            activeValidators: gqlPage(
+              reads === 21 ? [makeValidator("target", "100", "0")] : [makeValidator("other", "100", "0")],
+              { hasNextPage: reads < 21, endCursor: `cur${reads}` },
+            ),
+          },
+        },
+      });
+    });
+    const handler = tools.get("get_validators")!;
+    const initial = JSON.parse((await handler({ address: "0xtarget" })).content[0].text);
+    expect(initial.in_active_set).toBeNull();
+    expect(initial.scan.next_call.args.cursor).toBe("cur20");
+    const continued = JSON.parse((await handler(initial.scan.next_call.args)).content[0].text);
+    expect(continued.in_active_set).toBe(true);
+    expect(mockGqlQuery.mock.calls[20][1].after).toBe("cur20");
   });
 });
 
@@ -350,6 +403,26 @@ describe("get_staking_summary", () => {
     expect(data.position_count).toBe(3);
     expect(data.total_staked_mist).toBe("7000000000");
     expect(data.truncated).toBe(false);
+  });
+
+  it("raises the current-position walk when it reaches its requested bound", async () => {
+    const objects = [
+      stakedSui("0xs1", "0xp", "1000000000", "1"),
+      stakedSui("0xs2", "0xp", "2000000000", "1"),
+      stakedSui("0xs3", "0xp", "4000000000", "1"),
+    ];
+    mockSui.listOwnedObjects.mockImplementation(async ({ limit }: { limit: number }) => ({
+      objects: objects.slice(0, limit),
+      hasNextPage: limit < objects.length,
+      cursor: limit < objects.length ? "c1" : null,
+    }));
+    const handler = tools.get("get_staking_summary")!;
+    const first = JSON.parse((await handler({ address: "0xwallet", max_positions: 2 })).content[0].text);
+    expect(first.total_staked_mist).toBeNull();
+    expect(first.position_scan_next_call.args).toMatchObject({ address: "0xwallet", max_positions: 4 });
+    const resumed = JSON.parse((await handler(first.position_scan_next_call.args)).content[0].text);
+    expect(resumed.position_count).toBe(3);
+    expect(resumed.total_staked_mist).toBe("7000000000");
   });
 
   it("gives no total when the walk could not reach the end", async () => {
@@ -414,9 +487,11 @@ describe("get_staking_summary", () => {
           serviceConfig: { owned: range(990, 1000), transactions: range(0, 1000), objects: range(0, 1000) },
           checkpoint: { sequenceNumber: 100, timestamp: "2025-01-01T00:00:00Z", epoch: { epochId: 50 } },
         };
-        if (query.includes("transactions(filter:")) return { transactions: {
+        if (query.includes("transactions(filter:")) return {
+          transactions: {
           nodes: [], pageInfo: { hasNextPage: false, hasPreviousPage: false, endCursor: null, startCursor: null },
-        } };
+          }
+        };
         throw new Error("Fixture reward rates unavailable");
       });
       const data = JSON.parse((await tools.get("get_staking_summary")!({

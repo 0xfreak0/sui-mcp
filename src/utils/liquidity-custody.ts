@@ -27,7 +27,7 @@ export const LIQUIDITY_LP_SCAN_LIMIT = 1000;
 export const LIQUIDITY_HOLDER_DISPLAY_LIMIT = 100;
 /** Wall-clock budget shared by the position scans of one call, checked between pages; a stopped scan is incomplete and says so. */
 export const LIQUIDITY_TIME_BUDGET_MS = 35_000;
-const TIME_STOP = `Stopped at the ${LIQUIDITY_TIME_BUDGET_MS / 1000} s time budget`;
+const timeStop = (timeBudgetMs: number) => `Stopped at the ${timeBudgetMs / 1000} s time budget`;
 /** Characters of holder rows per pool: three pools' rows and the rest of analyze_token fit its 50k budget. */
 export const LIQUIDITY_HOLDER_BUDGET = 9_000;
 
@@ -51,18 +51,19 @@ interface LiquidityDisplayRow { address: string; kind: LiquidityHolderKind; amou
 
 /** Budgeted list cap with a complete per-pool store copy and an advancing page. */
 export function capLiquidityHolders<T extends LiquidityDisplayRow>(
-  holders: T[], offset: number, coinType: string, poolOffset: number, poolId: string, budget = LIQUIDITY_HOLDER_BUDGET
+  holders: T[], offset: number, coinType: string, poolOffset: number, poolId: string, budget = LIQUIDITY_HOLDER_BUDGET,
+  continuationArgs: Record<string, unknown> = {},
 ) {
   const page = holders.slice(offset);
   const indices = new Map(page.map((row, index) => [row, offset + index]));
   const nextCall = (nextOffset: number): NextCall => ({
     tool: "analyze_token", args: {
-      query: coinType, include_holders: false, liquidity_pool_offset: poolOffset, liquidity_holder_pool: poolId, liquidity_offset: nextOffset
+      query: coinType, include_holders: false, liquidity_pool_offset: poolOffset, liquidity_holder_pool: poolId, liquidity_offset: nextOffset, ...continuationArgs,
     }
   });
   const { payload } = capPayload(
     "analyze_token",
-    { query: coinType, include_holders: false, liquidity_pool_offset: poolOffset, liquidity_holder_pool: poolId, liquidity_offset: offset },
+    { query: coinType, include_holders: false, liquidity_pool_offset: poolOffset, liquidity_holder_pool: poolId, liquidity_offset: offset, ...continuationArgs },
     { holders: page },
     {
       holders: {
@@ -81,7 +82,7 @@ export function capLiquidityHolders<T extends LiquidityDisplayRow>(
   } | undefined;
   const shown = payload.holders as T[];
   if (omitted) {
-    const next = nextCall(offset + shown.length);
+    const next = nextCall(offset + omitted.lists.holders.from);
     omitted.next_call = next;
     omitted.lists.holders.next_call = next;
     omitted.lists.holders.from += offset;
@@ -93,7 +94,7 @@ interface CustodyHolding { address: string; amount: bigint; counterpart?: bigint
 /** Positions whose liquidity counts toward the total while their holder could not be read. */
 interface OwnerUnread { positions: number; amount: bigint; counterpart: bigint; position_ids: string[] }
 const OWNER_UNREAD_IDS = 10;
-interface ScanResult { rows: CustodyHolding[]; total: bigint | null; counterpart_total?: bigint; counterpart_type?: string; scanned: number; incomplete: boolean; reason?: string; unit: string; owner_unread?: OwnerUnread; locked_in_pool?: bigint; fee_in_pool?: bigint; time_budget_reached?: boolean }
+interface ScanResult { rows: CustodyHolding[]; total: bigint | null; counterpart_total?: bigint; counterpart_type?: string; scanned: number; incomplete: boolean; reason?: string; unit: string; owner_unread?: OwnerUnread; locked_in_pool?: bigint; fee_in_pool?: bigint; time_budget_reached?: boolean; limit_reached?: boolean }
 
 /** All positions of one owner contribute to that owner's pool share. */
 export function aggregateCustodyRows(rows: CustodyHolding[]): CustodyHolding[] {
@@ -164,7 +165,7 @@ async function readStates(ids: string[]): Promise<Array<{ type: string; json: Re
   return results.flat();
 }
 
-async function readLp(pool: PoolCandidate, state: { type: string; json: Record<string, unknown> }): Promise<ScanResult> {
+async function readLp(pool: PoolCandidate, state: { type: string; json: Record<string, unknown> }, scanLimit: number, timeBudgetMs: number): Promise<ScanResult> {
   const lpType = lpCoinOf(pool);
   if (!lpType) return { rows: [], total: null, scanned: 0, incomplete: true, unit: "LP", reason: "The pool's fungible LP coin type is not known." };
   // Minted supply; FlowX v2's pending protocol fee mint is not held by anyone until the next burn mints it.
@@ -180,7 +181,7 @@ async function readLp(pool: PoolCandidate, state: { type: string; json: Record<s
     : pool.protocol === "aftermath" ? bigField(state.json.illiquid_lp_supply) : 0n;
   // BlueMove's protocol-fee LP, a Balance<LSP> inside the pool that its fee mechanism, not a coin holder, controls.
   const poolFee = pool.protocol === "bluemove" ? bigField(state.json.fee_amount) : 0n;
-  const scan = await scanTokenTopHolders(lpType, 100, LIQUIDITY_LP_SCAN_LIMIT);
+  const scan = await scanTokenTopHolders(lpType, 100, scanLimit, timeBudgetMs);
   const holders = scan.truncated ? await sampledHolders(scan.holders, lpType) : scan.holders;
   const unread = holders.some((h) => h.balance === null);
   const rows = holders.filter((h) => h.balance !== null && BigInt(h.balance) > 0n)
@@ -193,9 +194,11 @@ async function readLp(pool: PoolCandidate, state: { type: string; json: Record<s
     rows, total: supply, scanned: scan.total_scanned, incomplete, unit: lpType,
     ...(locked ? { locked_in_pool: locked } : {}),
     ...(poolFee ? { fee_in_pool: poolFee } : {}),
+    ...((scan.coin_walk_truncated && scan.coin_objects_scanned >= scanLimit) || (scan.address_balance_walk_truncated && scan.address_balances_scanned >= scanLimit) ? { limit_reached: true } : {}),
+    ...(scan.time_budget_reached ? { time_budget_reached: true } : {}),
     ...(incomplete ? {
       reason: supply === null || locked === null || poolFee === null ? "Pool LP supply could not be read; holder shares are unknown."
-        : walkStopped ? `The LP holder walk stopped at its bound (${LIQUIDITY_LP_SCAN_LIMIT} objects, 100 holders) or left holders unread; other LP holders may be larger.`
+        : walkStopped ? `The LP holder walk stopped at its bound (${scanLimit} objects, 100 holders) or left holders unread; other LP holders may be larger.`
           : `Live LP balances sum to ${accounted}${locked || poolFee ? ` plus ${locked! + poolFee!} the pool keeps` : ""} against a minted supply of ${supply}; the rest may be held inside other objects.`
     } : {}),
   };
@@ -212,13 +215,14 @@ interface PositionPage {
   };
 }
 
-async function readKriya(pool: PoolCandidate, state: { type: string; json: Record<string, unknown> }, deadline: number): Promise<ScanResult> {
+async function readKriya(pool: PoolCandidate, state: { type: string; json: Record<string, unknown> }, deadline: number, scanLimit: number, timeBudgetMs: number): Promise<ScanResult> {
   const supply = kriyaReserves(state.type, state.json)?.supply ?? null;
   const rows: CustodyHolding[] = [];
   let cursor: string | null = null;
   let scanned = 0;
   let incomplete = supply === null;
   let timedOut = false;
+  let limitReached = false;
   for (; ;) {
     const page: PositionPage = await gqlQuery(`query($type: String!, $after: String) {
       objects(filter: { type: $type }, first: 50, after: $after) {
@@ -226,7 +230,7 @@ async function readKriya(pool: PoolCandidate, state: { type: string; json: Recor
         pageInfo { hasNextPage endCursor }
       }
     }`, { type: KRIYA_LP_TOKEN_TYPE, after: cursor });
-    const remaining = LIQUIDITY_POSITION_SCAN_LIMIT - scanned;
+    const remaining = scanLimit - scanned;
     for (let index = 0; index < page.objects.nodes.length && index < remaining; index++) {
       const node = page.objects.nodes[index]!;
       scanned++;
@@ -238,10 +242,10 @@ async function readKriya(pool: PoolCandidate, state: { type: string; json: Recor
       if (amount !== null && amount > 0n && owner) rows.push({ address: owner, amount, position_id: node.address });
       else incomplete = true;
     }
-    if (page.objects.nodes.length > remaining) { incomplete = true; break; }
+    if (page.objects.nodes.length > remaining) { incomplete = true; limitReached = true; break; }
     if (!page.objects.pageInfo.hasNextPage) break;
     cursor = page.objects.pageInfo.endCursor ?? null;
-    if (!cursor || scanned >= LIQUIDITY_POSITION_SCAN_LIMIT) { incomplete = true; break; }
+    if (!cursor || scanned >= scanLimit) { incomplete = true; limitReached = scanned >= scanLimit; break; }
     if (Date.now() > deadline) { incomplete = true; timedOut = true; break; }
   }
   // Kriya keeps the minimum liquidity as an lsp_locked balance inside the pool.
@@ -250,7 +254,8 @@ async function readKriya(pool: PoolCandidate, state: { type: string; json: Recor
   return {
     rows, total: supply, scanned, incomplete, unit: KRIYA_LP_TOKEN_TYPE, ...(locked ? { locked_in_pool: locked } : {}),
     ...(timedOut ? { time_budget_reached: true } : {}),
-    ...(incomplete ? { reason: timedOut ? `${TIME_STOP} after ${scanned} Kriya LP tokens; other holders or their shares may be unknown.` : "Kriya LP-token scan or pool supply is incomplete; other holders or their shares may be unknown." } : {})
+    ...(limitReached ? { limit_reached: true } : {}),
+    ...(incomplete ? { reason: timedOut ? `${timeStop(timeBudgetMs)} after ${scanned} Kriya LP tokens; other holders or their shares may be unknown.` : "Kriya LP-token scan or pool supply is incomplete; other holders or their shares may be unknown." } : {})
   };
 }
 
@@ -264,7 +269,7 @@ interface CetusPositionPage {
 }
 
 /** Cetus links every active position to its pool; global NFT ID scans miss most pools. */
-async function readCetusPositions(state: { json: Record<string, unknown> }, positionType: string, poolFields: ClmmPoolFields, coinType: string, deadline: number): Promise<ScanResult> {
+async function readCetusPositions(state: { json: Record<string, unknown> }, positionType: string, poolFields: ClmmPoolFields, coinType: string, deadline: number, scanLimit: number, timeBudgetMs: number): Promise<ScanResult> {
   const positions = CetusPositionManager.safeParse(state.json.position_manager).data?.positions;
   const table = positions?.id;
   const expected = bigField(positions?.size);
@@ -276,6 +281,7 @@ async function readCetusPositions(state: { json: Record<string, unknown> }, posi
   let incomplete = false;
   let timedOut = false;
   let scanned = 0;
+  let limitReached = false;
   for (; ;) {
     const data: CetusPositionPage = await gqlQuery<CetusPositionPage>(`query($id: SuiAddress!, $after: String) {
       address(address: $id) { dynamicFields(first: 50, after: $after) {
@@ -285,7 +291,7 @@ async function readCetusPositions(state: { json: Record<string, unknown> }, posi
     }`, { id: table, after: cursor });
     const page: NonNullable<NonNullable<CetusPositionPage["address"]>["dynamicFields"]> | null | undefined = data.address?.dynamicFields;
     if (!page) { incomplete = true; break; }
-    const remaining = LIQUIDITY_POSITION_SCAN_LIMIT - scanned;
+    const remaining = scanLimit - scanned;
     for (let index = 0; index < page.nodes.length && index < remaining; index++) {
       const node = page.nodes[index]!;
       scanned++;
@@ -305,10 +311,10 @@ async function readCetusPositions(state: { json: Record<string, unknown> }, posi
         } catch { incomplete = true; }
       }
     }
-    if (page.nodes.length > remaining) { incomplete = true; break; }
+    if (page.nodes.length > remaining) { incomplete = true; limitReached = true; break; }
     if (!page.pageInfo.hasNextPage) break;
     cursor = page.pageInfo.endCursor ?? null;
-    if (!cursor || scanned >= LIQUIDITY_POSITION_SCAN_LIMIT) { incomplete = true; break; }
+    if (!cursor || scanned >= scanLimit) { incomplete = true; limitReached = scanned >= scanLimit; break; }
     if (Date.now() > deadline) { incomplete = true; timedOut = true; break; }
   }
   const rows: CustodyHolding[] = [];
@@ -355,28 +361,30 @@ async function readCetusPositions(state: { json: Record<string, unknown> }, posi
     scanned, incomplete, unit: coinType,
     ...(unowned.positions ? { owner_unread: unowned } : {}),
     ...(timedOut ? { time_budget_reached: true } : {}),
+    ...(limitReached ? { limit_reached: true } : {}),
     ...(incomplete ? {
       reason: timedOut
-        ? `${TIME_STOP} after reading ${scanned} of the ${expected} positions in the pool's table and the owners of ${ownersRead} of ${entries.length} with liquidity.`
+        ? `${timeStop(timeBudgetMs)} after reading ${scanned} of the ${expected} positions in the pool's table and the owners of ${ownersRead} of ${entries.length} with liquidity.`
         : tableIncomplete
-        ? `The pool's position table lists ${expected} positions and ${scanned} were read (bound ${LIQUIDITY_POSITION_SCAN_LIMIT}).`
+          ? `The pool's position table lists ${expected} positions and ${scanned} were read (bound ${scanLimit}).`
         : "A position record in the pool's table could not be read."
     } : {})
   };
 }
 
-async function readClmm(pool: PoolCandidate, state: { type: string; json: Record<string, unknown> }, coinType: string, deadline: number): Promise<ScanResult> {
+async function readClmm(pool: PoolCandidate, state: { type: string; json: Record<string, unknown> }, coinType: string, deadline: number, scanLimit: number, timeBudgetMs: number): Promise<ScanResult> {
   const positionType = CLMM_POSITION[pool.protocol];
   if (!positionType) return { rows: [], total: null, scanned: 0, incomplete: true, unit: coinType, reason: "No verified position type for this pool." };
   const poolFields = parsePoolFields(state.type, state.json);
   if (!poolFields || (poolFields.coinA !== coinType && poolFields.coinB !== coinType)) return { rows: [], total: null, scanned: 0, incomplete: true, unit: coinType, reason: "Pool tick, price or coin type could not be read." };
   // Magma is a Cetus fork with the same linked position table (PositionInfo nodes keyed by position id).
-  if (pool.protocol === "cetus" || pool.protocol === "magma") return readCetusPositions(state, positionType, poolFields, coinType, deadline);
+  if (pool.protocol === "cetus" || pool.protocol === "magma") return readCetusPositions(state, positionType, poolFields, coinType, deadline, scanLimit, timeBudgetMs);
   const rows: CustodyHolding[] = [];
   let cursor: string | null = null;
   let scanned = 0;
   let incomplete = false;
   let timedOut = false;
+  let limitReached = false;
   let inRange = 0n;
   for (; ;) {
     const page: PositionPage = await gqlQuery(`query($type: String!, $after: String) {
@@ -385,7 +393,7 @@ async function readClmm(pool: PoolCandidate, state: { type: string; json: Record
         pageInfo { hasNextPage endCursor }
       }
     }`, { type: positionType, after: cursor });
-    const remaining = LIQUIDITY_POSITION_SCAN_LIMIT - scanned;
+    const remaining = scanLimit - scanned;
     const nodes = page.objects.nodes.slice(0, remaining);
     scanned += nodes.length;
     // A Turbos NFT names its pool and the object holding the liquidity; read those objects in one batch.
@@ -419,10 +427,10 @@ async function readClmm(pool: PoolCandidate, state: { type: string; json: Record
         } catch { incomplete = true; }
       } else incomplete = true;
     }
-    if (page.objects.nodes.length > remaining) { incomplete = true; break; }
+    if (page.objects.nodes.length > remaining) { incomplete = true; limitReached = true; break; }
     if (!page.objects.pageInfo.hasNextPage) break;
     cursor = page.objects.pageInfo.endCursor ?? null;
-    if (!cursor || scanned >= LIQUIDITY_POSITION_SCAN_LIMIT) { incomplete = true; break; }
+    if (!cursor || scanned >= scanLimit) { incomplete = true; limitReached = scanned >= scanLimit; break; }
     if (Date.now() > deadline) { incomplete = true; timedOut = true; break; }
   }
   // A type-wide list holds top-level positions only; one wrapped in another object is missing from it.
@@ -435,16 +443,17 @@ async function readClmm(pool: PoolCandidate, state: { type: string; json: Record
     counterpart_type: poolFields.coinA === coinType ? poolFields.coinB : poolFields.coinA,
     scanned, incomplete: incomplete || unreconciled, unit: coinType,
     ...(timedOut ? { time_budget_reached: true } : {}),
-    ...(timedOut ? { reason: `${TIME_STOP} after ${scanned} position objects; pool-wide withdrawable coin shares are unknown.` }
+    ...(limitReached ? { limit_reached: true } : {}),
+    ...(timedOut ? { reason: `${timeStop(timeBudgetMs)} after ${scanned} position objects; pool-wide withdrawable coin shares are unknown.` }
       : incomplete ? { reason: "Position scan stopped before reaching every position; pool-wide withdrawable coin shares are unknown." }
       : unreconciled ? { reason: `The listed in-range positions hold ${inRange} liquidity and the pool's active liquidity is ${active ?? "unread"}; positions wrapped in other objects are not listed, so shares are unknown.` } : {})
   };
 }
 
-async function readPool(pool: PoolCandidate, state: { type: string; json: Record<string, unknown> } | null, reserve: bigint | null, coinType: string, deadline: number): Promise<{ pool: PoolCandidate; reserve: bigint | null; scan: ScanResult }> {
+async function readPool(pool: PoolCandidate, state: { type: string; json: Record<string, unknown> } | null, reserve: bigint | null, coinType: string, deadline: number, scanLimit: number, timeBudgetMs: number): Promise<{ pool: PoolCandidate; reserve: bigint | null; scan: ScanResult }> {
   if (!state) return { pool, reserve: null, scan: { rows: [], total: null, scanned: 0, incomplete: true, unit: "unknown", reason: "Pool state unavailable." } };
-  const scan = CLMM_POSITION[pool.protocol] ? await readClmm(pool, state, coinType, deadline)
-    : pool.protocol === "kriya_v2" ? await readKriya(pool, state, deadline) : await readLp(pool, state);
+  const scan = CLMM_POSITION[pool.protocol] ? await readClmm(pool, state, coinType, deadline, scanLimit, timeBudgetMs)
+    : pool.protocol === "kriya_v2" ? await readKriya(pool, state, deadline, scanLimit, timeBudgetMs) : await readLp(pool, state, scanLimit, timeBudgetMs);
   scan.rows = aggregateCustodyRows(scan.rows);
   return { pool, reserve, scan };
 }
@@ -512,9 +521,9 @@ function reserveOf(pool: PoolCandidate, state: { type: string; json: Record<stri
 }
 
 /** Chain-derived, current holdings only. Never treat missing positions as a claim about past liquidity. */
-export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandidate[], holderOffset = 0, poolOffset = 0, holderPool?: string) {
+export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandidate[], holderOffset = 0, poolOffset = 0, holderPool?: string, scanLimit = LIQUIDITY_POSITION_SCAN_LIMIT, timeBudgetMs = LIQUIDITY_TIME_BUDGET_MS, continuationArgs: Record<string, unknown> = {}) {
   coinType = normalizeStructTag(coinType);
-  const deadline = Date.now() + LIQUIDITY_TIME_BUDGET_MS;
+  const deadline = Date.now() + timeBudgetMs;
   const publisher = await resolvePublisher(coinType.split("::")[0]!);
   const candidates = pools.filter((p) => p.protocol !== "deepbook");
   // A pool's depth is what it holds of the other coin: a pool that buyers drained or holders dumped into
@@ -552,7 +561,7 @@ export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandi
   if (holderPool && !chosen.length) throw new Error("The requested holder pool is not on this page of discovered pools.");
   // Holder scans and creation reads are independent; running them together bounds the wait by the slower one.
   const [reads, origins] = await Promise.all([
-    Promise.allSettled(chosen.map((r) => readPool(r.pool, r.state, r.reserve, coinType, deadline))),
+    Promise.allSettled(chosen.map((r) => readPool(r.pool, r.state, r.reserve, coinType, deadline, scanLimit, timeBudgetMs))),
     Promise.allSettled(chosen.map((r) => readLiquidityOrigin(r.pool, lpCoinOf(r.pool), publisher.publisher))),
   ]);
   const allAddresses = [...new Set(reads.flatMap((r) => r.status === "fulfilled"
@@ -601,7 +610,7 @@ export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandi
       const shareB = Math.max(b.share ?? 0, "counterpart_share" in b ? b.counterpart_share ?? 0 : 0);
       return shareB - shareA || (BigInt(b.amount_raw) > BigInt(a.amount_raw) ? 1 : BigInt(b.amount_raw) < BigInt(a.amount_raw) ? -1 : 0);
     });
-    const display = capLiquidityHolders(holders, holderOffset, coinType, poolOffset, pool.pool_id);
+    const display = capLiquidityHolders(holders, holderOffset, coinType, poolOffset, pool.pool_id, LIQUIDITY_HOLDER_BUDGET, continuationArgs);
     return {
       pool_id: pool.pool_id, protocol: pool.protocol, reserve_coin_raw: read.value.reserve?.toString() ?? null,
       // The other side shows a drained pool: a pool full of the queried coin can hold almost nothing to sell it for.
@@ -614,7 +623,22 @@ export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandi
           : { lp_type: scan.unit, amount_basis: "LP units" }),
       liquidity_unit: scan.unit,
       ...(scan.counterpart_type ? { counterpart_type: scan.counterpart_type, counterpart_total_raw: scan.counterpart_total?.toString() ?? null } : {}),
-      scan: { scanned: scan.scanned, incomplete: scan.incomplete, ...(scan.time_budget_reached ? { time_budget_reached: true } : {}), ...(scan.reason ? { reason: scan.reason } : {}) },
+      scan: {
+        scanned: scan.scanned, incomplete: scan.incomplete,
+        ...(scan.time_budget_reached ? { time_budget_reached: true } : {}),
+        ...(scan.limit_reached ? { limit_reached: true } : {}),
+        ...(scan.reason ? { reason: scan.reason } : {}),
+        ...((scan.time_budget_reached && timeBudgetMs < 600_000) || (scan.limit_reached && scanLimit < 100_000) ? {
+          next_call: {
+            tool: "analyze_token", args: {
+              query: coinType, include_holders: false, liquidity_pool_offset: poolOffset, liquidity_holder_pool: pool.pool_id,
+              ...continuationArgs,
+              liquidity_max_scan: Math.min(100_000, Math.max(scanLimit + 1, scanLimit * 2)),
+              liquidity_time_budget_ms: Math.min(600_000, Math.max(timeBudgetMs + 1_000, timeBudgetMs * 2)),
+            }
+          }
+        } : {}),
+      },
       ...(scan.owner_unread ? {
         owner_unread: {
           positions: scan.owner_unread.positions, amount_raw: scan.owner_unread.amount.toString(),
@@ -645,7 +669,7 @@ export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandi
     ...(poolOffset + LIQUIDITY_POOL_LIMIT < candidates.length ? {
       next_call: {
         tool: "analyze_token", args: {
-          query: coinType, include_holders: false, liquidity_pool_offset: poolOffset + LIQUIDITY_POOL_LIMIT
+          query: coinType, include_holders: false, liquidity_pool_offset: poolOffset + LIQUIDITY_POOL_LIMIT, ...continuationArgs,
         }
       }
     } : {}),

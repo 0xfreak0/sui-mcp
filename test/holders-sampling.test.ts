@@ -19,7 +19,7 @@ vi.mock("../src/utils/names.js", () => ({ batchResolveNames: async () => new Map
 
 const { registerHolderTools, scanTokenTopHolders } = await import("../src/tools/holders.js");
 
-type Args = { type?: string; mode?: string; limit?: number; max_scan?: number };
+type Args = { type?: string; mode?: string; limit?: number; max_scan?: number; time_budget_ms?: number };
 let handler: (a: Args) => Promise<{ content: { text: string }[] }>;
 registerHolderTools({
   tool: (n: string, _d: string, _s: unknown, h: typeof handler) => {
@@ -460,6 +460,10 @@ describe("a scan stops at its time budget and says so", () => {
       const before = coinPages;
       await run({ type: AAA, mode: "token", limit: 5, max_scan: 1000 });
       expect(coinPages).toBeGreaterThan(before);
+      const raised = await run({ type: AAA, mode: "token", limit: 5, max_scan: 1000, time_budget_ms: 65_000 });
+      expect(raised.time_budget_reached).toBe(true);
+      expect(raised.coin_objects_scanned).toBeGreaterThan(r.coin_objects_scanned);
+      expect(raised.caveat).toMatch(/65s time budget/);
     } finally {
       clock.mockRestore();
     }

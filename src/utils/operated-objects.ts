@@ -30,15 +30,17 @@ const FRAMEWORK = /^0x0*[123]::/;
 /** Singletons below 0x10000 (the clock, the system state, the deny list). */
 const SYSTEM_OBJECT = /^0x0{60}/;
 
-const RECENT_QUERY = `query($a: SuiAddress!, $n: Int!) {
-  transactions(filter: { sentAddress: $a }, last: $n) {
-    nodes { kind { __typename ... on ProgrammableTransaction { inputs(first: 50) { nodes { __typename ... on SharedInput { address mutable } } } } } }
+const RECENT_QUERY = `query($a: SuiAddress!, $n: Int!, $before: String) {
+    transactions(filter: { sentAddress: $a }, last: $n, before: $before) {
+        pageInfo { hasPreviousPage startCursor }
+        nodes { digest kind { __typename ... on ProgrammableTransaction { inputs(first: 50) { pageInfo { hasNextPage } nodes { __typename ... on SharedInput { address mutable } } } } } }
   }
 }`;
 
 interface RecentResponse {
   transactions: {
-    nodes: Array<{ kind: { inputs?: { nodes: Array<{ __typename: string; address?: string; mutable?: boolean }> } } | null }>;
+    pageInfo: { hasPreviousPage: boolean; startCursor: string | null };
+    nodes: Array<{ digest: string; kind: { inputs?: { pageInfo?: { hasNextPage: boolean }; nodes: Array<{ __typename: string; address?: string; mutable?: boolean }> } } | null }>;
   } | null;
 }
 
@@ -49,6 +51,7 @@ export interface OperatedObject {
   field: string;
   /** Other addresses the same field names. */
   listed_with: string[];
+  listed_with_count: number;
   /** Of the recent transactions read, how many used it mutably. */
   used_in: number;
   holds: ValuedAsset[];
@@ -92,10 +95,14 @@ function controlField(json: Record<string, unknown>, address: string, prefix = "
 export async function operatedSharedObjects(
   address: string,
   ctx: ValuationContext,
-): Promise<{ leads: OperatedObject[]; transactions_read: number; objects_read: number }> {
+  options: { recent?: number; candidates?: number; before?: string } = {},
+): Promise<{ leads: OperatedObject[]; transactions_read: number; objects_read: number; scan: { complete: boolean; has_previous: boolean; cursor?: string; candidates_truncated: boolean; incomplete_transactions: string[] } }> {
   const owner = normalizeSuiAddress(address);
-  const d = await gqlQuery<RecentResponse>(RECENT_QUERY, { a: owner, n: RECENT_TRANSACTIONS });
+  const d = await gqlQuery<RecentResponse>(RECENT_QUERY, { a: owner, n: options.recent ?? RECENT_TRANSACTIONS, before: options.before ?? null });
   const nodes = d.transactions?.nodes ?? [];
+  const pageInfo = d.transactions?.pageInfo;
+  const cursor = pageInfo?.hasPreviousPage && pageInfo.startCursor && pageInfo.startCursor !== options.before ? pageInfo.startCursor : undefined;
+  const incompleteTransactions = nodes.filter((n) => n.kind?.inputs?.pageInfo?.hasNextPage).map((n) => n.digest);
   const uses = new Map<string, number>();
   for (const n of nodes) {
     const seen = new Set<string>();
@@ -105,8 +112,14 @@ export async function operatedSharedObjects(
     }
     for (const id of seen) uses.set(id, (uses.get(id) ?? 0) + 1);
   }
-  const candidates = [...uses].sort((a, b) => b[1] - a[1]).slice(0, MAX_CANDIDATES);
-  if (candidates.length === 0) return { leads: [], transactions_read: nodes.length, objects_read: 0 };
+  const allCandidates = [...uses].sort((a, b) => b[1] - a[1]);
+  const candidates = allCandidates.slice(0, options.candidates ?? MAX_CANDIDATES);
+  const scan = {
+    complete: !pageInfo?.hasPreviousPage && allCandidates.length === candidates.length && incompleteTransactions.length === 0,
+    has_previous: pageInfo?.hasPreviousPage ?? false,
+    ...(cursor ? { cursor } : {}), candidates_truncated: allCandidates.length > candidates.length, incomplete_transactions: incompleteTransactions
+  };
+  if (candidates.length === 0) return { leads: [], transactions_read: nodes.length, objects_read: 0, scan };
   const states = await readObjects(candidates.map(([id]) => id), undefined, ctx.memo);
   const leads: OperatedObject[] = [];
   for (const [id, used] of candidates) {
@@ -131,6 +144,7 @@ export async function operatedSharedObjects(
       type: state.type,
       field: hit.field,
       listed_with: others.slice(0, MAX_LISTED_WITH),
+      listed_with_count: others.length,
       used_in: used,
       holds,
       priced_usd: Math.round(pricedUsd * 100) / 100,
@@ -143,7 +157,7 @@ export async function operatedSharedObjects(
         "The address does not own it, so what it holds is not in the address's totals; what the role lets the address do with it is for the package's functions to say.",
     });
   }
-  return { leads, transactions_read: nodes.length, objects_read: candidates.length };
+  return { leads, transactions_read: nodes.length, objects_read: candidates.length, scan };
 }
 
 /** A lead row for a tool's `leads`: the object, what it holds, and the sentence. */
@@ -154,6 +168,8 @@ export function operatedLeadRow(o: OperatedObject): Record<string, unknown> {
     type: o.type,
     field: o.field,
     listed_with: o.listed_with,
+    listed_with_count: o.listed_with_count,
+    ...(o.listed_with_count > o.listed_with.length ? { listed_with_next_call: { tool: "get_object", args: { object_id: o.object_id } } } : {}),
     used_in_recent_transactions: o.used_in,
     priced_usd: o.priced_usd,
     holds: o.holds.map((a) => ({ coin_type: a.coin_type, amount: a.amount, side: a.side, usd: a.usd === null ? null : Math.round(a.usd * 100) / 100 })),

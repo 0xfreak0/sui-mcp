@@ -490,7 +490,7 @@ async function scanOwnedTypes(owner: string, max: number): Promise<{ objects: Ar
     const page: SuiClientTypes.ListOwnedObjectsResponse = await sui.listOwnedObjects({ owner, limit: Math.min(1000, max - objects.length), cursor });
     for (const o of page.objects) objects.push({ objectId: o.objectId, type: o.type });
     if (!page.hasNextPage) return { objects, complete: true };
-    if (!page.cursor || objects.length >= max) return { objects, complete: false };
+    if (!page.cursor || page.cursor === cursor || objects.length >= max) return { objects, complete: false };
     cursor = page.cursor;
   }
 }
@@ -499,8 +499,9 @@ async function value(ctx: ValuationContext): Promise<ValuerResult> {
   const unread: ValuerResult["unread"] = [];
   const reads: PositionRead[] = [];
   for (const type of VERIFIED_POSITION_TYPES) {
-    const { objects, complete } = await listOwnedWithJson(ctx.owner, type, MAX_POSITIONS_PER_TYPE);
-    if (!complete) unread.push({ what: type, reason: `more than ${MAX_POSITIONS_PER_TYPE} positions of this type; the rest were not read` });
+    const max = ctx.ownedMaxScan ?? MAX_POSITIONS_PER_TYPE;
+    const { objects, complete } = await listOwnedWithJson(ctx.owner, type, max);
+    if (!complete) unread.push({ what: type, reason: `more than ${max} positions of this type; the rest were not read` });
     for (const o of objects) {
       if (o.json) reads.push({ object_id: o.objectId, type: o.type, json: o.json, current: false });
       else unread.push({ what: o.objectId, reason: "position JSON not returned" });
@@ -523,7 +524,8 @@ async function value(ctx: ValuationContext): Promise<ValuerResult> {
 
   // Other families: one bounded scan of owned object types, then the JSON of
   // `Position`-named objects, to report CLMM-shaped positions not valued here.
-  const scan = await scanOwnedTypes(ctx.owner, MAX_SCANNED_OBJECTS);
+  const scanMax = ctx.ownedMaxScan ?? MAX_SCANNED_OBJECTS;
+  const scan = await scanOwnedTypes(ctx.owner, scanMax);
   const candidates = scan.objects.filter((o) => {
     const key = typeKey(o.type);
     return key !== null && !VERIFIED.has(key) && /::[A-Za-z_]*Position[A-Za-z_]*$/.test(key);
@@ -538,7 +540,7 @@ async function value(ctx: ValuationContext): Promise<ValuerResult> {
     }
   }
   if (!scan.complete) {
-    unread.push({ what: "owned objects", reason: `only the first ${MAX_SCANNED_OBJECTS} owned objects were scanned for positions of families not listed by type` });
+    unread.push({ what: "owned objects", reason: `only the first ${scanMax} owned objects were scanned for positions of families not listed by type` });
   }
   return { positions: result.positions, unread };
 }

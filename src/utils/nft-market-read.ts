@@ -123,6 +123,8 @@ export interface MarketReadOptions {
   historical?: boolean;
   /** For a past valuation, read only transactions at or before this checkpoint. */
   atCheckpoint?: number;
+  /** Multiplier for bounded listing and sale reads; defaults to one. */
+  depth?: number;
 }
 
 interface QueryPart {
@@ -206,7 +208,7 @@ interface SaleTx {
   effects?: {
     timestamp?: string | null;
     checkpoint?: { sequenceNumber?: number | string } | null;
-    events?: { nodes: Array<{ contents?: { type?: { repr?: string }; json?: unknown } | null }> } | null;
+    events?: Nodes<{ contents?: { type?: { repr?: string }; json?: unknown } | null }> | null;
   } | null;
 }
 
@@ -317,7 +319,7 @@ t${i}: address(address: "${TRADEPORT_ORDERBOOK_STORE}") { multiGetDynamicFields(
  */
 export async function collectionMarkets(types: string[], opts: MarketReadOptions): Promise<Map<string, CollectionMarket>> {
   const network = getNetwork();
-  const at = !opts.historical ? "latest" : opts.atCheckpoint !== undefined ? `cp${opts.atCheckpoint}` : `t${opts.asOfSec}`;
+  const at = `${!opts.historical ? "latest" : opts.atCheckpoint !== undefined ? `cp${opts.atCheckpoint}` : `t${opts.asOfSec}`}:d${opts.depth ?? 1}`;
   const now = Date.now();
   const wanted = [...new Set(types.map((t) => canonicalType(t)))];
   const pending = new Map<string, Promise<CollectionMarket>>();
@@ -376,8 +378,8 @@ async function readMarkets(types: string[], opts: MarketReadOptions): Promise<Ma
   const tasks: Array<Promise<void>> = [readSales(readings, opts)];
   if (current) {
     tasks.push(
-      guard(readings, LISTING_SOURCES.tradeport, () => readTradeportFloor(readings)),
-      guard(readings, `${LISTING_SOURCES.tradeportKiosk}s and kiosk listings`, () => readKioskListings(readings)),
+      guard(readings, LISTING_SOURCES.tradeport, () => readTradeportFloor(readings, opts.depth ?? 1)),
+      guard(readings, `${LISTING_SOURCES.tradeportKiosk}s and kiosk listings`, () => readKioskListings(readings, opts.depth ?? 1)),
       guard(readings, LISTING_SOURCES.originbyte, () => readOriginByteAsks(readings)),
     );
   }
@@ -429,7 +431,7 @@ async function readTradeportVectors(readings: Reading[]): Promise<Map<Reading, B
 }
 
 /** Walk each collection's TradePort big vector to its leftmost leaf and confirm its cheapest live listing. */
-async function readTradeportFloor(readings: Reading[]): Promise<void> {
+async function readTradeportFloor(readings: Reading[], depth: number): Promise<void> {
   const withEntry = readings.filter((r) => r.tradeportField !== null);
   if (withEntry.length === 0) return;
   const vectors = await readTradeportVectors(withEntry);
@@ -458,7 +460,7 @@ async function readTradeportFloor(readings: Reading[]): Promise<void> {
         leaves.push({
           r: w.r,
           length: w.vector.length,
-          entries: vals.slice(0, ORDERBOOK_CANDIDATES).map((listing, j) => ({ price: orderbookIndexPrice(String(keys[j])), listing: String(listing) })),
+          entries: vals.slice(0, Math.min(50, ORDERBOOK_CANDIDATES * depth)).map((listing, j) => ({ price: orderbookIndexPrice(String(keys[j])), listing: String(listing) })),
         });
       }
     });
@@ -509,13 +511,13 @@ async function readListingObjects(ids: string[]): Promise<Map<string, ListingObj
  * confirmed live. Only collections with a transfer policy are asked: a kiosk
  * item cannot be bought without one.
  */
-async function readKioskListings(readings: Reading[]): Promise<void> {
+async function readKioskListings(readings: Reading[], depth: number): Promise<void> {
   const kiosked = readings.filter((r) => r.policies.length > 0);
   if (kiosked.length === 0) return;
   const d = await batched(kiosked, (r, i) => ({
     decl: `$k${i}: String!, $l${i}: String!`,
     body: `k${i}: objects(filter: { type: $k${i} }, first: 50) { nodes { address asMoveObject { contents { json } } previousTransaction { effects { timestamp } } } pageInfo { hasNextPage endCursor } }
-l${i}: events(filter: { type: $l${i} }, last: ${ITEM_LISTED_READ}) { nodes { timestamp contents { json } } }`,
+l${i}: events(filter: { type: $l${i} }, last: ${Math.min(50, ITEM_LISTED_READ * depth)}) { pageInfo { hasPreviousPage } nodes { timestamp contents { json } } }`,
     vars: { [`k${i}`]: `${TRADEPORT_KIOSK_LISTING}<${r.type}>`, [`l${i}`]: `0x2::kiosk::ItemListed<${r.type}>` },
   }));
   const confirm: Array<{ r: Reading; kiosk: string; id: string; at: string | null }> = [];
@@ -539,11 +541,15 @@ l${i}: events(filter: { type: $l${i} }, last: ${ITEM_LISTED_READ}) { nodes { tim
             ...(str(json.seller) ? { seller: str(json.seller) } : {}),
           });
         }
-        const more = page?.pageInfo?.hasNextPage && page.pageInfo.endCursor;
+        const more = page?.pageInfo?.hasNextPage;
         if (!more) break;
-        if (pages >= KIOSK_LISTING_PAGES) {
+        if (!page?.pageInfo?.endCursor) {
           r.market.listings_seen[LISTING_SOURCES.tradeportKiosk] = { count, truncated: true };
-          return queueListed(r, d[`l${i}`], confirm);
+          return queueListed(r, d[`l${i}`], confirm, depth);
+        }
+        if (pages >= Math.min(100, KIOSK_LISTING_PAGES * depth)) {
+          r.market.listings_seen[LISTING_SOURCES.tradeportKiosk] = { count, truncated: true };
+          return queueListed(r, d[`l${i}`], confirm, depth);
         }
         const next = await gqlQuery<{ objects: Nodes<ListingObject> }>(
           `query($t: String!, $after: String) { objects(filter: { type: $t }, first: 50, after: $after) { nodes { address asMoveObject { contents { json } } previousTransaction { effects { timestamp } } } pageInfo { hasNextPage endCursor } } }`,
@@ -553,7 +559,7 @@ l${i}: events(filter: { type: $l${i} }, last: ${ITEM_LISTED_READ}) { nodes { tim
         pages++;
       }
       if (count > 0) r.market.listings_seen[LISTING_SOURCES.tradeportKiosk] = { count };
-      queueListed(r, d[`l${i}`], confirm);
+      queueListed(r, d[`l${i}`], confirm, depth);
     }),
   );
   if (confirm.length === 0) return;
@@ -577,8 +583,15 @@ function queueListed(
   r: Reading,
   events: unknown,
   confirm: Array<{ r: Reading; kiosk: string; id: string; at: string | null }>,
+  depth: number,
 ): void {
   const latest = new Map<string, { kiosk: string; price: bigint; at: string | null }>();
+  const eventPage = events as Nodes<{ timestamp?: string | null; contents?: { json?: Record<string, unknown> } }> | undefined;
+  const confirmLimit = Math.min(50, ITEM_LISTED_CONFIRM * depth);
+  if (eventPage?.pageInfo?.hasPreviousPage) {
+    (r.market.listings_seen[LISTING_SOURCES.kiosk] ??= { count: 0 }).truncated = true;
+    r.market.not_read.push({ what: LISTING_SOURCES.kiosk, reason: `Only the ${Math.min(50, ITEM_LISTED_READ * depth)} newest ItemListed events were read.` });
+  }
   for (const n of (events as Nodes<{ timestamp?: string | null; contents?: { json?: Record<string, unknown> } }> | undefined)?.nodes ?? []) {
     const j = n.contents?.json ?? {};
     const id = str(j.id);
@@ -587,11 +600,14 @@ function queueListed(
     if (!id || !kiosk || !price || !/^\d+$/.test(price)) continue;
     latest.set(id, { kiosk, price: BigInt(price), at: n.timestamp ?? null });
   }
-  [...latest.entries()]
+  const candidates = [...latest.entries()]
     .filter(([, v]) => v.price > 0n)
-    .sort((a, b) => (a[1].price < b[1].price ? -1 : a[1].price > b[1].price ? 1 : 0))
-    .slice(0, ITEM_LISTED_CONFIRM)
-    .forEach(([id, v]) => confirm.push({ r, kiosk: v.kiosk, id, at: v.at }));
+    .sort((a, b) => (a[1].price < b[1].price ? -1 : a[1].price > b[1].price ? 1 : 0));
+  if (candidates.length > confirmLimit) {
+    (r.market.listings_seen[LISTING_SOURCES.kiosk] ??= { count: 0 }).truncated = true;
+    r.market.not_read.push({ what: LISTING_SOURCES.kiosk, reason: `Only the ${confirmLimit} cheapest recent ItemListed events were confirmed as live.` });
+  }
+  candidates.slice(0, confirmLimit).forEach(([id, v]) => confirm.push({ r, kiosk: v.kiosk, id, at: v.at }));
 }
 
 /** The lowest ask in each OriginByte orderbook of a collection. Asks carry no time. */
@@ -687,6 +703,8 @@ function salesInTransaction(tx: SaleTx): RawSale[] {
  */
 async function readSales(readings: Reading[], opts: MarketReadOptions): Promise<void> {
   const windowStart = opts.asOfSec - MARKET_WINDOW_DAYS * 86_400;
+  const pageLimit = Math.min(100, SALE_TX_PAGES * (opts.depth ?? 1));
+  const saleLimit = Math.min(100, SALE_TXS_WANTED * (opts.depth ?? 1));
   type Index = { r: Reading; object: string; before: string | null; done: boolean };
   const indexes: Index[] = readings.flatMap((r) =>
     [...r.policies, ...r.orderbooks, ...(r.tradeportField ? [r.tradeportField] : [])].map((object) => ({ r, object, before: null, done: false })),
@@ -695,14 +713,14 @@ async function readSales(readings: Reading[], opts: MarketReadOptions): Promise<
   for (const r of readings) found.set(r, new Map());
   const txsWithSales = (r: Reading) => new Set([...found.get(r)!.values()].map((s) => s.sale.digest)).size;
 
-  for (let page = 0; page < SALE_TX_PAGES; page++) {
-    const open = indexes.filter((x) => !x.done && txsWithSales(x.r) < SALE_TXS_WANTED);
+  for (let page = 0; page < pageLimit; page++) {
+    const open = indexes.filter((x) => !x.done && txsWithSales(x.r) < saleLimit);
     if (open.length === 0) break;
     let d: Record<string, unknown>;
     try {
       d = await batched(open, (x, i) => ({
         decl: `$f${i}: TransactionFilter!, $c${i}: String`,
-        body: `x${i}: transactions(filter: $f${i}, last: ${SALE_TX_PAGE}, before: $c${i}) { pageInfo { hasPreviousPage startCursor } nodes { digest sender { address } effects { timestamp checkpoint { sequenceNumber } events(first: 50) { nodes { contents { type { repr } json } } } } } }`,
+        body: `x${i}: transactions(filter: $f${i}, last: ${SALE_TX_PAGE}, before: $c${i}) { pageInfo { hasPreviousPage startCursor } nodes { digest sender { address } effects { timestamp checkpoint { sequenceNumber } events(first: 50) { pageInfo { hasNextPage } nodes { contents { type { repr } json } } } } } }`,
         vars: {
           [`f${i}`]: { affectedObject: x.object, ...(opts.historical && opts.atCheckpoint !== undefined ? { beforeCheckpoint: opts.atCheckpoint + 1 } : {}) },
           [`c${i}`]: x.before,
@@ -717,12 +735,19 @@ async function readSales(readings: Reading[], opts: MarketReadOptions): Promise<
       const conn = d[`x${i}`] as Nodes<SaleTx> | undefined;
       const nodes = conn?.nodes ?? [];
       for (const tx of nodes) {
+        if (tx.effects?.events?.pageInfo?.hasNextPage) x.r.market.not_read.push({
+          what: `sales in transaction ${tx.digest}`,
+          reason: "Only the first 50 events were read; use get_transaction for the complete event list.",
+        });
         for (const raw of salesInTransaction(tx)) found.get(x.r)!.set(`${raw.sale.digest}:${normalizeSuiAddress(raw.sale.nft_id)}`, raw);
       }
       const oldest = nodes[0]?.effects?.timestamp;
       const pastWindow = oldest !== undefined && oldest !== null && Date.parse(oldest) / 1000 < windowStart;
-      if (!conn?.pageInfo?.hasPreviousPage || !conn.pageInfo.startCursor || pastWindow) x.done = true;
-      else x.before = conn.pageInfo.startCursor;
+      if (conn?.pageInfo?.hasPreviousPage && !conn.pageInfo.startCursor) {
+        x.r.market.not_read.push({ what: `sales through ${x.object}`, reason: "The sale transaction list has more rows but no cursor to continue." });
+        x.done = true;
+      } else if (!conn?.pageInfo?.hasPreviousPage || pastWindow) x.done = true;
+      else x.before = conn.pageInfo.startCursor!;
     });
   }
 
@@ -768,6 +793,12 @@ async function readSales(readings: Reading[], opts: MarketReadOptions): Promise<
       sales.push(sale);
     }
     await pickLastSale(r.market, sales, budget);
+    if (!r.market.last_sale) {
+      for (const x of indexes) if (x.r === r && !x.done) r.market.not_read.push({
+        what: `sales through ${x.object}`,
+        reason: `Sale scan stopped after ${pageLimit} pages or ${saleLimit} sale-bearing transactions; older sales were not checked.`,
+      });
+    }
   }
 }
 

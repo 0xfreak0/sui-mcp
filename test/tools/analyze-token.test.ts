@@ -5,6 +5,7 @@ import { createMockClient, createMockGraphql } from "../helpers/mock-grpc.js";
 const mockSui = createMockClient();
 const mockGqlQuery = createMockGraphql();
 const mockSearchLiveTickers = vi.fn();
+const mockDiscoverCoinPools = vi.fn();
 
 vi.mock("../../src/clients/grpc.js", () => ({ sui: mockSui, archive: mockSui }));
 vi.mock("../../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
@@ -15,6 +16,7 @@ vi.mock("../../src/tools/holders.js", () => ({
   stoppedWalks: vi.fn(() => []),
 }));
 vi.mock("../../src/utils/price-providers.js", () => ({ fetchDefiLlamaChange24h: vi.fn(async () => ({ changes: new Map() })) }));
+vi.mock("../../src/tools/pools.js", () => ({ discoverCoinPools: mockDiscoverCoinPools }));
 
 // Import after registration so resolution, metadata and enrichments use the test's boundaries.
 const { registerAnalyzeTokenTools } = await import("../../src/tools/analyze-token.js");
@@ -44,6 +46,8 @@ beforeEach(() => {
   mockGqlQuery.mockReset();
   mockSearchLiveTickers.mockReset();
   mockSearchLiveTickers.mockResolvedValue({ candidates: [], providers: coverage, unavailable_providers: [] });
+  mockDiscoverCoinPools.mockReset();
+  mockDiscoverCoinPools.mockResolvedValue({ venues: [], pools: [], pairs_searched: [] });
   mockSui.stateService.getCoinInfo.mockReset();
   mockSui.stateService.getCoinInfo.mockImplementation(async ({ coinType }: { coinType: string }) => {
     if (coinType === KONG_SUI) return { response: { coinType, metadata: { name: "KONG SUI", symbol: "KONG", decimals: 1 }, treasury: { totalSupply: 100000000000n } } };
@@ -162,6 +166,24 @@ describe("analyze_token resolving a symbol", () => {
     expect(data.impostor_of).toContain("0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC");
   });
 
+});
+
+describe("analyze_token pool discovery continuation", () => {
+  it("continues a bounded venue over both counter pairs without treating the slice as complete", async () => {
+    mockDiscoverCoinPools.mockResolvedValue({
+      pools: [],
+      pairs_searched: [{ token_a: KONG_SUI, token_b: "0x2::sui::SUI" }, { token_a: KONG_SUI, token_b: "0x3::usdc::USDC" }],
+      venues: [{ venue: "cetus", status: "incomplete", searched: 2, pages: 20, next_cursor: "both-pairs-cursor" }],
+    });
+    const first = JSON.parse((await tools.get("analyze_token")!({ query: KONG_SUI, include_holders: false })).content[0].text);
+    expect(first.pool_discovery.pools_found_note).toMatch(/Lower bound/);
+    expect(first.pool_discovery.venues[0].next_call).toEqual({
+      tool: "analyze_token",
+      args: { query: KONG_SUI, include_holders: false, liquidity_venue: "cetus", liquidity_venue_cursor: "both-pairs-cursor" },
+    });
+    await tools.get("analyze_token")!(first.pool_discovery.venues[0].next_call.args);
+    expect(mockDiscoverCoinPools).toHaveBeenLastCalledWith(KONG_SUI, "cetus", "both-pairs-cursor");
+  });
 });
 
 describe("analyze_token text from CoinMetadata", () => {

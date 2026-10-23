@@ -222,13 +222,14 @@ const isCapFor = (kioskId: string) => (o: Record<string, unknown>): boolean =>
 async function findWrapper(
   objectId: string,
   isEmbedded: (o: Record<string, unknown>) => boolean,
+  maxScanPages = MAX_SCAN_PAGES,
 ): Promise<(KioskCapWrapper & { json: unknown }) | null> {
   const last = await gqlQuery<LastTouchResult>(LAST_TOUCH_QUERY, { id: objectId });
   const digest = last.transactions.nodes[0]?.digest;
   if (!digest) return null;
 
   let after: string | null = null;
-  for (let page = 0; page < MAX_SCAN_PAGES; page++) {
+  for (let page = 0; page < maxScanPages; page++) {
     const r: CapScanResult = await gqlQuery<CapScanResult>(CAP_SCAN_QUERY, { d: digest, after });
     const changes = r.transaction?.effects?.objectChanges;
     if (!changes) return null;
@@ -241,8 +242,9 @@ async function findWrapper(
     }
 
     if (!changes.pageInfo.hasNextPage) return null;
-    after = changes.pageInfo.endCursor;
-    if (!after) return null;
+    const next = changes.pageInfo.endCursor;
+    if (!next || next === after) return null;
+    after = next;
   }
   return null;
 }
@@ -269,6 +271,8 @@ async function findWrapper(
 async function followCapWrappers(
   capId: string,
   kioskId: string,
+  maxScanPages = MAX_SCAN_PAGES,
+  maxWrapSteps = MAX_WRAP_STEPS,
 ): Promise<{ chain: KioskCapWrapper[]; owner: OwnerDesc | null; left?: KioskCapWrapper }> {
   const cap = normalizeSuiAddress(capId);
   const holdsCap = (o: Record<string, unknown>) => sameId(o.id, cap) && sameId(o.for, kioskId);
@@ -276,8 +280,8 @@ async function followCapWrappers(
   let from = cap;
   let target = holdsCap;
   let left: KioskCapWrapper | undefined;
-  for (let step = 0; step < MAX_WRAP_STEPS; step++) {
-    const found = await findWrapper(from, target);
+  for (let step = 0; step < maxWrapSteps; step++) {
+    const found = await findWrapper(from, target, maxScanPages);
     if (!found) return left ? { chain, owner: null, left } : { chain, owner: null };
     const wrapper = { object_id: found.object_id, type: found.type };
     const prev = chain[chain.length - 1];
@@ -329,20 +333,20 @@ export interface KioskCapHolder {
 export function unresolvedCapHolderNote(r: KioskCapHolder): string | undefined {
   if (r.holder) return undefined;
   if (r.cap_left) {
-    return `The KioskOwnerCap was held in ${r.cap_left.object_id} (${r.cap_left.type}), which still exists but no longer holds it, and that object's last transaction names no new holder, so who controls this kiosk is unresolved.`;
+    return `The KioskOwnerCap was held in ${r.cap_left.object_id} (${r.cap_left.type}), which still exists but no longer holds it, and that object's last transaction names no new holder in the bounded scan, so who controls this kiosk is unresolved. get_object with kiosk_scan_pages and kiosk_wrap_steps can search farther.`;
   }
   const chain = r.wrapped_in ?? [];
   if (chain.length === 0) {
-    return "The KioskOwnerCap for this kiosk is no longer a top-level object, and the object wrapping it could not be found, so who controls it is unresolved.";
+    return "The KioskOwnerCap for this kiosk is no longer a top-level object, and the object wrapping it could not be found in the bounded scan, so who controls it is unresolved. get_object with kiosk_scan_pages and kiosk_wrap_steps can search farther.";
   }
   const last = chain[chain.length - 1];
-  return `The KioskOwnerCap is wrapped (${chain.map((w) => w.type).join(" inside ")}), and the outermost wrapper found, ${last.object_id}, is not a top-level object either; nothing wrapping it could be found, so who controls this kiosk is unresolved.`;
+  return `The KioskOwnerCap is wrapped (${chain.map((w) => w.type).join(" inside ")}), and the outermost wrapper found, ${last.object_id}, is not a top-level object either; nothing wrapping it could be found in the bounded scan, so who controls this kiosk is unresolved. get_object with kiosk_scan_pages and kiosk_wrap_steps can search farther.`;
 }
 
 export type KioskCapLookup =
   | { status: "resolved"; result: KioskCapHolder }
   | { status: "creation_unreachable" }
-  | { status: "cap_not_found"; scanned_pages: number; truncated: boolean }
+  | { status: "cap_not_found"; scanned_pages: number; truncated: boolean; cursor_unavailable?: boolean }
   | { status: "lookup_failed"; message: string };
 
 /**
@@ -360,22 +364,22 @@ export type KioskCapLookup =
  * timeout. A failure here degrades to `lookup_failed` with the error message
  * rather than discarding the object answer the caller already has.
  */
-export async function resolveKioskCapHolder(kioskId: string): Promise<KioskCapLookup> {
+export async function resolveKioskCapHolder(kioskId: string, maxScanPages = MAX_SCAN_PAGES, maxWrapSteps = MAX_WRAP_STEPS): Promise<KioskCapLookup> {
   try {
-    return await resolveKioskCapHolderInner(kioskId);
+    return await resolveKioskCapHolderInner(kioskId, maxScanPages, maxWrapSteps);
   } catch (err) {
     return { status: "lookup_failed", message: err instanceof Error ? err.message : String(err) };
   }
 }
 
-async function resolveKioskCapHolderInner(kioskId: string): Promise<KioskCapLookup> {
+async function resolveKioskCapHolderInner(kioskId: string, maxScanPages: number, maxWrapSteps: number): Promise<KioskCapLookup> {
   const id = normalizeSuiAddress(kioskId);
   const creation = await gqlQuery<CreationTxResult>(CREATION_TX_QUERY, { id });
   const digest = creation.objectVersions?.nodes[0]?.previousTransaction?.digest;
   if (!digest) return { status: "creation_unreachable" };
 
   let after: string | null = null;
-  for (let page = 0; page < MAX_SCAN_PAGES; page++) {
+  for (let page = 0; page < maxScanPages; page++) {
     const r: CapScanResult = await gqlQuery<CapScanResult>(CAP_SCAN_QUERY, { d: digest, after });
     const changes = r.transaction?.effects?.objectChanges;
     if (!changes) return { status: "creation_unreachable" };
@@ -406,7 +410,7 @@ async function resolveKioskCapHolderInner(kioskId: string): Promise<KioskCapLook
       }
       // The cap is not a top-level object: the normal state of a personal
       // kiosk, whose controller is the owner of the object holding the cap.
-      const { chain, owner, left } = await followCapWrappers(capId, id);
+      const { chain, owner, left } = await followCapWrappers(capId, id, maxScanPages, maxWrapSteps);
       return {
         status: "resolved",
         result: {
@@ -421,8 +425,9 @@ async function resolveKioskCapHolderInner(kioskId: string): Promise<KioskCapLook
     }
 
     if (!changes.pageInfo.hasNextPage) return { status: "cap_not_found", scanned_pages: page + 1, truncated: false };
-    after = changes.pageInfo.endCursor;
-    if (!after) return { status: "cap_not_found", scanned_pages: page + 1, truncated: false };
+    const next = changes.pageInfo.endCursor;
+    if (!next || next === after) return { status: "cap_not_found", scanned_pages: page + 1, truncated: true, cursor_unavailable: true };
+    after = next;
   }
-  return { status: "cap_not_found", scanned_pages: MAX_SCAN_PAGES, truncated: true };
+  return { status: "cap_not_found", scanned_pages: maxScanPages, truncated: true };
 }

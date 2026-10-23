@@ -4,6 +4,7 @@ import { numArg, addressArg, boolArg } from "./args.js";
 import { canonicalType } from "../utils/nft-sales.js";
 import { MARKET_WINDOW_DAYS } from "../utils/nft-market.js";
 import { capPayload, capRows, type ListCap } from "../utils/output-cap.js";
+import { errorResult } from "../utils/errors.js";
 import { readerFor, valueObjects, valuePositions, type ValuedPosition, type ValuerResult } from "../utils/position-value.js";
 import "../utils/valuers/index.js";
 import { isFrameworkType, NFT_VALUER } from "../utils/valuers/nft.js";
@@ -83,11 +84,13 @@ export function registerNftTools(server: McpServer) {
         .optional()
         .default(true)
         .describe("Estimate each NFT's value from its collection's market (default true). Costs a few requests per collection on the page."),
+   max_collections: numArg().int().min(1).max(5_000).optional().describe("Collection types valued on this page (default 100); raise through valuation.next_call if more are present."),
+   market_depth: numArg().int().min(1).max(20).optional().describe("Multiplier for per-collection sale/listing reads (default 1); raise through valuation.market_next_call when market coverage is limited."),
     },
-    async ({ address, limit, cursor, detail, value }) => {
+  async ({ address, limit, cursor, detail, value, max_collections, market_depth }) => {
       const target = clampPageSize(limit);
       const buildResponse = async (state: ListNftsCursor, nfts: NftEntry[], done: boolean) =>
-        nftPage(address, state, nfts, done, detail === "full", value === false ? null : await valueNfts(address, nfts));
+    nftPage(address, state, nfts, done, detail === "full", value === false ? null : await valueNfts(address, nfts, max_collections, market_depth), limit, value, cursor, max_collections, market_depth);
 
       // Initialize state: either resume from cursor or discover kiosks fresh.
       let state: ListNftsCursor;
@@ -117,11 +120,8 @@ export function registerNftTools(server: McpServer) {
           // Kiosk drained — advance to the next one.
           state.ki += 1;
           state.kc = null;
-        } catch {
-          // Kiosk fetch failed (e.g. destroyed mid-pagination). Skip it
-          // rather than wedging the entire walk.
-          state.ki += 1;
-          state.kc = null;
+    } catch (err) {
+     return errorResult(`Could not read kiosk ${kioskId}: ${err instanceof Error ? err.message : String(err)}. Retry this page; its items have not been skipped.`);
         }
       }
 
@@ -173,12 +173,15 @@ export function registerNftTools(server: McpServer) {
         .optional()
         .default(true)
         .describe("Estimate each collection's value from its market (default true). Costs a few requests per collection that has a market."),
+   max_collections: numArg().int().min(1).max(5_000).optional()
+    .describe("Collection types whose markets are valued (default 100); raise when estimated_value lists collections beyond this bound."),
+   market_depth: numArg().int().min(1).max(20).optional().describe("Multiplier for per-collection sale/listing reads (default 1); raise through estimated_value.market_next_call when market coverage is limited."),
       detail: z
         .enum(["summary", "full"])
         .optional()
         .describe("'summary' (default): priced collections, then the most-held others that fit; `omitted` counts the rest. 'full': every collection."),
     },
-    async ({ address, value, detail }) => {
+  async ({ address, value, detail, max_collections, market_depth }) => {
       const held = await readHeldCollections(address);
       type Row = { collection: string; count: number; value?: Record<string, unknown> };
       const rows: Row[] = [...held.counts]
@@ -187,13 +190,16 @@ export function registerNftTools(server: McpServer) {
       const totals = {
         total_collections: rows.length,
         total_nfts: rows.reduce((sum, c) => sum + c.count, 0),
-        kiosk_count: held.kiosk_count,
-        ...(held.kiosks_unread ? { kiosks_unread: held.kiosks_unread } : {}),
+    ...(held.kiosks_unread ? {
+     kiosks_unread: held.kiosks_unread,
+     collections_incomplete: true,
+     collections_next_call: { tool: "list_nft_collections", args: { address, value, detail, ...(max_collections ? { max_collections } : {}), ...(market_depth ? { market_depth } : {}) } },
+    } : {}),
       };
 
       let estimated: Record<string, unknown> | null = null;
       if (value !== false) {
-        const valued = await valuePositions({ owner: address }, [NFT_VALUER]);
+    const valued = await valuePositions({ owner: address, nftMaxCollections: max_collections, nftMarketDepth: market_depth }, [NFT_VALUER]);
         const byType = new Map(valued.positions.map((p) => [canonicalType(p.assets[0].coin_type), p]));
         let usd = 0;
         const priced = { collections: 0, nfts: 0 };
@@ -231,13 +237,22 @@ export function registerNftTools(server: McpServer) {
           method: NFT_ESTIMATE_METHOD,
           ...(suiUsd ? { sui_usd: suiUsd } : {}),
           ...(valued.unread.length ? { unread: valued.unread } : {}),
+     ...(valued.positions.some((p) => p.detail?.market_scan_limited === true) ? {
+      market_scan_limited_collections: valued.positions.filter((p) => p.detail?.market_scan_limited === true).length,
+     } : {}),
+     ...((max_collections ?? 100) < 5_000 && valued.unread.some((u) => /past the \d+ most-held collections/.test(u.reason))
+      ? { next_call: { tool: "list_nft_collections", args: { address, value, detail, max_collections: Math.min(5_000, (max_collections ?? 100) * 2), ...(market_depth ? { market_depth } : {}) } } }
+      : {}),
+     ...((market_depth ?? 1) < 20 && valued.positions.some((p) => p.detail?.market_scan_limited === true)
+      ? { market_next_call: { tool: "list_nft_collections", args: { address, value, detail, ...(max_collections ? { max_collections } : {}), market_depth: Math.min(20, (market_depth ?? 1) * 2) } } }
+      : {}),
         };
       }
 
       const usdOf = (r: Row) => (typeof r.value?.usd === "number" ? r.value.usd : null);
       const { payload } = capPayload(
         "list_nft_collections",
-        { address, value },
+    { address, value, max_collections, market_depth },
         { address, ...totals, ...(estimated ? { estimated_value: estimated } : {}), collections: rows },
         {
           collections: {
@@ -261,7 +276,7 @@ const NFT_ESTIMATE_METHOD = `Per item, the lower of the collection's lowest acti
 type PageValuation = ValuerResult & { unhandled: string[] };
 
 /** Value one page's NFTs, each by the reader that handles its type. A failed valuation leaves the page listed. */
-async function valueNfts(owner: string, nfts: NftEntry[]): Promise<PageValuation> {
+async function valueNfts(owner: string, nfts: NftEntry[], maxCollections?: number, marketDepth?: number): Promise<PageValuation> {
   try {
     return await valueObjects(
       nfts.map((n) => ({
@@ -270,7 +285,7 @@ async function valueNfts(owner: string, nfts: NftEntry[]): Promise<PageValuation
         json: n.content && typeof n.content === "object" ? (n.content as Record<string, unknown>) : null,
       })),
       // One memo for the page, so its NFTs share one market read and its prices are asked once.
-      { owner, memo: new Map() },
+   { owner, nftMaxCollections: maxCollections, nftMarketDepth: marketDepth, memo: new Map() },
     );
   } catch (err) {
     return { positions: [], unread: [{ what: "valuation", reason: err instanceof Error ? err.message : String(err) }], unhandled: [] };
@@ -287,6 +302,8 @@ function collectionValue(p: ValuedPosition): Record<string, unknown> {
     basis: d.basis,
     floor: d.floor,
     last_sale: d.last_sale,
+  ...(d.market_scan_limited === true ? { market_scan_limited: true } : {}),
+  ...(Array.isArray(d.not_read) && d.not_read.length ? { market_not_read: d.not_read } : {}),
     ...(d.excluded_sales_count ? { excluded_sales: d.excluded_sales, excluded_sales_count: d.excluded_sales_count } : {}),
     ...(d.wash_check ? { wash_check: d.wash_check } : {}),
     ...(p.unpriced_reason ? { unpriced: p.unpriced_reason } : {}),
@@ -306,6 +323,11 @@ function nftPage(
   done: boolean,
   full: boolean,
   valuation: PageValuation | null,
+ limit?: number,
+ value?: boolean,
+ sourceCursor?: string,
+ maxCollections?: number,
+ marketDepth?: number,
 ) {
   const withContent = nfts.filter((n) => n.content !== null).length;
   const byObject = new Map((valuation?.positions ?? []).filter((p) => p.object_id).map((p) => [normalizeSuiAddress(p.object_id!), p]));
@@ -341,11 +363,24 @@ function nftPage(
       : {}),
     address,
     collection_types: [...collectionRefs.keys()],
-    ...(page ? { valuation: page.valuation } : {}),
+  ...(page ? {
+   valuation: {
+    ...page.valuation,
+    ...((maxCollections ?? 100) < 5_000 && valuation?.unread.some((u) => /collections valued together are past the \d+/.test(u.reason))
+     ? { next_call: { tool: "list_nfts", args: { address, limit, ...(sourceCursor ? { cursor: sourceCursor } : {}), detail: full ? "full" : "summary", value, max_collections: Math.min(5_000, (maxCollections ?? 100) * 2), ...(marketDepth ? { market_depth: marketDepth } : {}) } } }
+     : {}),
+    ...((marketDepth ?? 1) < 20 && valuation?.positions.some((p) => p.detail?.market_scan_limited === true)
+     ? { market_next_call: { tool: "list_nfts", args: { address, limit, ...(sourceCursor ? { cursor: sourceCursor } : {}), detail: full ? "full" : "summary", value, ...(maxCollections ? { max_collections: maxCollections } : {}), market_depth: Math.min(20, (marketDepth ?? 1) * 2) } } }
+     : {}),
+   }
+  } : {}),
     nfts: rows,
     page_size: nfts.length,
     kiosk_count: state.n ?? state.kiosks.length,
-    ...(done ? {} : { next_cursor: encodeCursor(state) }),
+  ...(done ? {} : {
+   next_cursor: encodeCursor(state),
+   next_call: { tool: "list_nfts", args: { address, limit, cursor: encodeCursor(state), detail: full ? "full" : "summary", value, ...(maxCollections ? { max_collections: maxCollections } : {}), ...(marketDepth ? { market_depth: marketDepth } : {}) } },
+  }),
   };
   return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
 }
@@ -428,6 +463,9 @@ function pageValuation(
       priced,
       unpriced,
       not_valued: nfts.length - priced - unpriced,
+   ...(all.some(([, c]) => c.position.detail?.market_scan_limited === true) ? {
+    market_scan_limited_collections: all.filter(([, c]) => c.position.detail?.market_scan_limited === true).length,
+   } : {}),
       nft_estimates: {
         tier: "heuristic",
         method: NFT_ESTIMATE_METHOD,

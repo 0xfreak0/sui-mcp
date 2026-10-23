@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { addressArg } from "./args.js";
+import { addressArg, numArg } from "./args.js";
 import "../utils/valuers/index.js";
 import { registeredValuers, valuePositions, type ValuedPosition } from "../utils/position-value.js";
 import { capPayload, type ListCap } from "../utils/output-cap.js";
@@ -130,28 +130,49 @@ export function registerDefiTools(server: McpServer) {
     "Find and value a wallet's staked SUI with rewards, issuer-rate liquid-staking coins, CLMM/AMM liquidity, lending and balances inside owned objects. Positions include asset legs, valuation method and evidence tier; USD is null if any leg lacks a price, with unpriced_reason. Totals sum only priced positions. coverage lists unrecognised owned-object types and counts; unread lists failed reads. Lending includes protocol health ratios. leads flags near-borrow-limit positions and operated shared vaults with their holdings.",
     {
       address: addressArg().describe("Wallet address (0x...)"),
+      owned_max_scan: numArg().int().min(1).max(50_000).optional().describe("Raise owned-object and position-reader scan bounds (default varies by reader, up to 5,000 objects and 200 entries per container); incomplete reads remain in unread."),
+      operated_recent_limit: numArg().int().min(1).max(50).optional().describe("Sent transactions per operated-shared-object scan page (default 20)."),
+      operated_candidate_limit: numArg().int().min(1).max(500).optional().describe("Shared objects checked per operated scan page (default 20); raise when operated_scan says candidates_truncated."),
+      operated_cursor: z.string().min(1).optional().describe("Older sent-transaction cursor from operated_scan.next_call."),
       detail: z
         .enum(["summary", "full"])
         .optional()
         .describe("'summary' (default): highest-value positions fitting about 30k characters, plus all unpriced ones; omitted counts the rest. 'full': every position."),
     },
-    async ({ address, detail }) => {
+    async ({ address, detail, owned_max_scan, operated_recent_limit, operated_candidate_limit, operated_cursor }) => {
       const only = registeredValuers().filter((name) => !NON_DEFI_VALUERS.includes(name));
       // One memo, so the readers and the coverage count share one walk of the owned objects.
-      const ctx = { owner: address, memo: new Map<string, Promise<unknown>>() };
+      const ctx = { owner: address, ownedMaxScan: owned_max_scan, memo: new Map<string, Promise<unknown>>() };
       const [valued, operated] = await Promise.all([
         valuePositions(ctx, only),
-        operatedSharedObjects(address, ctx).catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))),
+        operatedSharedObjects(address, ctx, { recent: operated_recent_limit, candidates: operated_candidate_limit, before: operated_cursor }).catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))),
       ]);
       const rows = positionRows(valued.positions);
       const unread = [...valued.unread];
       if (operated instanceof Error) unread.push({ what: "operated shared objects", reason: operated.message });
       const walk = heldWalk(ctx);
-      const coverage = walk ? ownedCoverage(await walk, valued.positions, valued.unread, false) : null;
+      const coverage = walk ? ownedCoverage(await walk, valued.positions, valued.unread, false, address) : null;
       const leads = [
         ...healthLeads(valued.positions).map((l) => ({ kind: "near_borrow_limit", ...l })),
         ...(operated instanceof Error ? [] : operated.leads.map(operatedLeadRow)),
       ];
+      const incompleteScan = (coverage !== null && (!coverage.complete || (coverage.dynamic_fields_unread ?? 0) > 0)) || unread.some((u) => /more than \d+|only the first \d+|past its first \d+|past \d+ containers|elements of .*first \d+/.test(u.reason));
+      const nextScan = Math.min(50_000, (owned_max_scan ?? 5_000) * 2);
+      const operatedArgs = { address, detail, ...(owned_max_scan ? { owned_max_scan } : {}), ...(operated_recent_limit ? { operated_recent_limit } : {}), ...(operated_candidate_limit ? { operated_candidate_limit } : {}), ...(operated_cursor ? { operated_cursor } : {}) };
+      const canRaiseCandidates = operated instanceof Error ? false : operated.scan?.candidates_truncated && (operated_candidate_limit ?? 20) < 500;
+      const operatedScan = operated instanceof Error || !operated.scan ? null : {
+        transactions_read: operated.transactions_read,
+        objects_read: operated.objects_read,
+        ...operated.scan,
+        incomplete_transactions: operated.scan.incomplete_transactions.map((digest) => ({ digest, next_call: { tool: "get_transaction", args: { digest } } })),
+        ...(canRaiseCandidates || (!operated.scan.candidates_truncated && operated.scan.cursor) ? {
+          next_call: {
+            tool: "get_defi_positions", args: canRaiseCandidates
+              ? { ...operatedArgs, operated_candidate_limit: Math.min(500, (operated_candidate_limit ?? 20) * 2) }
+              : { ...operatedArgs, operated_cursor: operated.scan.cursor }
+          },
+        } : {}),
+      };
       const output: Record<string, unknown> = {
         address,
         total_positions: rows.length,
@@ -160,11 +181,15 @@ export function registerDefiTools(server: McpServer) {
         ...(leads.length > 0 ? { leads } : {}),
         positions: rows,
         ...(unread.length > 0 ? { unread } : {}),
+        ...(operatedScan ? { operated_scan: operatedScan } : {}),
+        ...(incompleteScan && (!owned_max_scan || owned_max_scan < 50_000)
+          ? { owned_scan_next_call: { tool: "get_defi_positions", args: { ...operatedArgs, owned_max_scan: nextScan } } }
+          : {}),
         readers: valued.valuers_run,
       };
       const { payload } = capPayload(
         "get_defi_positions",
-        { address },
+        { ...operatedArgs },
         output,
         {
           positions: {

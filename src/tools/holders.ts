@@ -24,6 +24,8 @@ const PAGE_DELAY_MS = 100;
  * for the page in flight, the direct balance reads and the identity lookup.
  */
 export const SCAN_TIME_BUDGET_MS = 35_000;
+/** Explicitly requested longer walks; a default call keeps the short deadline. */
+const MAX_SCAN_TIME_BUDGET_MS = 600_000;
 
 /** Expected time per page of a coin walk or a directly held NFT walk, `PAGE_DELAY_MS` included. */
 const IDLE_PAGE_MS = 220;
@@ -47,18 +49,18 @@ interface BudgetStop {
  * retry may go deeper. When they do not, a smaller `maxScan` is the way to
  * fit. `mix`, when given, is a sentence on what the pages held.
  */
-function timeBudgetNote(stop: BudgetStop, maxScan: number, pageMs: number, mix = ""): string {
+function timeBudgetNote(stop: BudgetStop, maxScan: number, pageMs: number, budgetMs: number, mix = ""): string {
   const pagesNeeded = Math.ceil(maxScan / GQL_PAGE_SIZE);
   const perPage = stop.pages > 0 ? `, ${(stop.elapsedMs / stop.pages / 1000).toFixed(2)}s per page` : "";
   const read =
-    `The scan stopped at its ${SCAN_TIME_BUDGET_MS / 1000}s time budget after ${stop.objects} objects, ` +
+    `The scan stopped at its ${budgetMs / 1000}s time budget after ${stop.objects} objects, ` +
     `${stop.pages} page(s) deep, in ${(stop.elapsedMs / 1000).toFixed(1)}s${perPage}, before reaching max_scan or the end. ` +
     `${mix}max_scan ${maxScan} (${pagesNeeded} page(s))`;
-  if (pagesNeeded * pageMs <= SCAN_TIME_BUDGET_MS) {
+  if (pagesNeeded * pageMs <= budgetMs) {
     return `${read} can fit inside the budget. This endpoint answered too slowly to reach it, and a retry once it is less loaded may reach max_scan.`;
   }
-  const fits = Math.floor(SCAN_TIME_BUDGET_MS / pageMs) * GQL_PAGE_SIZE;
-  return `${read} takes more than the budget, and a retry at the same max_scan stops short of it too. Lower max_scan to ${fits} or less to fit inside the budget, or accept this sample.`;
+  const fits = Math.floor(budgetMs / pageMs) * GQL_PAGE_SIZE;
+  return `${read} takes more than the budget, and a retry at the same max_scan stops short of it too. Lower max_scan to ${fits} or less to fit inside the budget, or raise time_budget_ms (up to ${MAX_SCAN_TIME_BUDGET_MS}) to keep scanning.`;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -523,14 +525,14 @@ export function stoppedWalks(scan: TokenHolderResult): string {
  * `find_shared_multisig`: refusing beats truncating, because a partial search
  * cannot support the claim the caller is asking for.
  */
-function samplingCaveat(scan: TokenHolderResult, maxScan: number): string {
+function samplingCaveat(scan: TokenHolderResult, maxScan: number, budgetMs: number): string {
   return (
     `INCOMPLETE: ${stoppedWalks(scan)} stopped before the end (${scan.unique_holders} distinct holders seen). ` +
     `Both are walked in object-id order, which has nothing to do with balance, so these are the largest holders WITHIN THE SAMPLE and not the largest holders of this coin. ` +
     `Scanning further keeps finding bigger ones: on SUI the reported top holder went from 66 to 3,454 SUI between max_scan 200 and 800, with no overlap in the top five. ` +
     `Each holder's balance, coin_balance and address_balance are read directly for that address, since the walk saw only some of its coins; balance_in_sample and count are what the walk saw. ` +
     (scan.time_budget_reached
-      ? `${timeBudgetNote({ objects: scan.total_scanned, pages: scan.pages_deep, elapsedMs: scan.elapsed_ms }, maxScan, IDLE_PAGE_MS)} A real ranking is only feasible for coins with few enough objects to enumerate.`
+      ? `${timeBudgetNote({ objects: scan.total_scanned, pages: scan.pages_deep, elapsedMs: scan.elapsed_ms }, maxScan, IDLE_PAGE_MS, budgetMs)} A real ranking is only feasible for coins with few enough objects to enumerate.`
       : `Raise max_scan until "truncated" is false to get a real ranking, which is only feasible for coins with few enough objects to enumerate.`)
   );
 }
@@ -597,6 +599,7 @@ export async function scanTokenTopHolders(
   coinType: string,
   topN: number,
   maxScan: number,
+  timeBudgetMs = SCAN_TIME_BUDGET_MS,
 ): Promise<TokenHolderResult> {
   const inner = COIN_WRAPPER.exec(coinType)?.[1] ?? coinType;
 
@@ -610,7 +613,7 @@ export async function scanTokenTopHolders(
   let unresolved = 0;
 
   const started = Date.now();
-  const deadline = started + SCAN_TIME_BUDGET_MS;
+  const deadline = started + timeBudgetMs;
   const coinWalk = walkObjects<CoinObjectsPage["objects"]["nodes"][number]>(
     COIN_OBJECTS_QUERY,
     `0x2::coin::Coin<${inner}>`,
@@ -740,8 +743,10 @@ export function registerHolderTools(server: McpServer) {
         .max(50000)
         .optional()
         .describe(`Objects to scan per walk (default 5000, max 50000). Token mode walks Coin<T> objects and address balances separately, each to this bound. The ${SCAN_TIME_BUDGET_MS / 1000}s time budget applies regardless.`),
+      time_budget_ms: numArg().int().min(1_000).max(MAX_SCAN_TIME_BUDGET_MS).optional()
+        .describe(`Wall-clock scan budget in milliseconds (default ${SCAN_TIME_BUDGET_MS}, max ${MAX_SCAN_TIME_BUDGET_MS}); a longer request may exceed a client's timeout.`),
     },
-    async ({ type: rawType, collection_name, mode, limit, max_scan }) => {
+    async ({ type: rawType, collection_name, mode, limit, max_scan, time_budget_ms }) => {
       if (rawType && collection_name) {
         return errorResult("Give 'type' or 'collection_name', not both: each names the collection to scan.");
       }
@@ -815,7 +820,7 @@ export function registerHolderTools(server: McpServer) {
       }
 
       if (effectiveMode === "token") {
-        const scan = await scanTokenTopHolders(resolvedType, topN, maxScan);
+        const scan = await scanTokenTopHolders(resolvedType, topN, maxScan, time_budget_ms ?? SCAN_TIME_BUDGET_MS);
 
         // Same rule as the NFT branch: a walk that found nothing has not
         // ranked anything, and saying so beats a complete ranking of zero.
@@ -881,7 +886,7 @@ export function registerHolderTools(server: McpServer) {
               ...(scan.time_budget_reached ? { time_budget_reached: true } : {}),
               complete_ranking: false,
               cached: false,
-              caveat: samplingCaveat(scan, maxScan),
+            caveat: samplingCaveat(scan, maxScan, time_budget_ms ?? SCAN_TIME_BUDGET_MS),
               ...(scan.unresolved_owners ? { unresolved_owners: scan.unresolved_owners } : {}),
               sampled_holders: sampled,
             }
@@ -941,7 +946,7 @@ export function registerHolderTools(server: McpServer) {
       let truncated = false;
       let outOfTime = false;
       const started = Date.now();
-      const deadline = started + SCAN_TIME_BUDGET_MS;
+      const deadline = started + (time_budget_ms ?? SCAN_TIME_BUDGET_MS);
       let stoppedAfterMs = 0;
 
       while (totalScanned < maxScan) {
@@ -1118,6 +1123,7 @@ export function registerHolderTools(server: McpServer) {
                     { objects: totalScanned, pages, elapsedMs: stoppedAfterMs },
                     maxScan,
                     nftIdlePageMs,
+                time_budget_ms ?? SCAN_TIME_BUDGET_MS,
                     `${Math.round(kioskShare * 100)}% of the items read here were in kiosks, and a kiosk-held item costs more per page because the same page resolves its kiosk's owner. `,
                   )
                 : `Raise max_scan until "truncated" is false for a real ranking.`),

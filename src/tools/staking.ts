@@ -19,7 +19,7 @@ const MAX_STAKE_POSITIONS = 1000;
 export function registerStakingTools(server: McpServer) {
   server.tool(
     "get_validators",
-    "List current Sui validators, or return detailed info for one `address` (credentials, staking stats, network addresses). The default summary shows name, address, stake, commission, voting power and at-risk status within a compact output budget; at-risk validators are always kept. Ranking, active_validator_count and total_stake cover the whole set; validator_count counts the rows shown. `detail: full` returns every full row unless `limit` is set. Omitted rows and fields name a same-network full call without a limit.",
+    "List current Sui validators, or return detailed info for one `address` (credentials, staking stats, network addresses). Ranking and counts cover the full active set when scan.complete is true; a page-budget stop gives scan.next_call to read further. The default summary shows name, address, stake, commission, voting power and at-risk status within a compact output budget; at-risk validators are always kept. `detail: full` returns every full row unless `limit` is set. Omitted rows and fields name a same-network full call without a limit.",
     {
       address: addressArg()
         .optional()
@@ -30,6 +30,8 @@ export function registerStakingTools(server: McpServer) {
         .max(150)
         .optional()
         .describe("When listing, keep at most N validators; summary also keeps at-risk rows beyond N. The summary output budget still applies."),
+      cursor: z.string().min(1).optional()
+        .describe("Opaque cursor from scan.next_call to continue a validator set walk stopped at its page budget."),
       sort_by: z
         .enum(["stake", "commission"])
         .optional()
@@ -37,15 +39,27 @@ export function registerStakingTools(server: McpServer) {
       detail: z.enum(["summary", "full"]).optional()
         .describe("Listing detail: summary (default) caps compact rows; full returns all fields without a size cap. Ignored for an address lookup."),
     },
-    async ({ address, limit, sort_by, detail }) => {
+    async ({ address, limit, sort_by, detail, cursor }) => {
       // Detail branch — a single validator.
       if (address) {
-        const set = await fetchActiveValidators();
+        const set = await fetchActiveValidators(cursor);
         const av = findValidatorByAddress(set, address);
         const j = av?.contents?.json;
         const m = j?.metadata;
         const pool = j?.staking_pool;
-        const result: Record<string, unknown> = { address, epoch: set.epochId, in_active_set: !!av };
+        const result: Record<string, unknown> = {
+          address, epoch: set.epochId,
+          in_active_set: av ? true : set.truncated || cursor ? null : false,
+          ...((set.truncated || cursor) ? {
+            scan: {
+              complete: !set.truncated && !cursor,
+              ...(set.truncated && set.nextCursor ? {
+                next_call: { tool: "get_validators", args: { address, cursor: set.nextCursor, network: getNetwork() } },
+              } : {}),
+              note: "Only this segment of the active set was checked; a missing validator is not evidence of absence.",
+            }
+          } : {}),
+        };
         if (m) {
           result.credentials = {
             name: m.name ?? null,
@@ -71,7 +85,9 @@ export function registerStakingTools(server: McpServer) {
             at_risk: av?.atRisk ?? null,
           };
         } else {
-          result.note = "Validator not found in active set. They may be pending, inactive, or the address may not be a validator.";
+          result.note = set.truncated || cursor
+            ? "Validator not found in this segment. Follow scan.next_call while available; if the scan cannot advance, membership is unknown."
+            : "Validator not found in active set. They may be pending, inactive, or the address may not be a validator.";
         }
         return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
       }
@@ -79,7 +95,7 @@ export function registerStakingTools(server: McpServer) {
       // Ranking needs the whole set. Asking for `first: N` and sorting the
       // result ranks whichever N the service returned first, not the top N.
       const sortField = sort_by ?? "stake";
-      const set = await fetchActiveValidators();
+      const set = await fetchActiveValidators(cursor);
 
       const nodes = set.validators;
 
@@ -117,13 +133,19 @@ export function registerStakingTools(server: McpServer) {
       const fullPayload = {
         epoch: set.epochId,
         total_stake: set.totalStake,
-        active_validator_count: validators.length,
-        ...(set.truncated
+        active_validator_count: set.truncated || cursor ? null : validators.length,
+        ...(set.truncated || cursor
           ? {
-              truncated: true,
-              note: "Validator set pagination hit its page budget; counts and ranking cover only what was fetched.",
+            scan: {
+              complete: !set.truncated && !cursor,
+              validators_read: validators.length,
+              ...(set.nextCursor ? {
+                next_call: { tool: "get_validators", args: { cursor: set.nextCursor, sort_by: sortField, detail: detail ?? "summary", ...(limit ? { limit } : {}), network: getNetwork() } },
+              } : {}),
+              note: "Ranking and counts cover only this segment. A missing cursor with more pages means the set cannot be completed from this response.",
+            },
             }
-          : {}),
+          : { scan: { complete: true } }),
         validator_count: validators.length,
         validators,
       };
@@ -139,12 +161,12 @@ export function registerStakingTools(server: McpServer) {
         : validators;
       const nextCall = {
         tool: "get_validators",
-        args: { network: getNetwork(), sort_by: sortField, detail: "full" },
+        args: { network: getNetwork(), sort_by: sortField, detail: "full", ...(cursor ? { cursor } : {}) },
       };
       type Row = (typeof rows)[number];
       const { payload, resultId } = capPayload(
         "get_validators",
-        { network: getNetwork(), limit, sort_by, detail },
+        { network: getNetwork(), limit, sort_by, detail, cursor },
         { ...fullPayload, validators: rows },
         {
           validators: {
@@ -191,11 +213,13 @@ export function registerStakingTools(server: McpServer) {
         .describe("ISO 8601 date or checkpoint string; holdings at the end of the last checkpoint at or before it."),
       max_transactions: numArg().int().min(1).max(10000).optional()
         .describe("Historical replay budget per direction (default 1000); also bounds object-change pages."),
+      max_positions: numArg().int().min(1).max(50_000).optional()
+        .describe("Directly held staking positions scanned (default 1,000); raise when the current holdings walk stopped at its bound."),
       continuation: z.string().min(1).max(8192).optional()
         .describe("Opaque historical replay state from continue_with; keep address, as_of and network unchanged."),
       detail: z.enum(["summary", "full"]).optional().describe("summary caps displayed positions; full returns every read position."),
     },
-    async ({ address, as_of, max_transactions, detail, continuation }) => {
+    async ({ address, as_of, max_transactions, max_positions, detail, continuation }) => {
       if (continuation && as_of === undefined) throw new Error("A staking continuation requires its original as_of.");
       if (as_of !== undefined) {
         const historical = await historicalStaking(address, as_of, max_transactions, continuation);
@@ -207,7 +231,7 @@ export function registerStakingTools(server: McpServer) {
           { positions: { budget: 6000 } }, { full: detail === "full", next_call: { tool: "get_staking_summary", args: fullArgs } });
         return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
       }
-      const { objects, complete } = await listOwnedWithJson(address, STAKED_SUI_TYPE, MAX_STAKE_POSITIONS);
+      const { objects, complete } = await listOwnedWithJson(address, STAKED_SUI_TYPE, max_positions ?? MAX_STAKE_POSITIONS);
 
       let totalStakedMist = 0n;
       const positions = objects.map((o) => {
@@ -234,11 +258,14 @@ export function registerStakingTools(server: McpServer) {
         }),
         position_count: positions.length,
         complete: summed,
+        ...(!complete && objects.length >= (max_positions ?? MAX_STAKE_POSITIONS) && (max_positions ?? MAX_STAKE_POSITIONS) < 50_000
+          ? { position_scan_next_call: { tool: "get_staking_summary", args: { address, max_positions: Math.min(50_000, (max_positions ?? MAX_STAKE_POSITIONS) * 2), detail } } }
+          : {}),
         positions,
         rewards_included: false,
         scope: "Directly held StakedSui principal only; excludes wrapped/object-owned stakes, FungibleStakedSui and liquid-staking tokens.",
       };
-      const args = { address, network: getNetwork(), detail: "full" };
+      const args = { address, network: getNetwork(), detail: "full", max_positions };
       const { payload } = capPayload("get_staking_summary", args, result,
         { positions: { budget: 6000 } }, { full: detail === "full", next_call: { tool: "get_staking_summary", args } });
       payload.truncated = !complete || !!payload.omitted;

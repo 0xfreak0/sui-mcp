@@ -27,6 +27,8 @@ export interface NotRecognisedType {
   count: number;
   /** Up to three of its objects. */
   object_ids: string[];
+  /** Read every object of this type when only the first three ids fit here. */
+  next_call?: { tool: "list_owned_objects"; args: { owner: string; object_type: string; detail: "full" } };
 }
 
 export interface OwnedCoverage {
@@ -56,6 +58,7 @@ export function ownedCoverage(
   positions: ValuedPosition[],
   unread: ValuerResult["unread"],
   nfts: boolean,
+  owner?: string,
 ): OwnedCoverage {
   const unreadIds = new Set(unread.map((u) => u.what));
   // A reader that failed as a whole, or could not list one of its types,
@@ -116,6 +119,9 @@ export function ownedCoverage(
       ? `${notRecognised} object(s) of ${types.length} type(s) no reader recognises are not in the total: they are listed in not_recognised_types by type and count, and nothing inside them that was read held a coin${fieldsUnread ? `, though the dynamic fields of ${fieldsUnread} of them were not read` : ""}. A receipt of a protocol no reader knows looks the same, so the total is a floor.` +
         (nfts ? "" : " NFTs are among them; list_nft_collections, or get_wallet_overview with include_nfts, estimates those.")
       : "Every one is accounted for above.");
+  const withFollowups = owner ? types.map((row) => row.count > row.object_ids.length
+    ? { ...row, next_call: { tool: "list_owned_objects" as const, args: { owner, object_type: row.type, detail: "full" as const } } }
+    : row) : types;
   return {
     owned_objects: owned,
     complete: walk.complete,
@@ -124,7 +130,7 @@ export function ownedCoverage(
     kiosk_keys: kioskKeys,
     ...(nfts ? { nft_estimates: nftCount } : {}),
     not_recognised: notRecognised,
-    not_recognised_types: types,
+    not_recognised_types: withFollowups,
     ...(fieldsUnread ? { dynamic_fields_unread: fieldsUnread } : {}),
     note,
   };

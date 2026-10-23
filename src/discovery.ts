@@ -49,11 +49,10 @@ export interface ScanReport {
   scanned: number;
   /** True when the page budget or a failed page stopped it before the end. */
   truncated: boolean;
-  /**
-   * The error of the page read that ended the walk. A failed read says
-   * nothing about the pages after it, so it is a read failure, never a miss.
-   */
+  /** Error on a failed page; a failed read is not a miss. */
   failed?: string;
+  /** Cursor after the last successfully read page, when more objects remain. */
+  next_cursor?: string;
 }
 
 /**
@@ -125,8 +124,9 @@ function extractCoinTypeFromMetadata(typeRepr: string): string | null {
  */
 async function pageCoinMetadata(
   onBatch: (batch: TokenInfo[]) => boolean,
+  startCursor?: string,
 ): Promise<ScanReport> {
-  let cursor: string | undefined;
+  let cursor = startCursor;
   let read = 0;
 
   for (let page = 0; page < MAX_SCAN_PAGES; page++) {
@@ -137,9 +137,8 @@ async function pageCoinMetadata(
         after: cursor ?? undefined,
       });
     } catch (err) {
-      // A failed page ends the walk. The partial list is marked truncated,
-      // and the error travels with it so no caller reports it as a miss.
-      return { truncated: true, scanned: read, failed: describeError(err, getNetwork()) };
+      // Retry from the last successfully read page, rather than losing its matches.
+      return { truncated: true, scanned: read, failed: describeError(err, getNetwork()), ...(cursor ? { next_cursor: cursor } : {}) };
     }
 
     read += data.objects.nodes.length;
@@ -166,11 +165,15 @@ async function pageCoinMetadata(
 
     if (onBatch(batch)) return { truncated: false, scanned: read };
     if (!data.objects.pageInfo.hasNextPage) return { truncated: false, scanned: read };
-    cursor = data.objects.pageInfo.endCursor ?? undefined;
-    await new Promise((r) => setTimeout(r, PAGE_DELAY_MS));
+    const next = data.objects.pageInfo.endCursor;
+    if (!next || next === cursor) {
+      return { truncated: true, scanned: read, failed: "CoinMetadata page has more objects but no advancing cursor" };
+    }
+    cursor = next;
+    if (page + 1 < MAX_SCAN_PAGES) await new Promise((r) => setTimeout(r, PAGE_DELAY_MS));
   }
 
-  return { truncated: true, scanned: read };
+  return { truncated: true, scanned: read, ...(cursor ? { next_cursor: cursor } : {}) };
 }
 
 async function doFetchDiscoveryTokens(): Promise<TokenScan> {
@@ -225,9 +228,9 @@ export type TokenSearch = {
   scan?: ScanReport;
 };
 
-export async function searchTokens(query: string): Promise<TokenSearch> {
-  const live = await searchLiveTickers(query);
-  if (live.candidates.length > 0) {
+export async function searchTokens(query: string, scanCursor?: string): Promise<TokenSearch> {
+  const live = scanCursor ? null : await searchLiveTickers(query);
+  if (live && live.candidates.length > 0) {
     return {
       source: "dex_search",
       tokens: live.candidates,
@@ -238,19 +241,25 @@ export async function searchTokens(query: string): Promise<TokenSearch> {
       ...(live.unconfirmed_reason ? { unconfirmed_reason: live.unconfirmed_reason } : {}),
     };
   }
-  const scan = await fetchDiscoveryTokens();
+  const scan = scanCursor
+    ? await (async (): Promise<TokenScan> => {
+      const tokens: TokenInfo[] = [];
+      const report = await pageCoinMetadata((batch) => { tokens.push(...batch); return false; }, scanCursor);
+      return { tokens, ...report };
+    })()
+    : await fetchDiscoveryTokens();
   const q = query.trim().toLowerCase();
   return {
     source: "scan",
     tokens: scan.tokens.filter(
       (t) => t.name.toLowerCase().includes(q) || t.symbol.toLowerCase().includes(q),
     ),
-    coverage: live.providers,
-    unavailable_providers: live.unavailable_providers,
-    partial: live.partial,
-    unconfirmed: live.unconfirmed,
-    ...(live.unconfirmed_reason ? { unconfirmed_reason: live.unconfirmed_reason } : {}),
-    scan: { scanned: scan.scanned, truncated: scan.truncated, ...(scan.failed ? { failed: scan.failed } : {}) },
+    coverage: live?.providers ?? { dexscreener: "skipped", geckoterminal: "skipped" },
+    unavailable_providers: live?.unavailable_providers ?? [],
+    partial: live?.partial ?? false,
+    unconfirmed: live?.unconfirmed ?? 0,
+    ...(live?.unconfirmed_reason ? { unconfirmed_reason: live.unconfirmed_reason } : {}),
+    scan: { scanned: scan.scanned, truncated: scan.truncated, ...(scan.failed ? { failed: scan.failed } : {}), ...(scan.next_cursor ? { next_cursor: scan.next_cursor } : {}) },
   };
 }
 
@@ -296,7 +305,10 @@ async function scanForSymbol(
   const cached = tokenCache.get(getNetwork());
   if (cached && Date.now() - cached.fetchedAt < TOKEN_CACHE_TTL_MS) {
     const fromScan = cached.scan.tokens.find((t) => t.symbol.toLowerCase() === q);
-    const report = { scanned: cached.scan.scanned, truncated: cached.scan.truncated };
+    const report: ScanReport = {
+      scanned: cached.scan.scanned, truncated: cached.scan.truncated,
+      ...(cached.scan.next_cursor ? { next_cursor: cached.scan.next_cursor } : {}),
+    };
     if (!fromScan) return { token: null, scan: report };
     symbolCache.set(symbolKey, { token: fromScan, fetchedAt: Date.now() });
     return { token: fromScan, scan: report };

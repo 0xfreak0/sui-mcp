@@ -7,7 +7,7 @@ sidebar:
 ---
 | Tool | Summary |
 |---|---|
-| [`find_pools`](#find_pools) | Find pools for an exact token pair across Cetus, DeepBook v2/v3, Turbos, BlueMove v1, Bluefin, Momentum, FlowX CLMM/v2, Magma, Aftermath AMM and Kriya v2. |
+| [`find_pools`](#find_pools) | Find pools for an exact token pair across 11 Sui venues. |
 | [`get_defi_positions`](#get_defi_positions) | Find and value a wallet's staked SUI with rewards, issuer-rate liquid-staking coins, CLMM/AMM liquidity, lending and balances inside owned objects. |
 | [`get_pool_stats`](#get_pool_stats) | Get stats for a DeFi liquidity pool on Sui given its object ID. |
 
@@ -17,7 +17,7 @@ sidebar:
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Find pools for an exact token pair across Cetus, DeepBook v2/v3, Turbos, BlueMove v1, Bluefin, Momentum, FlowX CLMM/v2, Magma, Aftermath AMM and Kriya v2. Both token orders are searched. Venue statuses distinguish complete searches from failed or capped reads. The response includes pool IDs and coin types.
+Find pools for an exact token pair across 11 Sui venues. Both token orders are searched. Incomplete venue searches carry a next_call that resumes from their last cursor; offset pages the pools found in one call. Totals are lower bounds until every venue completes.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -25,6 +25,7 @@ Find pools for an exact token pair across Cetus, DeepBook v2/v3, Turbos, BlueMov
 | `token_b` | string | yes | Second token: verified symbol (e.g. 'USDC') or full coin type |
 | `protocol` | string | no | Filter by venue: cetus, deepbook, turbos, bluemove, bluefin, momentum, flowx_clmm, flowx_v2, magma, aftermath, kriya_v2. Searches all if omitted. |
 | `offset` | integer (at least 0) | no | Start the pool list at this index (default 0). A response that leaves pools out gives the next offset in omitted.next_call. |
+| `venue_cursor` | string | no | Opaque cursor from a venue's next_call. Resumes that venue's search; use the protocol supplied in the call. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## get_defi_positions
@@ -39,6 +40,10 @@ Find and value a wallet's staked SUI with rewards, issuer-rate liquid-staking co
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | yes | Wallet address (0x...) |
+| `owned_max_scan` | integer (1 to 50000) | no | Raise owned-object and position-reader scan bounds (default varies by reader, up to 5,000 objects and 200 entries per container); incomplete reads remain in unread. |
+| `operated_recent_limit` | integer (1 to 50) | no | Sent transactions per operated-shared-object scan page (default 20). |
+| `operated_candidate_limit` | integer (1 to 500) | no | Shared objects checked per operated scan page (default 20); raise when operated_scan says candidates_truncated. |
+| `operated_cursor` | string | no | Older sent-transaction cursor from operated_scan.next_call. |
 | `detail` | `summary` \| `full` | no | 'summary' (default): highest-value positions fitting about 30k characters, plus all unpriced ones; omitted counts the rest. 'full': every position. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 

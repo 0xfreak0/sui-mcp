@@ -70,4 +70,6 @@ Find a Sui coin type by name or symbol. Verified types rank first. Mainnet searc
 | `query` | string | yes | Token name, symbol (e.g. 'USDC', 'WAL'), or full coin type (e.g. '0x...::mod::TOKEN') |
 | `verify_onchain` | boolean | no | If true, verify each match on-chain and include total supply (default: false) |
 | `limit` | integer (1 to 500) | no | Matches returned (default 150, max 500); verified types then exact symbols. total_matches counts all matches. |
+| `offset` | integer (at least 0) | no | Index of the first ranked match to return (default 0); use next_call to page past limit. |
+| `scan_cursor` | string | no | Opaque CoinMetadata scan continuation from discovery_scan_next_call; searches the next bounded block rather than restarting. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

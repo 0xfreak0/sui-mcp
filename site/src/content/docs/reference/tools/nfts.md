@@ -45,6 +45,7 @@ Scan objects of a Move type and report holders. NFT collections are ranked by co
 | `mode` | `nft` \| `token` | no | 'nft' ranks by count, 'token' by balance. If omitted, a type the chain knows as a coin is scanned as a token, anything else as an NFT collection. |
 | `limit` | integer (1 to 100) | no | Top N holders to return (default 20, max 100) |
 | `max_scan` | integer (1 to 50000) | no | Objects to scan per walk (default 5000, max 50000). Token mode walks Coin&lt;T> objects and address balances separately, each to this bound. The 35s time budget applies regardless. |
+| `time_budget_ms` | integer (1000 to 600000) | no | Wall-clock scan budget in milliseconds (default 35000, max 600000); a longer request may exceed a client's timeout. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## list_nft_collections
@@ -59,6 +60,8 @@ Summary of the NFT collections a wallet holds: every kiosk plus directly owned o
 |---|---|---|---|
 | `address` | string | yes | Owner wallet address (0x...) |
 | `value` | boolean, default `true` | no | Estimate each collection's value from its market (default true). Costs a few requests per collection that has a market. |
+| `max_collections` | integer (1 to 5000) | no | Collection types whose markets are valued (default 100); raise when estimated_value lists collections beyond this bound. |
+| `market_depth` | integer (1 to 20) | no | Multiplier for per-collection sale/listing reads (default 1); raise through estimated_value.market_next_call when market coverage is limited. |
 | `detail` | `summary` \| `full` | no | 'summary' (default): priced collections, then the most-held others that fit; `omitted` counts the rest. 'full': every collection. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
@@ -77,4 +80,6 @@ Summary of the NFT collections a wallet holds: every kiosk plus directly owned o
 | `cursor` | string | no | Opaque pagination token from a prior response's `next_cursor`. Omit on first call. |
 | `detail` | `summary` \| `full` | no | 'summary' (default) leaves out raw contents and valuation evidence, counted in `omitted`. 'full' includes both. |
 | `value` | boolean, default `true` | no | Estimate each NFT's value from its collection's market (default true). Costs a few requests per collection on the page. |
+| `max_collections` | integer (1 to 5000) | no | Collection types valued on this page (default 100); raise through valuation.next_call if more are present. |
+| `market_depth` | integer (1 to 20) | no | Multiplier for per-collection sale/listing reads (default 1); raise through valuation.market_next_call when market coverage is limited. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

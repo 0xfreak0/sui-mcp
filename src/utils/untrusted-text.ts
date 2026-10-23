@@ -9,7 +9,7 @@ const MAX_TEXT = 2_048;
  */
 const INVISIBLE =
   /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}\p{Default_Ignorable_Code_Point}]/gu;
-const MARKUP = /[<>*~`|\[\]\\]|&(?=#?[A-Za-z0-9]+;)/g;
+const MARKUP = /[<>*~`|\[\]\\_]|&(?=#?[A-Za-z0-9]+;)/g;
 /**
  * The three subdivision flags emoji fonts draw (England, Scotland, Wales):
  * black flag, the tags of gbeng, gbsct or gbwls, cancel tag. Any other tag
@@ -76,13 +76,54 @@ export function escapeHidden(value: string): string {
   return escapeInvisible(value, false);
 }
 
+/** Indices of a complete Move generic inside prose, including nested type arguments. */
+function embeddedTypes(value: string): Set<number> {
+  const indices = new Set<number>();
+  const starts = /(?:(?:0x)?[0-9a-fA-F]{1,64}::[A-Za-z_][A-Za-z0-9_]*::)?[A-Za-z_][A-Za-z0-9_]*</g;
+  let match: RegExpExecArray | null;
+  while ((match = starts.exec(value))) {
+    const start = match.index;
+    if (start > 0 && /[A-Za-z0-9_:]/.test(value[start - 1]!)) continue;
+    let depth = 1;
+    let end = starts.lastIndex;
+    for (; end < value.length && depth; end++) {
+      if (value[end] === "<") depth++;
+      else if (value[end] === ">") depth--;
+    }
+    // An unclosed generic cannot have a later, independent candidate.
+    if (depth) break;
+    if (isTypeTag(value.slice(start, end), true)) {
+    for (let i = start; i < end; i++) indices.add(i);
+    }
+    // Nested openers have already been examined as part of this span.
+    starts.lastIndex = end;
+  }
+  return indices;
+}
+
 function escapeText(value: string, code: boolean): string {
   if (code || URL_VALUE.test(value)) return escapeInvisible(value, code);
-  // Escape original markup first, leaving the visible escapes for controls intact.
-  const escaped = escapeInvisible(value.replace(MARKUP, CODEPOINT), false)
-    // Only an underscore that can open emphasis (not after a letter or digit,
-    // not before a space) is escaped, so `swap_exact_input_` keeps its spelling.
-    .replace(/(?<![A-Za-z0-9])_(?![\s]|$)/g, CODEPOINT);
+  const types = embeddedTypes(value);
+  const tagEnds = new Set<number>();
+  for (const match of value.matchAll(/<[A-Za-z!/][^<>]*>/g)) {
+    if (!types.has(match.index!)) tagEnds.add(match.index! + match[0].length - 1);
+  }
+  // A plain arrow or comparison is evidence, not markup. Protect tag brackets,
+  // a leading blockquote and Markdown syntax without changing Move generics.
+  const escaped = escapeInvisible(value.replace(MARKUP, (char: string, at: number, text: string) => {
+    if (char === "_") return !/[A-Za-z0-9]/.test(text[at - 1] ?? "") && !/^\s?$/.test(text[at + 1] ?? "") ? CODEPOINT(char) : char;
+    if (char === "<") {
+      // A type argument can itself spell an HTML tag or autolink.
+      if (types.has(at)) {
+        TYPE_HTML_OPEN.lastIndex = at;
+        if (!TYPE_HTML_OPEN.test(text)) return char;
+      }
+      return /[A-Za-z!/]/.test(text[at + 1] ?? "") ? CODEPOINT(char) : char;
+    }
+    if (types.has(at)) return char;
+    if (char === ">") return tagEnds.has(at) || /^[ \t]{0,3}$/.test(text.slice(0, at)) ? CODEPOINT(char) : char;
+    return CODEPOINT(char);
+  }), false);
   // A chain-supplied sentence must not become a Markdown heading or list.
   return escaped.replace(/^([ \t]{0,3})(#{1,6}|[-+]|\d+\.)(?=\s)/, (_match, spaces: string, marker: string) =>
     `${spaces}${CODEPOINT(marker[0]!)}${marker.slice(1)}`);
@@ -125,21 +166,48 @@ const decoded = (field: string, value: unknown) =>
 const SKIP = /(?:^|_)(?:next_call|previous_call|repeat_with|continue_with)$/;
 const CODE = /^(?:disassembly|code|decompiled)$/;
 const MOVE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const STRUCT_PATH = /(?:0x)?[0-9a-fA-F]{1,64}::[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*/g;
-const PRIMITIVE = /\b(?:u8|u16|u32|u64|u128|u256|bool|address|signer|vector)\b/g;
+const TYPE_HTML_OPEN = /<(?:[A-Za-z][A-Za-z0-9-]*(?=[>\s/])|[A-Za-z][A-Za-z0-9+.-]{1,31}:)/y;
+const TYPE_NAME = /[A-Za-z_][A-Za-z0-9_]*/y;
+const TYPE_STRUCT = /(?:0x)?[0-9a-fA-F]{1,64}::[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*/y;
+const TYPE_PRIMITIVE = /^(?:u8|u16|u32|u64|u128|u256|bool|address|signer)$/;
 /**
  * Bytes shown as hex (an address, or a pure `vector<u8>` argument such as an
  * oracle update): no markup and no readable text, so never cut.
  */
 const HEX_BYTES = /^0x[0-9a-fA-F]*$/;
 /** A type parameter as the chain prints one in a declaration (`Balance<T0>`). */
-const TYPE_PARAM = /\bT\d*\b/g;
+const TYPE_PARAM = /^T\d*$/;
 
-/** A Move type tag: struct paths, primitives and type parameters joined by `<`, `>`, `,` and spaces. */
-function isTypeTag(value: string): boolean {
-  if (!(value.includes("::") || value.includes("<")) || value.length > 8_192) return false;
-  const rest = value.replace(STRUCT_PATH, "S").replace(PRIMITIVE, "P").replace(TYPE_PARAM, "G");
-  return /^[SPG<>, ]+$/.test(rest) && (rest.includes("S") || rest.includes("<"));
+/** Accept exactly one balanced Move type; bare generic names belong in embedded prose only. */
+function isTypeTag(value: string, allowBareNames = false): boolean {
+  if (value.length > 8_192 || !value) return false;
+  let at = 0;
+  const type = (depth: number): boolean => {
+    if (depth > 128) return false;
+    TYPE_STRUCT.lastIndex = at;
+    const struct = TYPE_STRUCT.exec(value);
+    TYPE_NAME.lastIndex = at;
+    const name = struct ?? TYPE_NAME.exec(value);
+    if (!name) return false;
+    at += name[0].length;
+    const bare = !struct;
+    if (value[at] !== "<") return !bare || TYPE_PRIMITIVE.test(name[0]) || TYPE_PARAM.test(name[0]);
+    if (bare && (TYPE_PRIMITIVE.test(name[0]) || (name[0] !== "vector" && !allowBareNames))) return false;
+    at++;
+    let args = 0;
+    do {
+      while (value[at] === " ") at++;
+      if (!type(depth + 1)) return false;
+      args++;
+      while (value[at] === " ") at++;
+      if (value[at] !== ",") break;
+      at++;
+    } while (true);
+    if (value[at] !== ">" || (bare && name[0] === "vector" && args !== 1)) return false;
+    at++;
+    return true;
+  };
+  return type(0) && at === value.length;
 }
 
 /**

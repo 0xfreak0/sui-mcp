@@ -134,7 +134,7 @@ it("binds venue and audit continuations without treating decoded data as a call"
         results: [{ continue_with: call() }],
         venues: [{ next_call: call() }],
         pool_discovery: { venues: [{ next_call: call() }] },
-        liquidity_custody: { pools: [{ scan: { next_call: call() } }] },
+    liquidity_custody: { next_call: call(), pools: [{ scan: { next_call: call() } }] },
         shared_funders: [{ fanout_next_call: call() }],
         co_funded_in_one_transaction: [{ recipient_count_next_call: call() }],
         unexpanded: [{ next_call: call() }],
@@ -151,6 +151,7 @@ it("binds venue and audit continuations without treating decoded data as a call"
         objects_follow_up_calls: [call()],
         object_values_page: { next_call: call() },
         objects_unread_follow_up_calls: [call()],
+    versions_page: { next_call: call() },
         discovery_scan_next_call: call(),
         holdings_next_call: call(),
         staked_sui_count_next_call: call(),
@@ -174,12 +175,14 @@ it("binds venue and audit continuations without treating decoded data as a call"
         kiosk_cap_holder_next_call: call(),
         pnl: { senders_next_call: call(), digests_next_call: call(), transactions_next_call: call() },
         event_types_page: { next_call: call() },
+    capabilities: { next_call: call() },
+    owner_change_next_call: call(),
         bytecode_scan: { version_gates: { next_call: call() } },
         events: [{ parsed: { next_call: call() } }],
     };
     expect(bindContinuationNetwork(payload, "testnet")).toBe(true);
     const all = calls(payload);
-    expect(all.filter((entry) => entry.args?.network === "testnet")).toHaveLength(49);
+  expect(all.filter((entry) => entry.args?.network === "testnet")).toHaveLength(53);
     expect(payload.events[0].parsed.next_call.args).not.toHaveProperty("network");
 });
 

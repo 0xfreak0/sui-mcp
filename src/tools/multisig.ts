@@ -119,9 +119,22 @@ export function registerMultisigTools(server: McpServer) {
             before,
           });
           const conn = r.transactions;
-          if (!conn?.nodes?.length) {
+     if (!conn?.nodes) {
+      stalled = true;
+      break;
+     }
+     if (conn.nodes.length === 0) {
+      if (!conn.pageInfo.hasPreviousPage) {
             complete = true;
             break;
+      }
+      const next = conn.pageInfo.startCursor;
+      if (!next || next === before) {
+       stalled = true;
+       break;
+      }
+      before = next;
+      continue;
           }
 
           // A `last` page arrives oldest-first.

@@ -67,3 +67,19 @@ it("rejects module offsets outside all_modules mode", async () => {
   expect(response.isError).toBe(true);
   expect(JSON.parse(response.content[0].text).error).toContain("all_modules");
 });
+
+it("does not count a failed module as decompiled or declare the batch complete", async () => {
+  mockSui.ledgerService.getObject.mockResolvedValueOnce({
+    response: {
+      object: {
+        package: {
+          storageId: "0x2",
+          modules: [{ name: "../invalid", contents: bytecode, datatypes: [], functions: [] }],
+        }
+      }
+    },
+  });
+  const result = await tools.get("decompile_module")!({ package_id: "0x2", all_modules: true });
+  expect(result.isError).toBe(true);
+  expect(JSON.parse(result.content[0].text).error).toMatch(/Could not decompile module.*invalid/);
+});

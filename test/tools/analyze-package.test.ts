@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   analyzePackageModules,
   capabilityLimitNextCall,
+  versionGateNextCall,
   bytecodeFindings,
   type AnalyzedModule,
 } from "../../src/tools/analyze-package.js";
@@ -19,6 +20,19 @@ describe("capabilityLimitNextCall", () => {
       });
     expect(capabilityLimitNextCall({ authority_structs: 1 }, { authority_structs: 48 })).toBeNull();
   });
+});
+
+it("continues beyond the maximum version bound without revisiting older versions", () => {
+  expect(versionGateNextCall(29)).toEqual({
+    tool: "analyze_package", repeat_with: { max_versions_compared: 60 },
+  });
+  expect(versionGateNextCall(119, 120)).toEqual({
+    tool: "analyze_package", repeat_with: { version_offset: 119 },
+  });
+  expect(versionGateNextCall(238, 120, 119)).toEqual({
+    tool: "analyze_package", repeat_with: { version_offset: 238 },
+  });
+  expect(versionGateNextCall(undefined, 120, 238)).toBeNull();
 });
 
 function mod(partial: Partial<AnalyzedModule> & { name: string }): AnalyzedModule {
@@ -296,5 +310,29 @@ describe("bytecodeFindings", () => {
     expect(compact).toMatchObject({ count: 10 });
     expect(compact?.names).toHaveLength(8);
     expect(full?.names).toEqual(unknowns.map((_, i) => `pool::opaque${i}`));
+});
+
+  it("lists the evidence for every bytecode lead in full detail", () => {
+    const checks = Array.from({ length: 10 }, (_, i) => [
+      `entry public update${i}(Arg0: &Authority, Arg1: &mut TxContext) {`,
+      "B0:",
+      "\t0: MoveLoc[1](Arg1: &mut TxContext)",
+      "\t1: FreezeRef",
+      "\t2: Call tx_context::sender(&TxContext): address",
+      "\t3: MoveLoc[0](Arg0: &Authority)",
+      "\t4: ImmBorrowField[0](Authority.owner: address)",
+      "\t5: ReadRef",
+      "\t6: Eq",
+      "\t7: Pop",
+      "\t8: Ret",
+      "}",
+    ].join("\n"));
+    const disassembly = `module 00000000000000000000000000000000000000000000000000000000000000aa.pool {\nstruct Authority has key {\n\tid: UID,\n\towner: address\n}\n${checks.join("\n")}\n}`;
+    const summary = bytecodeFindings(new Map([["pool", disassembly]])).findings.find((f) => f.code === "discarded-check");
+    const full = bytecodeFindings(new Map([["pool", disassembly]]), { full: true }).findings.find((f) => f.code === "discarded-check");
+    expect(summary?.lead_count).toBe(10);
+    expect(summary?.evidence).toHaveLength(8);
+    expect(full?.evidence).toHaveLength(10);
+    expect(full?.evidence.at(-1)).toContain("pool::update9");
 });
 });

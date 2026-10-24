@@ -73,4 +73,27 @@ describe("analyze_multisig", () => {
     expect(last.note).toMatch(/combine it with prior segments/);
     expect(mockGqlQuery.mock.calls.map(([, vars]) => vars.before)).toEqual([null, "older"]);
   });
+  it("walks an advancing empty page without declaring the history complete", async () => {
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { before: string | null }) => ({
+      transactions: vars.before
+        ? {
+          pageInfo: { hasPreviousPage: false, startCursor: null },
+          nodes: [{ digest: "old", signatures: fixtures.ms_2of3.signatures.map((signatureBytes) => ({ signatureBytes })) }],
+        }
+        : { pageInfo: { hasPreviousPage: true, startCursor: "older" }, nodes: [] },
+    }));
+    const result = await analyze({ address: fixtures.ed25519.address, max_transactions: 1 });
+    expect(mockGqlQuery.mock.calls.map(([, vars]) => vars.before)).toEqual([null, "older"]);
+    expect(result.content[0].text).toContain("has sent 1 transaction(s) in the 1 examined");
+});
+
+  it("does not treat an empty stale cursor as the end of history", async () => {
+    mockGqlQuery.mockResolvedValue({
+      transactions: { pageInfo: { hasPreviousPage: true, startCursor: "stale" }, nodes: [] },
+    });
+    const result = JSON.parse((await analyze({ address: fixtures.ed25519.address, cursor: "stale" })).content[0].text);
+    expect(result).toMatchObject({ committee: null, history_complete: false });
+    expect(result.next_call).toBeUndefined();
+    expect(mockGqlQuery).toHaveBeenCalledTimes(1);
+  });
 });

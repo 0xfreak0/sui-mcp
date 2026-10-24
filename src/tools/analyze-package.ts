@@ -21,7 +21,7 @@ import {
 } from "../utils/move-package.js";
 import { annotateDisassembly } from "../utils/disassembly.js";
 import { analyzeCodeGuards, type CodeLead, type LeadGrade, type UngatedVersionLead } from "../utils/code-guards.js";
-import { scanVersionGates, type VersionGateScan } from "../utils/version-gates.js";
+import { scanVersionGates, MAX_VERSIONS_COMPARED, type VersionGateScan } from "../utils/version-gates.js";
 import { auditPackageCapabilities } from "../utils/capabilities.js";
 import { computeOwnerChanges } from "../utils/object-history.js";
 import { fetchCapHistory } from "./upgrade-history.js";
@@ -311,7 +311,7 @@ export function bytecodeFindings(
       code: rule.code,
       title: rule.title,
       detail: `${rule.detail} Each lead is code to read with disassemble_module function_name, not a finding on its own.`,
-      evidence: listed.slice(0, MAX_LEADS).map((l) => `fn ${l.function} (${l.grade})`),
+   evidence: listed.map((l) => `fn ${l.function} (${l.grade})`),
       leads: listed,
       lead_count: leads.length,
     });
@@ -407,6 +407,7 @@ function publicApi(mod: AnalyzedModule): string[] {
 }
 
 const AUDIT_LIMITS = { publish_pages: [6, 20], authority_structs: [12, 48], registry_probes: [200, 400], witness_checks: [12, 48] } as const;
+const MAX_VERSION_GATE_READS = 120;
 
 export function capabilityLimitNextCall(
  hit: { publish_pages?: number; authority_structs?: number; registry_probes?: number; witness_checks?: number } | undefined,
@@ -421,6 +422,16 @@ export function capabilityLimitNextCall(
   if (value < maximum) repeat_with[name] = Math.min(maximum, value * 2);
  }
  return Object.keys(repeat_with).length ? { tool: "analyze_package", repeat_with } : null;
+}
+
+export function versionGateNextCall(nextOffset: number | undefined, maxVersions = MAX_VERSIONS_COMPARED, versionOffset?: number) {
+ if (nextOffset === undefined) return null;
+ return {
+  tool: "analyze_package",
+  repeat_with: versionOffset !== undefined || maxVersions >= MAX_VERSION_GATE_READS
+   ? { version_offset: nextOffset }
+   : { max_versions_compared: Math.min(MAX_VERSION_GATE_READS, maxVersions * 2) },
+ };
 }
 
 export function registerAnalyzePackageTools(server: McpServer) {
@@ -445,8 +456,10 @@ export function registerAnalyzePackageTools(server: McpServer) {
     .describe("Key structs to check for a registered coin (default 200, max 400). Raise when capabilities.limits_hit.registry_probes is set."),
    witness_checks: numArg().int().min(1).max(48).optional()
     .describe("Unregistered witness types to check for a coin (default 12, max 48). Raise when capabilities.limits_hit.witness_checks is set."),
-   max_versions_compared: numArg().int().min(2).max(120).optional()
-    .describe("Older package versions compared with the newest (default 30, max 120); bytecode_scan.version_gates.next_call raises this when versions remain."),
+   max_versions_compared: numArg().int().min(2).max(MAX_VERSION_GATE_READS).optional()
+    .describe("Package versions compared in one segment, including the newest (default 30, max 120); follow bytecode_scan.version_gates.next_call for more."),
+   version_offset: numArg().int().min(0).optional()
+    .describe("First older lineage version in this segment (default 0); use the version-gates next_call when the 120-version limit is reached."),
       detail: z
         .enum(["summary", "full"])
         .optional()
@@ -459,7 +472,7 @@ export function registerAnalyzePackageTools(server: McpServer) {
         .describe("Only these modules' full signatures and struct shapes; others omitted. Omit for all modules at the chosen detail."),
     },
   async ({ package_id, include_disassembly, audit_capabilities, detail, modules: wantedModules,
-   publish_pages, authority_structs, registry_probes, witness_checks, max_versions_compared }) => {
+   publish_pages, authority_structs, registry_probes, witness_checks, max_versions_compared, version_offset }) => {
       try {
         const packageId = await resolvePackageId(package_id);
         const { response: res } = await sui.movePackageService.getPackage({
@@ -530,13 +543,17 @@ export function registerAnalyzePackageTools(server: McpServer) {
      audit_capabilities === false ? undefined : auditPackageCapabilities(packageId, rootPublisher.publisher, modules,
       { publish_pages, authority_structs, registry_probes, witness_checks }),
      scanVersionGates(versionId, bytecode.texts ? { package_id: versionId, disassembly: bytecode.texts } : undefined,
-      max_versions_compared).then(
+      max_versions_compared, version_offset).then(
             (gates) => ({ gates, unavailable: null }),
-            (err: unknown) => ({ gates: null, unavailable: err instanceof Error ? err.message : String(err) }),
+       (err: unknown) => {
+        if (err instanceof RangeError) throw err;
+        return { gates: null, unavailable: err instanceof Error ? err.message : String(err) };
+       },
           ),
         ]);
     const auditNextCall = capabilityLimitNextCall(capabilities?.limits_hit,
      { publish_pages, authority_structs, registry_probes, witness_checks });
+    const gateNextCall = versionGateNextCall(versionGates.gates?.next_offset, max_versions_compared, version_offset);
         const gate = versionGates.gates ? versionGateFinding(versionGates.gates, normalizeSuiAddress(versionId), full) : null;
         if (gate?.finding) findings.push(gate.finding);
         const weakLeads = [...(scan?.scan.weak_leads ?? []), ...(gate?.weak ?? [])];
@@ -606,17 +623,9 @@ export function registerAnalyzePackageTools(server: McpServer) {
                         version_count: versionGates.gates.version_count,
                         versions_compared: versionGates.gates.versions_compared,
                         ...(versionGates.gates.versions_not_compared ? { versions_not_compared: versionGates.gates.versions_not_compared } : {}),
-          ...(versionGates.gates.versions_not_compared && (max_versions_compared ?? 30) < 120
-           ? {
-            next_call: {
-             tool: "analyze_package", repeat_with: {
-              max_versions_compared: Math.min(120, (max_versions_compared ?? 30) * 2),
-             }
-            }
-           }
-           : {}),
+          ...(gateNextCall ? { next_call: gateNextCall } : {}),
                         ...(versionGates.gates.unreadable ? { unreadable: versionGates.gates.unreadable } : {}),
-                        note: "Each older version was compared with the newest for a check most of the newest version's public functions on a shared type make; `ungated-older-version` lists the versions whose public functions on that type skip it. A check written inline (a comparison and a branch to abort) is not compared.",
+          note: "Each segment compares distinct older versions with the newest version's gate; the newest is repeated as the reference, and findings, leads and counts on a later segment cover that segment only. Follow next_call until the older versions are exhausted. `ungated-older-version` lists public mutators that skip the newest version's common check. A check written inline (a comparison and a branch to abort) is not compared.",
                       }
                     : versionGates.unavailable
                       ? { unavailable: `The lineage's versions could not be read (${versionGates.unavailable}), so older versions were not compared.` }
@@ -650,7 +659,7 @@ export function registerAnalyzePackageTools(server: McpServer) {
           "analyze_package",
      {
       package_id, include_disassembly, audit_capabilities, modules: wantedModules,
-      publish_pages, authority_structs, registry_probes, witness_checks, max_versions_compared
+      publish_pages, authority_structs, registry_probes, witness_checks, max_versions_compared, version_offset
      },
           payload,
           {

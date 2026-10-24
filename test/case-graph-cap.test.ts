@@ -37,4 +37,19 @@ describe("export_case diagram paging", () => {
     expect(second.next_call).toBeUndefined();
     expect(fetchTx.mock.calls.map(([digest]) => digest)).toEqual(digests.slice(50));
   });
+  it("keeps a finished Mermaid report plain text while paging unfinished diagrams", async () => {
+    loadFindings.mockReturnValue([{
+      case_name: "case", title: "Finding", detail: null, confidence: null, evidence_tier: "chain-derived",
+      addresses: [], evidence: [], digests,
+    }]);
+    fetchTx.mockReset().mockResolvedValue(null);
+    const exportCase = handlers.get("export_case")!;
+    const first = await exportCase({ case_name: "case", format: "mermaid" });
+    expect(first.content).toHaveLength(2);
+    expect(JSON.parse(first.content[1].text).next_call.repeat_with).toEqual({ digest_offset: 50 });
+
+    const last = await exportCase({ case_name: "case", format: "mermaid", digest_offset: 50 });
+    expect(last.content).toHaveLength(1);
+    expect(last.content[0].text).toContain("## Fund flow");
+});
 });

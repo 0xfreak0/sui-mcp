@@ -273,11 +273,11 @@ export function registerDecompilerTools(server: McpServer) {
             totalBytes += source.length;
             results.push({ module: mod.name!, source });
           } catch (err) {
-            if (err instanceof MissingDecompiler) return errorResult(err.message);
-            results.push({
-              module: mod.name!,
-              source: `// Error decompiling: ${err instanceof Error ? err.message : String(err)}`,
-            });
+      return errorResult(
+       err instanceof MissingDecompiler
+        ? err.message
+        : `Could not decompile module ${mod.name ?? "(unnamed)"} at offset ${offset + results.length}: ${err instanceof Error ? err.message : String(err)}. Retry this module or use disassemble_module.`,
+      );
           }
         }
 

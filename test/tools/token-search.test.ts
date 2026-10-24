@@ -97,7 +97,25 @@ describe("search_token", () => {
     const data = await search("zzqx", { limit: 20 });
     expect(data.results).toHaveLength(20);
     expect(data.total_matches).toBe(80);
-    expect(data.more_matches_note).toMatch(/limit/);
+    expect(data.next_call).toEqual({ tool: "search_token", repeat_with: { offset: 20 } });
+    const next = await search("zzqx", { limit: 20, ...data.next_call.repeat_with });
+    expect(next.results).toHaveLength(20);
+    expect(next.results[0].name).toBe("Fake 20");
+    expect(next.total_matches).toBe(80);
+  });
+
+  it("provides a separate continuation when the CoinMetadata scan stops", async () => {
+    searchTokens.mockResolvedValue({
+      source: "scan", coverage, unavailable_providers: [], tokens: [],
+      partial: false, unconfirmed: 0,
+      scan: { scanned: 3000, truncated: true, next_cursor: "metadata-page-60" },
+    });
+    const data = await search("UNSEEN");
+    expect(data.discovery_scan_next_call).toEqual({
+      tool: "search_token", repeat_with: { scan_cursor: "metadata-page-60", offset: 0 },
+    });
+    await search("UNSEEN", data.discovery_scan_next_call.repeat_with);
+    expect(searchTokens).toHaveBeenLastCalledWith("unseen", "metadata-page-60");
   });
   it("says when capped providers leave live symbol coverage partial", async () => {
     searchTokens.mockResolvedValue({

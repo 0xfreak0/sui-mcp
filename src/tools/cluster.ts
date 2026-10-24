@@ -10,8 +10,31 @@ import {
   clusterEdges,
   EdgeSet,
   type CommitteeMembership,
+ type WalletEdge,
 } from "../utils/wallet-edges.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+const EDGE_DIGEST_PAGE = 5;
+
+/** Evidence is complete for scoring; the JSON view pages only its digest lists. */
+export function pageEdgeEvidence(edge: WalletEdge, digestOffset: number, args: Record<string, unknown>) {
+ return {
+  ...edge,
+  signals: edge.signals.map((signal) => ({
+   ...signal,
+   digests: signal.digests.slice(digestOffset, digestOffset + EDGE_DIGEST_PAGE),
+   ...(signal.digests.length > EDGE_DIGEST_PAGE ? {
+    digest_listing: {
+     total: signal.digests.length,
+     offset: digestOffset,
+     ...(signal.digests.length > digestOffset + EDGE_DIGEST_PAGE ? {
+      next_call: { tool: "build_wallet_edges", args: { ...args, format: "json", digest_offset: digestOffset + EDGE_DIGEST_PAGE } },
+     } : {}),
+    },
+   } : {}),
+  })),
+ };
+}
 
 /**
  * Shared-control clustering, built live rather than from an analytics warehouse.
@@ -61,6 +84,7 @@ export function registerClusterTools(server: McpServer) {
         .max(200)
         .optional()
         .describe("Sibling candidates to verify while expanding (default 25). Unverified candidates are reported, never silently dropped."),
+   expand_offset: numArg().int().min(0).optional().describe("First sibling candidate in this page; follow expansion_scan.next_call."),
       popularity_limit: numArg()
         .int()
         .min(5)
@@ -89,6 +113,7 @@ export function registerClusterTools(server: McpServer) {
         .max(100)
         .optional()
         .describe("Reciprocal counterparties to check for service popularity before trusting the signal (default 15)."),
+   reciprocal_offset: numArg().int().min(0).optional().describe("First reciprocal counterparty in this page; follow reciprocal_scan.next_call."),
       query_budget: numArg()
         .int()
         .min(10)
@@ -101,16 +126,20 @@ export function registerClusterTools(server: McpServer) {
         .describe(
           "Default json. mermaid draws clusters and signal-labelled edges; graph_json gives nodes/edges; csv gives one row per edge.",
         ),
+   digest_offset: numArg().int().min(0).optional().describe("Offset into each edge signal's supporting digests (five per list). Follow digest_listing.next_call for remaining evidence."),
     },
     async ({
       addresses,
       expand,
       expand_budget,
+   expand_offset,
       popularity_limit,
       reciprocal_budget,
+   reciprocal_offset,
       min_signal_types,
       max_cluster_size,
       query_budget,
+   digest_offset,
       format,
     }) => {
       try {
@@ -124,8 +153,10 @@ export function registerClusterTools(server: McpServer) {
         const built = await buildWalletEdges(addresses, {
           expand,
           expandBudget: expand_budget,
+     expandOffset: expand_offset,
           popularityLimit: popularity_limit,
           reciprocalBudget: reciprocal_budget,
+     reciprocalOffset: reciprocal_offset,
           queryBudget: query_budget,
         });
 
@@ -190,8 +221,24 @@ export function registerClusterTools(server: McpServer) {
           };
         };
 
+    const pageArgs = {
+     addresses, expand, expand_budget, expand_offset, popularity_limit, reciprocal_budget, reciprocal_offset,
+     min_signal_types, max_cluster_size, query_budget, format, digest_offset,
+    };
+    const expansionScan = built.expansion_scan && {
+     ...built.expansion_scan,
+     ...(built.expansion_scan.next_offset !== undefined ? {
+      next_call: { tool: "build_wallet_edges", args: { ...pageArgs, expand_offset: built.expansion_scan.next_offset } },
+     } : {}),
+    };
+    const reciprocalScan = built.reciprocal_scan && {
+     ...built.reciprocal_scan,
+     ...(built.reciprocal_scan.next_offset !== undefined ? {
+      next_call: { tool: "build_wallet_edges", args: { ...pageArgs, reciprocal_offset: built.reciprocal_scan.next_offset } },
+     } : {}),
+    };
         if (format && format !== "json") {
-          const coverage = { truncated: built.truncated, notes: built.notes };
+     const coverage = { truncated: built.truncated, notes: built.notes, expansion_scan: expansionScan, reciprocal_scan: reciprocalScan };
           const label = (a: string) => {
             const d = describe(a);
             return d.name ?? d.label ?? d.protocol ?? shortAddress(a);
@@ -256,6 +303,10 @@ export function registerClusterTools(server: McpServer) {
           };
         }
 
+    const evidenceArgs = {
+     addresses, expand, expand_budget, expand_offset, popularity_limit, reciprocal_budget, reciprocal_offset,
+     min_signal_types, max_cluster_size, query_budget,
+    };
         return {
           content: [
             {
@@ -264,6 +315,8 @@ export function registerClusterTools(server: McpServer) {
                 seeds: addresses,
                 examined_count: built.examined.length,
                 queries_used: built.queries_used,
+        ...(expansionScan ? { expansion_scan: expansionScan } : {}),
+        ...(reciprocalScan ? { reciprocal_scan: reciprocalScan } : {}),
                 // Expose the measured first funder even when popularity
                 // filtering excludes it as an edge intermediary.
                 first_funders: built.first_funders,
@@ -272,7 +325,7 @@ export function registerClusterTools(server: McpServer) {
                 // --- facts ---
                 edge_count: allEdges.length,
                 edges: allEdges.map((e) => ({
-                  ...e,
+         ...pageEdgeEvidence(e, digest_offset ?? 0, evidenceArgs),
                   wallet_a_info: describe(e.wallet_a),
                   wallet_b_info: describe(e.wallet_b),
                 })),

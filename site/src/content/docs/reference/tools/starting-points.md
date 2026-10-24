@@ -25,10 +25,17 @@ sidebar:
 |---|---|---|---|
 | `query` | string | yes | Symbol ('deep') or full coin type ('0x2::sui::SUI'). A symbol matches exactly, in any case; use search_token for partial names. |
 | `include_holders` | boolean | no | Include top 5 holders (default: true). Set false for faster response. |
+| `holder_max_scan` | integer (1 to 50000) | no | Coin objects and address balances scanned per holder walk (default 2000, max 50000). |
+| `holder_time_budget_ms` | integer (1000 to 600000) | no | Holder scan wall-clock budget in milliseconds (default 35000, max 600000). |
 | `include_liquidity` | boolean | no | Inspect current liquidity and its LP or position holders in up to three discovered pools (default: true). Set false for metadata-only calls. |
 | `liquidity_pool_offset` | integer (at least 0) | no | Start at this discovered pool after ranking by its current SUI or USDC reserve (default 0). |
 | `liquidity_holder_pool` | string | no | For a holder continuation, restrict the page to this discovered pool ID. |
-| `liquidity_offset` | integer (0 to 1000) | no | Start at this holder index within liquidity_holder_pool (default 0). |
+| `liquidity_offset` | integer (at least 0) | no | Start at this holder index within liquidity_holder_pool (default 0). |
+| `liquidity_flagged_done` | boolean | no | Holder-page continuation marker; keep the value from omitted.next_call to avoid repeating flagged holders. |
+| `liquidity_max_scan` | integer (1 to 100000) | no | Max LP coins or position objects scanned per pool (default 1000, max 100000); follow liquidity_custody.pools[].scan.next_call after a bound. |
+| `liquidity_time_budget_ms` | integer (1000 to 600000) | no | Wall-clock budget for pool position scans in milliseconds (default 35000, max 600000). |
+| `liquidity_venue` | string | no | Search one venue; use pool_discovery.venues[].next_call to continue a bounded venue search. |
+| `liquidity_venue_cursor` | string | no | Opaque per-venue cursor; resumes discovery over both SUI and USDC pairs. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## get_transaction_history
@@ -63,6 +70,13 @@ sidebar:
 | `address` | string | yes | Wallet address (0x...) |
 | `include_prices` | boolean | no | Add USD values, DeFi positions, coverage and leads (default: false). |
 | `include_nfts` | boolean | no | With include_prices, also estimate held NFTs (default: false). Takes many requests on a wallet with many objects; list_nft_collections does this alone. |
+| `balance_cursor` | string | no | Opaque balance cursor from holdings_next_call. Returns the next bounded block of coin types; totals cover only this block. |
+| `owned_max_scan` | integer (1 to 50000) | no | Raise owned-object and position scan bounds for include_prices (defaults vary by reader); unread still reports any incomplete read. |
+| `nft_max_collections` | integer (1 to 5000) | no | NFT collection types valued with include_nfts (default 100); raise through nft_scan_next_call. |
+| `nft_market_depth` | integer (1 to 20) | no | Multiplier for bounded NFT market listing/sale reads (default 1); raise through nft_market_next_call. |
+| `operated_recent_limit` | integer (1 to 50) | no | Sent transactions per operated-shared-object scan page (default 20). |
+| `operated_candidate_limit` | integer (1 to 500) | no | Shared objects checked per operated scan page (default 20). |
+| `operated_cursor` | string | no | Older sent-transaction cursor from operated_scan.next_call. |
 | `detail` | `summary` \| `full` | no | 'summary' (default): holdings and unrecognised object types that fit about 12k characters each, the rest in `omitted`. 'full': every row. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 

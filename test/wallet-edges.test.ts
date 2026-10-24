@@ -88,10 +88,10 @@ describe("EdgeSet", () => {
     expect(e.signals[0].digests).toEqual(["0x1", "0x2"]);
   });
 
-  it("caps evidence digests rather than growing without bound", () => {
+ it("retains every supporting digest so display pages can retrieve them", () => {
     const s = new EdgeSet();
     for (let i = 0; i < 40; i++) s.add("sponsor", A, B, "shared sponsor", [`0x${i}`], "0xsp");
-    expect(s.edges()[0].signals[0].digests).toHaveLength(5);
+  expect(s.edges()[0].signals[0].digests).toHaveLength(40);
   });
 
   it("ignores a self-pair", () => {

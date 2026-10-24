@@ -64,7 +64,24 @@ describe("get_object — kiosk cap holder", () => {
     expect(r.kiosk_cap_holder).toEqual({ kind: "address", address: DRAINER });
     expect(r.kiosk_cap_id).toBe(CAP);
     expect(r.kiosk_owner_field_caveat).toMatch(/self-declared/i);
-    expect(mockResolveKioskCapHolder).toHaveBeenCalledWith(KIOSK);
+    expect(mockResolveKioskCapHolder).toHaveBeenCalledWith(KIOSK, undefined, undefined);
+  });
+
+  it("offers a larger targeted scan when the cap is past the creation scan", async () => {
+    mockResolveKioskCapHolder.mockResolvedValue({ status: "cap_not_found", scanned_pages: 40, truncated: true });
+    const { registerObjectTools } = await import("../src/tools/objects.js");
+    let handler: (a: { object_id: string; kiosk_scan_pages?: number }) => Promise<{ content: { text: string }[] }> = null as never;
+    registerObjectTools({
+      tool: (name: string, _d: string, _s: unknown, h: typeof handler) => {
+        if (name === "get_object") handler = h;
+      },
+    } as never);
+    const first = JSON.parse((await handler({ object_id: KIOSK })).content[0].text);
+    expect(first.kiosk_cap_holder_next_call).toEqual({
+      tool: "get_object", args: { object_id: KIOSK, kiosk_scan_pages: 80 },
+    });
+    await handler(first.kiosk_cap_holder_next_call.args);
+    expect(mockResolveKioskCapHolder).toHaveBeenLastCalledWith(KIOSK, 80, undefined);
   });
 
   it("does not attempt a kiosk lookup for a non-kiosk object", async () => {

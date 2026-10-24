@@ -192,7 +192,8 @@ export async function findOwnerTransitionsFromEnd(
   fetchOwnerAt: (checkpoint: number) => Promise<OwnerDesc>,
   budget: TransitionBudget,
 ): Promise<TransitionSearch> {
-  if (ownerKey(lo.owner) === ownerKey(hi.owner) || hi.checkpoint - lo.checkpoint <= 2 || budget.remaining <= 0) {
+ if (ownerKey(lo.owner) === ownerKey(hi.owner) || hi.checkpoint - lo.checkpoint <= 2 ||
+  budget.remaining <= 0 || (budget.deadlineMs !== undefined && Date.now() >= budget.deadlineMs)) {
     return findOwnerTransitions(lo, hi, fetchOwnerAt, budget);
   }
   budget.remaining -= 1;

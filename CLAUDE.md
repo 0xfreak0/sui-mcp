@@ -678,6 +678,19 @@ A tool may cap a list in its default view only through
    `test/output-cap-property.test.ts` checks all of this over random row
    sets, budgets and orders.
 
+A read limit is different from a display cap: rows beyond a stopped network
+scan were never seen, so its totals are incomplete. A tool that stops at a
+page, scan, read or time budget states the boundary and supplies a cursor-based
+`next_call`, a `continue_with` patch or a bounded argument the caller can
+raise. The continuation retains the original filter and network; a missing
+GraphQL cursor or a failed read is not a completed scan.
+
+`sample_control_addresses` keeps its random draw per scanned segment when
+`scan.next_call` resumes the event population; separate segment samples are
+not one random draw over the union. `resolve_protocol_packages` walks every
+package-version connection and probes at most `max_versions` per call;
+`versions_page.next_call` reaches older versions.
+
 A resource was chosen over a paging tool because a tool definition costs
 context on every turn and Claude Code already reads resources
 (ReadMcpResource). A client without resource support still reaches every row
@@ -1748,6 +1761,12 @@ inflow. This is about coin dust only.
 
 Rules for `walkFunding` and the batch tool, in `src/tools/funding.ts`:
 
+The default walk stops at its `max_hops` limit. `find_funding_source`
+gives `continue_with` for the last reached funder; the batch tool gives
+`results[].continue_with` per stopped walk. Following one asks for that
+funder's own ancestry as a separate attribution, not proof that the
+original subject's funds came from any earlier funder.
+
 - **An established funder ends the walk.** When a funder's payment to the
   previous address is not among its own earliest `EARLIEST_TXS` (12)
   transactions, the window every hop reads as an address's funding, the
@@ -1807,6 +1826,13 @@ Rules for `walkFunding` and the batch tool, in `src/tools/funding.ts`:
   are not compared: `first_funder_by_subject` lists every walked subject's
   first funder even when capped result rows omit some, so callers can
   compare the maps across calls. It never claims a related address was walked.
+- **Shared-funder enrichment states its bound.** `find_funding_sources`
+  measures the first ten shared funders by default; `max_shared_fanouts`
+  raises that count to 100, and every unmeasured funder has a
+  `fanout_next_call` for its own fan-out. Co-funding recipient counts use
+  `max_cofunded_lookups` (default ten, maximum 500), and any group not
+  checked has `recipient_count_next_call` for its transaction. A missing
+  enrichment must never read as a zero count.
 - **`subject_paid_subject` asks each ordered pair of up to 20 walked
   subjects.** `sentAddress` and `affectedAddress` combine in one filter, so
   the answer does not depend on how far back either history runs, and ten
@@ -2402,6 +2428,14 @@ Four rules that are easy to get wrong:
 - **Expansion links members to seeds in a star**, never member to member. Same
   components, far less output: a 50-member sponsor would otherwise emit 1,225
   edges that cannot merge on their own weight.
+- **Expansion and reciprocal candidate limits page.** When their search
+  budgets stop candidate assessment, `expansion_scan.next_call` and
+  `reciprocal_scan.next_call` advance the respective offsets. Cluster
+  edges and classifications cover the candidates scanned in that call;
+  a partial call is not evidence that omitted candidates are unrelated.
+  A signal with more than five evidence digests gives
+  `edges[].signals[].digest_listing.next_call`; CSV and graph JSON retain
+  every digest.
 - **Co-signature is not behavioural, and it is the only signal here that
   isn't.** Every other one says two addresses did something co-controlled
   wallets tend to do, measured against a base rate; `co_signer` says the
@@ -2936,18 +2970,33 @@ each removal's sender are compared with the coin's publisher
 
 A coin can have more than a thousand pools of one pair on one venue (DEEP
 has over a thousand Bluefin DEEP/SUI pools). Pool states are read in
-batches of 50, never one request each, and `find_pools` pages its list
-with `offset` while `total` counts every pool.
+batches of 50, never one request each. `find_pools` pages its displayed
+list with `offset`; `total` counts the pools found in this call, and is a
+lower bound while a venue is incomplete. A venue stopped at its per-type
+page cap carries a `next_call` with an opaque `venue_cursor` and the
+specific venue in `protocol`. It resumes only unfinished type selectors,
+so callers must collect each venue's result and finish its `offset` pages
+before following the venue cursor. Complete selectors are not re-read.
 
-`analyze_token` has two wall-clock budgets, checked between pages:
+Aftermath `type_names` can contain nested Move types with every package
+address missing its `0x` prefix. Normalize each address token, not just the
+outer type, before deciding a pool's coins are unreadable; a malformed
+type leaves the venue incomplete rather than proving the queried pair absent.
+
+`analyze_token` has two default wall-clock budgets, checked between pages:
 `DISCOVERY_TIME_BUDGET_MS` (30 s) for pool discovery and
-`LIQUIDITY_TIME_BUDGET_MS` (35 s) shared by the position and LP-token scans
-(an LP coin's holder walk keeps its own `SCAN_TIME_BUDGET_MS`). A venue the
-budget stopped is `incomplete`; a stopped scan sets `time_budget_reached`
-and its `reason` counts what was read. Without them a slow or rate-limited
+`LIQUIDITY_TIME_BUDGET_MS` (35 s) shared by the position and LP-token scans.
+A venue stopped by discovery's time or page limit gives a
+`pool_discovery.venues[].next_call` for that venue's two counterpart pairs;
+it resumes from the unfinished type selectors. The liquidity limit is
+raisable through `liquidity_time_budget_ms`, and each stopped pool scan
+gives `liquidity_custody.pools[].scan.next_call` with a raised scan bound.
+An LP coin's holder walk has its own `SCAN_TIME_BUDGET_MS`, raisable through
+`holder_time_budget_ms`. A stopped scan sets `time_budget_reached` and its
+`reason` counts what was read. Without them a slow or rate-limited
 endpoint had no bound but the page counts: DEEP's 1,076 pools took 113 s at
 `SUI_RATE_LIMIT=25`. `find_pools` has no time budget; its bound is 20 pages
-per pool type.
+per pool type per call, with a cursor to continue at the next page.
 
 A holder continuation includes the pool ID (`liquidity_holder_pool`) and the
 offset within that pool. Applying one pool's displayed count as a global
@@ -3045,8 +3094,9 @@ the same rules:
   `truncated` alone on that path published a known-incomplete scan as a
   complete ranking, ranks and percentages restored.
 - The `max_scan` budget — truncation, already handled.
-- The 35s time budget (`SCAN_TIME_BUDGET_MS`), checked between pages —
-  truncation, marked `time_budget_reached` and not cached. Both token walks
+- The default 35s time budget (`SCAN_TIME_BUDGET_MS`), checked between pages
+  and raisable with `time_budget_ms` up to 600,000 ms — truncation, marked
+  `time_budget_reached` and not cached. Both token walks
   run side by side under it (awaited with `Promise.allSettled`, so a
   rejection in one does not leave the other paging in the background past
   the point the caller already got an error). The caveat reports objects,
@@ -3056,7 +3106,8 @@ the same rules:
   slower; the NFT caveat weights the two by the kiosk share it read). If
   `max_scan` fits inside the budget at the expected rate, the endpoint was
   slow and a retry may go deeper; if not, the caveat names a `max_scan` that
-  fits. Never assert one cause for both regimes.
+  fits or the caller can raise `time_budget_ms`. Never assert one cause for
+  both regimes.
 
 **`complete_ranking` means the walk reached the end, nothing more.** An object
 whose owner could not be read is a separate field (`unresolved_owners`) and its
@@ -3101,8 +3152,18 @@ is tier `heuristic` and carries `detail.estimate: true`. `list_nfts`
 (`est_usd` per item to four significant figures; under `valuation`, each
 priced collection's unit value and basis within 3,000 characters, and with
 `detail: "full"` each collection's floor, last sale and wash check) and
-`list_nft_collections` (`value` per row, `estimated_value` over every row
-before the cap) show it.
+`list_nft_collections` (`value` per priced row and `estimated_value` over
+collections priced within `max_collections`) show it. On a bounded
+valuation, follow `valuation.next_call` in `list_nfts`,
+`estimated_value.next_call` in `list_nft_collections`, or
+`nft_scan_next_call` in `get_wallet_overview`; the remaining collections
+have not been priced and the partial total is not an all-holdings estimate.
+`market_depth` raises the bounded TradePort, kiosk-listing and sale reads
+behind each collection's unit estimate. A market read that stops names its
+incomplete coverage and offers `valuation.market_next_call`,
+`estimated_value.market_next_call` or `nft_market_next_call` in the same
+three tools, respectively. An incomplete market read cannot support a
+negative market-activity finding.
 
 - **The rule.** An item is worth the lower of its collection's floor (the
   lowest active listing) and its last sale in the `MARKET_WINDOW_DAYS` (30)
@@ -3291,7 +3352,10 @@ found is re-read with its contents, and its owner is `holder` only if those
 contents still embed the cap. Otherwise the walk continues from that
 container's own last touch, which holds either the next wrapping level or the
 cap's new container (the chain then restarts from it), up to
-`MAX_WRAP_STEPS`. A container that still exists without the cap and whose
+`MAX_WRAP_STEPS` by default. `get_object` can raise `kiosk_wrap_steps`
+(at most 32) and `kiosk_scan_pages` (at most 2,000); an unresolved latest
+kiosk lookup gives `kiosk_cap_holder_next_call` while either budget can rise.
+A container that still exists without the cap and whose
 last write names no new one is reported as `cap_left` with a null holder,
 never as the controller. `holder` is the outermost wrapper's owner and
 `wrapped_in` lists the chain from the cap outwards; a chain that cannot be
@@ -4022,6 +4086,17 @@ change is likely to break:
   whole graph first; `detail: "full"` returns every row. `unpriced_coins`
   groups coin types by the reason, which a graph through meme-coin pools
   repeats a hundred times.
+- **Exploration and display limits have separate exits.** Both flow tools take
+  `max_tx_reads` (default 400, at most 4,000) for the engine's full
+  transaction reads; a budget stop still marks coverage incomplete.
+  An edge with more than its displayed digests carries `digest_listing.next_call`
+  for CSV output, which lists every digest in the explored graph. A path
+  result pages five matches at a time with `path_offset`, `path_count`
+  and `next_call`; do not infer that the first five are the only paths.
+  Terminal examples have `entries_next_call` and advance
+  `terminal_entry_offset`; largest-pruned examples have `next_call`
+  under `largest_pruned_page`, advancing `pruned_offset`. In a path
+  response these lists are under `explored`.
 - **Shares are first in, first out, and that is a convention.** A node's traced
   amount goes to the transactions that moved it in order until it is used up;
   each transaction's share goes to the parties it paid in proportion to the
@@ -4212,6 +4287,12 @@ change is likely to break:
   day with the same bounds and rule inputs. A run with any candidate unread
   or sponsor unmeasured writes nothing, since the next run rechecks only the
   labels in the file; a same-day rerun retries only the failures.
+- **A sweep check needs a complete historical balance.**
+  `classify_deposit_address` takes `max_balance_transactions` and
+  `max_balance_reads` for the reconstruction used to judge whether an
+  outflow emptied the wallet. An incomplete reconstruction withholds
+  that check, rather than treating a partial history as the opening
+  balance.
 - **A sponsor's SUI change is never a payment.** Sweeps delete coin objects and
   the storage rebate goes to the gas payer, so the sponsor shows a positive SUI
   change. `isSponsorGasChange` (`src/utils/sponsor-gas.ts`) is the one rule, and
@@ -4350,6 +4431,9 @@ objects, e.g. ones a transaction moved). Shared helpers are in
   `staking_pool_mappings` (pending, 1:1). Checked against four
   `UnstakingRequestEvent`s' `reward_amount`: exact. `FungibleStakedSui`
   converts its pool tokens at the epoch rate.
+  `get_staking_summary` bounds its current position walk by `max_positions`
+  (default 1,000) and gives `position_scan_next_call` to raise it; a partial
+  scan must not report a completed stake total.
 - **A liquid-staking coin is worth its issuer's own rate.** Rebuilt from the
   issuer's fields with its rounding: every SpringSui-framework LST from its
   `LiquidStakingInfo<T>` (the set listed by type and cached), afSUI,
@@ -4378,22 +4462,34 @@ objects, e.g. ones a transaction moved). Shared helpers are in
   struct with an `id`, the only ways a `Balance`, a container or a wrapped
   object renders. Priced coins and unpriced ones are two positions, so an
   unpriced spam balance never nulls the priced ones. Dynamic fields are
-  read for at most 30 objects a call, 15 a request (the service rejects a
-  query of over 300 nodes), framework types never, since only a type's own
-  module can add fields to it.
+  read for at most 30 objects by default, 15 a request (the service rejects
+  a query of over 300 nodes), framework types never, since only a type's
+  own module can add fields to it. `owned_max_scan` on
+  `get_wallet_overview` and `get_defi_positions` raises the owned-object
+  walk and bounded CLMM, LP, stake and nested balance reads together;
+  `owned_scan_next_call` offers a higher setting when one stops.
 - **A total says what it covers of the objects owned.** `owned-coverage.ts`
   sorts every object the wallet owns, coins aside, into read by a reader,
   unread, a kiosk key, an NFT estimate, or not recognised, and lists the
   last by type and count with the walk's bound (`OWNED_WALK_MAX`) and the
   objects whose dynamic fields were not read. `get_wallet_overview` and
   `get_defi_positions` put it in `coverage` and its sentence in the note.
+  `coverage.not_recognised_types` keeps three example object IDs per type;
+  each type's `next_call` lists the rest through `list_owned_objects`.
 - **A shared vault an address operates is a lead, not a holding.**
-  `operated-objects.ts` reads the shared objects the address's last 20
-  transactions used mutably and keeps those whose own fields name it in a
-  control role (`members`, `owner`, `operator`, `admin`, `manager`,
-  `trader`, `keeper`, `controller`, `signer`, `authorized`), with the
-  balances held inside and the other addresses the field names. A bot
-  trading through such a vault moves no balance of its own. What it holds
+  `operated-objects.ts` reads shared objects used mutably in the address's
+  newest 20 sent transactions by default (`operated_recent_limit`, max 50)
+  and keeps those whose own fields name it in a control role (`members`,
+  `owner`, `operator`, `admin`, `manager`, `trader`, `keeper`,
+  `controller`, `signer`, `authorized`), with the balances held inside
+  and the other addresses the field names. `operated_candidate_limit`
+  (default 20, max 500) can raise the number of candidates read per page.
+  `operated_scan.next_call` continues older transactions with
+  `operated_cursor`; leads belong only to the transactions in this page.
+  `operated_scan.incomplete_transactions[].next_call` exposes transactions
+  whose shared inputs could not all be read, and `leads[].listed_with_next_call`
+  reads the full object. A bot trading through such a vault moves no balance
+  of its own. What it holds
   is never in the address's totals. Framework objects (kiosks) are left to
   the NFT tools.
 
@@ -4403,7 +4499,12 @@ Consumers value what a transaction moved through `src/utils/moved-value.ts`:
   Transferred and deleted objects leave their holder at the input version;
   transferred and created objects reach theirs at the output version; each
   is read by version (`readObjectVersions`) and valued at the transaction's
-  checkpoint, the first 50 per transaction, the rest listed as unread.
+  checkpoint, 50 per transaction starting at `object_offset` in
+  `analyze_attack_tx`; `object_values_page.next_call` reaches the next
+  objects. Flow and incident scans list affected digests under
+  `objects_unread_follow_up_calls`, each leading to this per-transaction
+  read. Profit and object USD on an individual page cover that page's
+  objects, so do not add repeated coin amounts across pages.
 - **A change of form is listed, never counted.** An object wrapped into or
   unwrapped from another object (a farm, a gauge, collateral) is still its
   holder's in another form, so its row carries `custody` and stays out of
@@ -4454,14 +4555,17 @@ Consumers value what a transaction moved through `src/utils/moved-value.ts`:
   changed, netted per object across the incident. Each object leg keeps its
   transaction-time USD value; a later consumption is not repriced at the
   first receipt's quote. Objects handed on stay out of totals, as coins
-  sent on do, valuing at most `MAX_OBJECT_VALUE_TXS` transactions.
+  sent on do. The first `MAX_OBJECT_VALUE_TXS` transactions are valued;
+  `objects_follow_up_calls` groups skipped digests for separate incident
+  reads.
   Coins use hourly historical quotes through `window-prices.ts`; `price_at`
   explicitly selects one fixed time for both coins and objects.
   Missing credits and debits make incident totals `partial`, not a lower
   bound: an omitted debit can make a net too high.
 - **A scan values at most `SCAN_OBJECT_BUDGET` objects**, newest
   transactions first, whole transactions at a time; the rest are
-  `objects_skipped_transactions` and the totals say `objects_partial`.
+  `objects_skipped_transactions`, the totals say `objects_partial`, and
+  `objects_follow_up_calls` groups the skipped digests into follow-up reads.
   Each object costs several reads (a lending market, a pool and its
   record, a stake pool's rates, at that checkpoint), so a collector holding
   hundreds of positions would otherwise take minutes. A scan reads every
@@ -4475,12 +4579,15 @@ Consumers value what a transaction moved through `src/utils/moved-value.ts`:
   out of every total, and its historical market reads took 10 to 26 seconds
   per object, most of a scan's time. The call's valuations share one
   `ctx.memo`, so a price, a stake pool or an epoch's rate is read once.
-- **`summarize_address_flows` reads objects for every successful
-  transaction of the scan**, newest first, up to `MAX_OBJECT_TXS`, from
-  gRPC `effects.changed_objects`. Filtering to transactions the address sent
-  or that carry a `TransferObjects` command missed every position a drainer
-  collected: a Move call inside a transaction the victim signed hands it
-  over. A coin filter turns this off.
+- **`summarize_address_flows` reads objects for successful transactions
+  of the scan**, newest first, `MAX_OBJECT_TXS` per object slice from
+  gRPC `effects.changed_objects`. `objects_page.next_call` advances
+  `object_transaction_offset`; coins and their totals are repeated across
+  these object slices and must not be summed.
+  Filtering to transactions the address sent or that carry a
+  `TransferObjects` command misses positions a drainer collects: a Move
+  call inside a transaction the victim signed hands them over. A coin
+  filter turns object valuation off.
 - **`trace_funds` follows objects worth more than the coin.** Forward, when
   the valued objects the actor handed to one address outweigh the priced
   coin flow the next-hop choice follows (basis `object`), the trace moves to
@@ -4619,6 +4726,11 @@ account value.
 `analyze_attack_tx` and `summarize_incident_losses` read over gRPC
 (`src/utils/attack-read.ts`), pure logic in `src/utils/attack-analysis.ts`.
 
+`summarize_incident_losses` sender mode scans at most `max_transactions`
+per call. Its `next_call` advances `transaction_cursor` to an older
+segment. Every page has its own incident totals; combine pages only after
+checking coin, price-time and incomplete-read coverage.
+
 - **gRPC events carry their JSON.** `Event.json` is filled by the fullnode AND
   the archive (verified on the Cetus and Nemo exploits, both pruned from the
   fullnode), so a pruned transaction still has decoded event fields.
@@ -4680,9 +4792,12 @@ account value.
   output versions, fullnode then archive. At most 24 shared objects, ranked
   by a storage-rebate-only read before any JSON is fetched; each kind has
   its own cap (48 coin-holding fields, 48 object-owned objects, 12 created
-  objects and 12 treasury caps), and every candidate left unread (past a
-  cap, or a field whose value type could not be read) is listed in
-  `state_deltas.skipped`. `value_reconciliation.objects_unread` counts them,
+  objects and 12 treasury caps), multiplied by
+  `analyze_attack_tx.state_read_multiplier` when raised. Every candidate
+  left unread (past a cap, or a field whose value type could not be read)
+  is listed in `state_deltas.skipped`; capped rows offer
+  `state_deltas.read_more_with`, while a failed layout read must be retried.
+  `value_reconciliation.objects_unread` counts them,
   and the reconciliation line says the unexplained part may be theirs: a
   router touching twelve pools kept as dynamic object fields changes each
   pool and its escrow, and a cap of 12 read half of them.
@@ -4877,7 +4992,11 @@ account value.
   (`readObjectStates`), and is grouped under every holder whose `Balance<T>`
   holdings of some coin fell (`stateLossOf`), with `pool_basis: "state"` and
   the holders' net change as `pool`. At most 50 transactions are read per
-  call, 2 to 4 requests each; the rest are named in `state_reads.unread`.
+  call, 2 to 4 requests each; the rest are named in `state_reads.unread`
+  with digest chunks under `state_reads.follow_up_calls`.
+  A transaction with capped state reads appears in `state_reads.capped` and
+  cannot support its pool-loss estimate; `state_reads.read_more_with`
+  raises its per-transaction state bounds.
   Perpetuals market vaults drained through a negative fee emit no pool event,
   and used to leave every exploit transaction unattributed.
 
@@ -4937,10 +5056,12 @@ summary, and event types. Rules a change is likely to break:
   recipient (the CCTP mint to Mayan's contract, the burn carrying an
   Allbridge transfer), so the carrier filter the screen used to apply only
   dropped the recipient of a second bridge: a CCTP burn to an OFAC-listed
-  address beside an unrelated Wormhole message was never screened. The
-  screen reads its ten destinations from each bridge group in turn: in
-  arrival order, fourteen CCTP burns to one address used them all and left
-  the Mayan group with none.
+  address beside an unrelated Wormhole message was never screened.
+  `max_bridge_lookups` defaults to ten across all bridge groups and can
+  rise to 300. An unfinished set carries `next_call`; an exit whose event
+  fields could not be read is listed in `bridge_destinations_unread` with
+  its own `resolve_bridge_transfer` call, never counted as having no
+  destination.
 - **Price each transaction before aggregating.** `window-prices.ts` shares
   per-coin UTC-hour median leg-time quotes across totals, counterparties and
   bridge exits. Above the sample budget, each coin/day uses its median time.
@@ -4955,6 +5076,13 @@ transaction is multi-leg when it calls a package outside the filter's whole
 lineage (`fetchPackageVersions`); 0x1, 0x2 and 0x3 never count as a leg.
 P&L also prices each transaction before netting: zero token net across
 different dates need not mean zero USD net. Its coverage is in `pnl.usd_basis`.
+Event-type discovery lists 15 types per `event_type_offset` page. P&L scans
+at most `pnl_max_transactions` distinct digests per call and carries
+`pnl.transactions_next_call` with `pnl_transaction_offset` when more match.
+The sender ranking has `pnl_sender_offset` pages; each sender's digest list
+uses `pnl_digest_offset` pages. Follow those calls before reading a partial
+page as all participants or transactions.
+
 
 ### Reading Move bytecode
 
@@ -5120,9 +5248,11 @@ must be answerable from these tools, and no case check calls
   `dynamic_object_field::add`) or taking an owned package object is left
   out, and so is one whose namesake in the newest version skips the check
   too. Consecutive versions exposing the same functions fold into one lead.
-  `scanVersionGates` (version-gates.ts) reads up to 30 versions, the oldest
-  and the newest, one at a time; the largest lineage among the curated
-  roots has 28. On BlueMove (versions 1 to 6 and 11 against 12, gate
+  `scanVersionGates` (version-gates.ts) reads up to
+  `max_versions_compared` versions (default 30), the oldest and newest
+  first; `bytecode_scan.version_gates.next_call` raises this when more remain.
+  The largest lineage among the curated roots has 28. On BlueMove
+  (versions 1 to 6 and 11 against 12, gate
   `swap::assert_version_contract`) it flags the v1 `add_liquidity` and
   `remove_liquidity` the exploit used. Over 62 other lineages with more
   than one version (the curated roots, and the Aftermath Perpetuals, Typus
@@ -5139,6 +5269,12 @@ must be answerable from these tools, and no case check calls
   throws synchronously, so `runDecompiler` refuses first and returns
   `MissingDecompiler`. `decompilerAvailable` looks the binary up the way
   `execFile` does, and the module-list mode reports `decompiler_available`.
+- **`decompile_module`'s all-module view pages its work.** `module_offset`
+  resumes after the modules this call attempted when the 32-module, time
+  or output-byte limit stops it. `next_call` carries the original package,
+  detail and offset, so a bound never silently leaves the remaining modules
+  out. The optional decompiler remains an aid; disassembly is the standard
+  code read.
 
 ## Key Patterns
 
@@ -5176,6 +5312,11 @@ must be answerable from these tools, and no case check calls
   `auditPackageCapabilities` finds were minted by version 1's publish; a later
   version's sender is whoever held the cap then. `analyze_package` reports
   both as `root_publisher` and `version_publisher`.
+  Capability reads report `capabilities.limits_hit` when their publish,
+  authority-type, registry or witness scan stops. Its `next_call` raises
+  `publish_pages`, `authority_structs`, `registry_probes` or
+  `witness_checks` as needed; a partial audit does not clear mint or
+  upgrade authority.
 - **A capability held by every user is not protocol authority.**
   `AUTHORITY_NAME` (`src/utils/capabilities.ts`) matches any `key`-ability
   struct ending `Cap`/`Admin`/`Operator`/`Owner`/`Manager`/`Authority`, which

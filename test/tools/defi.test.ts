@@ -39,8 +39,15 @@ registerValuer({ name: "stakes", value: async () => ({ positions: [position("0xa
 registerValuer({ name: "pools", value: async () => ({ positions: [position("0xb1", "Pool", null)], unread: [{ what: "0xb2", reason: "pool unreadable" }] }) });
 registerValuer({ name: "broken", value: async () => { throw new Error("service down"); } });
 registerValuer({ name: "nft", value: async () => { nftRuns++; return { positions: [position("0xc1", "Art", 1000)], unread: [] }; } });
+let bounded = false;
+registerValuer({
+  name: "bounded",
+  value: async (ctx) => bounded
+    ? { positions: [], unread: [{ what: "owned objects", reason: `only the first ${ctx.ownedMaxScan ?? 5_000} owned objects were scanned` }] }
+    : { positions: [], unread: [] },
+});
 
-const run = async () => JSON.parse((await tools.get("get_defi_positions")!({ address: "0x00000000000000000000000000000000000000000000000000000000000000d1" })).content[0].text);
+const run = async (args: Record<string, unknown> = {}) => JSON.parse((await tools.get("get_defi_positions")!({ address: "0x00000000000000000000000000000000000000000000000000000000000000d1", ...args })).content[0].text);
 
 describe("get_defi_positions", () => {
   it("gives every position its usd, method and tier, most valuable first", async () => {
@@ -73,5 +80,21 @@ describe("get_defi_positions", () => {
     const data = await run();
     expect(nftRuns).toBe(0);
     expect(data.positions.some((p: { object_id: string }) => p.object_id === "0xc1")).toBe(false);
+  });
+
+  it("carries the raised object scan bound into readers and offers the next bound", async () => {
+    bounded = true;
+    try {
+      const first = await run();
+      expect(first.owned_scan_next_call).toEqual({
+        tool: "get_defi_positions",
+        args: { address: first.address, owned_max_scan: 10_000 },
+});
+      const raised = await run({ owned_max_scan: 10_000 });
+      expect(raised.unread).toContainEqual({ what: "owned objects", reason: "only the first 10000 owned objects were scanned" });
+      expect(raised.owned_scan_next_call.args.owned_max_scan).toBe(20_000);
+    } finally {
+      bounded = false;
+    }
   });
 });

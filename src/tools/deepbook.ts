@@ -111,22 +111,21 @@ export function registerDeepBookTools(server: McpServer) {
         // The indexer filters maker and taker separately, so "this account was
         // involved either way" needs both queries merged. Doing it here keeps
         // the caller from having to know that.
-        const base = { limit: limit ?? 50, start_time, end_time };
-        const trades = balance_manager_id
-          ? dedupeByDigest([
-              ...(await fetchTrades(pool.pool_name, {
-                ...base,
-                maker_balance_manager_id: balance_manager_id,
-              })),
-              ...(await fetchTrades(pool.pool_name, {
-                ...base,
-                taker_balance_manager_id: balance_manager_id,
-              })),
-            ]).slice(0, limit ?? 50)
+        const cap = limit ?? 50;
+        const base = { limit: cap, start_time, end_time };
+        const legs = balance_manager_id
+          ? await Promise.all([
+            fetchTrades(pool.pool_name, { ...base, maker_balance_manager_id: balance_manager_id }),
+            fetchTrades(pool.pool_name, { ...base, taker_balance_manager_id: balance_manager_id }),
+          ])
+          : null;
+        const trades = legs
+          ? dedupeByDigest([...legs[0], ...legs[1]]).slice(0, cap)
           : await fetchTrades(pool.pool_name, base);
+        const truncated = trades.length >= cap || !!legs?.some((leg) => leg.length >= cap);
 
         const volume = trades.reduce((a, t) => a + (t.base_volume ?? 0), 0);
-        const cap = limit ?? 50;
+        // A maker or taker query can hit its own cap even when the merged list is short.
         return ok({
           pool_name: pool.pool_name,
           base: pool.base_asset_symbol,
@@ -135,18 +134,17 @@ export function registerDeepBookTools(server: McpServer) {
           // Explicit, because the indexer has no cursor: a full page is
           // indistinguishable from "that was all of them" unless we say so.
           // Narrow start_time/end_time to walk further back.
-          truncated: trades.length >= cap,
-          ...(trades.length >= cap
+          truncated,
+          ...(truncated
             ? {
-                truncation_note:
-                  `Returned the maximum ${cap} trades. There are probably more in this window — ` +
-                  "narrow start_time/end_time and page through by time.",
+              truncation_note: `At least one indexer result reached the ${cap}-trade cap. Narrow start_time/end_time and compare the returned digests across windows; the indexer has no cursor, and trades sharing one timestamp may not be exhaustively pageable.`,
               }
             : {}),
           total_base_volume: round(volume, 6),
           ...(balance_manager_id ? { filtered_by_balance_manager: balance_manager_id } : {}),
           trades: trades.map((t) => ({
             digest: t.digest,
+            ...(t.timestamp !== undefined ? { timestamp: t.timestamp } : {}),
             price: t.price,
             base_volume: t.base_volume,
             quote_volume: t.quote_volume,

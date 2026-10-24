@@ -156,4 +156,34 @@ describe("sample_control_addresses", () => {
     expect(data.event_type_resolution?.unverified).toBe(true);
     expect(data.warning).toMatch(/type origins could not be read/);
   });
+ it("continues a capped event walk without repeating a page or dropping the next module segment", async () => {
+  const initialSenders = Array.from({ length: 50 }, (_, i) => ({ sender: { address: `0x${i.toString(16)}` } }));
+  mockGqlQuery.mockImplementation(async (query: string, vars?: { filter?: { module?: string }; after?: string }) => {
+   if (query.includes("packageVersions")) {
+    return { packageVersions: { nodes: [{ address: V1, version: 1 }, { address: V9, version: 9 }], pageInfo: { hasNextPage: false, endCursor: null } } };
+   }
+   if (vars?.filter?.module === `${V9}::swap_router`) {
+    return { events: { nodes: [{ sender: { address: "0xpost" } }], pageInfo: { hasNextPage: false, endCursor: null } } };
+   }
+   if (vars?.after === "pre-50") {
+    return { events: { nodes: [{ sender: { address: "0xpre-last" } }], pageInfo: { hasNextPage: false, endCursor: null } } };
+   }
+   return { events: { nodes: initialSenders, pageInfo: { hasNextPage: true, endCursor: "pre-50" } } };
+});
+
+  const handler = tools.get("sample_control_addresses")!;
+  const args = { module: `${V9}::swap_router`, from: CUT - 100, to: CUT + 100, size: 100, seed: 1, max_events: 50 };
+  const first = JSON.parse((await handler(args)).content[0].text);
+  expect(first.population_truncated).toBe(true);
+  expect(first.events_scanned).toBe(50);
+  expect(first.scan.next_call).toMatchObject({ tool: "sample_control_addresses", repeat_with: { cursor: expect.any(String) } });
+
+  const last = JSON.parse((await handler({ ...args, ...first.scan.next_call.repeat_with })).content[0].text);
+  expect(last.events_scanned).toBe(2);
+  expect(last.population_truncated).toBe(false);
+  expect(last.addresses.sort()).toEqual(["0xpost", "0xpre-last"]);
+  const eventCalls = mockGqlQuery.mock.calls.filter(([query]) => String(query).includes("events("));
+  expect(eventCalls.map(([, vars]) => vars.after)).toEqual([undefined, "pre-50", undefined]);
+ });
+
 });

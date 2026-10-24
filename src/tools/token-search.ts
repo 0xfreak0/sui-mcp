@@ -51,8 +51,10 @@ export function registerTokenSearchTools(server: McpServer) {
         .max(MAX_LIMIT)
         .optional()
         .describe(`Matches returned (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT}); verified types then exact symbols. total_matches counts all matches.`),
+      offset: numArg().int().min(0).optional().describe("Index of the first ranked match to return (default 0); use next_call to page past limit."),
+      scan_cursor: z.string().optional().describe("Opaque CoinMetadata scan continuation from discovery_scan_next_call; searches the next bounded block rather than restarting."),
     },
-    async ({ query, verify_onchain, limit }) => {
+    async ({ query, verify_onchain, limit, offset, scan_cursor }) => {
       const q = query.toLowerCase().trim();
 
       // If the query looks like a full coin type, probe it directly
@@ -88,7 +90,10 @@ export function registerTokenSearchTools(server: McpServer) {
 
       // Curated coins always rank first. Pool-backed matches can include
       // impostors with the same symbol as a verified coin.
-      const [curated, discovered] = await Promise.all([searchVerifiedCoins(q), searchTokens(q)]);
+      const [curated, discovered] = await Promise.all([
+        scan_cursor ? [] : searchVerifiedCoins(q),
+        searchTokens(q, scan_cursor),
+      ]);
       const seen = new Set(curated.map((c) => c.coin_type));
       const results: SearchResult[] = curated.map((c) => ({
         coin_type: c.coin_type,
@@ -127,7 +132,9 @@ export function registerTokenSearchTools(server: McpServer) {
           ...(guardiansFlagsForCoin(type).length ? { flagged_by: guardiansFlagsForCoin(type) } : {}),
         });
       }
-      const shown = results.slice(0, limit ?? DEFAULT_LIMIT);
+      const start = offset ?? 0;
+      const pageSize = limit ?? DEFAULT_LIMIT;
+      const shown = results.slice(start, start + pageSize);
 
       if (verify_onchain) {
         await Promise.all(
@@ -167,6 +174,9 @@ export function registerTokenSearchTools(server: McpServer) {
         ...(scan ? {
           discovery_scan_scanned: scan.scanned,
           discovery_scan_truncated: scan.truncated,
+          ...(scan?.next_cursor ? {
+            discovery_scan_next_call: { tool: "search_token", repeat_with: { scan_cursor: scan.next_cursor, offset: 0 } },
+          } : {}),
           ...(scan.failed ? { discovery_scan_failed: scan.failed } : {}),
           ...(scan.failed ? { discovery_scan_note: `The on-chain scan failed after ${scan.scanned} objects (${scan.failed}); absence is not evidence of nonexistence.` } : {}),
         } : {}),
@@ -181,9 +191,10 @@ export function registerTokenSearchTools(server: McpServer) {
               ...(shown.length === 0 && (discovered.unconfirmed > 0 || discovered.unavailable_providers.length > 0 || scan?.failed) ? { status: "could_not_confirm" } : {}),
               results: shown,
               total_matches: results.length,
-              ...(shown.length < results.length
+              ...(start + shown.length < results.length
                 ? {
-                    more_matches_note: `${results.length - shown.length} more matches are not shown. Pass limit (max ${MAX_LIMIT}) or a more specific query.`,
+                  more_matches_note: `${results.length - start - shown.length} more matches are not shown in this scan slice. Follow next_call to page them.`,
+                  next_call: { tool: "search_token", repeat_with: { offset: start + shown.length, ...(scan_cursor ? { scan_cursor } : {}) } },
                   }
                 : {}),
               ...found,

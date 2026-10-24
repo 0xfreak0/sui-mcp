@@ -21,13 +21,20 @@ sidebar:
 - Profile: `forensics`, `developer`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Scan a Move package's API, struct shapes and heuristic risks: freeze/denylist, mint and admin authority, fund handling, randomness and hot-potato types. Bytecode leads cover discarded checks, missing sibling guards and unchecked shared-state writes. It flags older public functions that mutate a shared type without a check most of the newest version's public functions make. It reads all versions up to 30; for longer lineages, it reads the oldest 29 and the newest. Older versions remain callable on the same objects, regardless of the ID passed. Leads are graded strong, medium or weak: weak leads raise no finding; none prove a flaw or clear a package. This is a surface scan, not a security audit. It audits current UpgradeCap/TreasuryCap/deny/admin holders, including caps minted after publish; per-user cap types are counted, not listed by holder. Failed instance scans, unread defining versions and unresolvable generic CoinRegistry types appear in incomplete_scans. Unlocated mint authority means unknown (medium), except proven fixed/burn-only supply or SUI (info: cannot mint). It distinguishes the lineage deployer from this version's publisher; get_upgrade_history joins each version to publishers, signing schemes and cap holders. Summary limits bytecode leads, including weak ones; bytecode_scan.read and omitted.next_call guide follow-up. Use modules for selected signatures and struct fields or detail:'full' for all modules, caps and leads.
+Scan a Move package's API, struct shapes and heuristic risks: freeze/denylist, mint and admin authority, fund handling, randomness and hot-potato types. Bytecode leads cover discarded checks, missing sibling guards and unchecked shared-state writes. It flags older public functions that mutate a shared type without a check most of the newest version's public functions make. It reads up to 30 versions by default, oldest 29 and newest when the lineage is longer; raise max_versions_compared to include more. Older versions remain callable on the same objects, regardless of the ID passed. Leads are graded strong, medium or weak: weak leads raise no finding; none prove a flaw or clear a package. This is a surface scan, not a security audit. It audits current UpgradeCap/TreasuryCap/deny/admin holders, including caps minted after publish; per-user cap types are counted, not listed by holder. Failed instance scans, unread defining versions and unresolvable generic CoinRegistry types appear in incomplete_scans. Unlocated mint authority means unknown (medium), except proven fixed/burn-only supply or SUI (info: cannot mint). It distinguishes the lineage deployer from this version's publisher; get_upgrade_history joins each version to publishers, signing schemes and cap holders. Summary limits bytecode leads, including weak ones; bytecode_scan.read and omitted.next_call guide follow-up. Use modules for selected signatures and struct fields or detail:'full' for all modules, caps and leads.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `package_id` | string | yes | Package ID (0x...) or MVR name (@org/app) |
 | `include_disassembly` | boolean | no | Include GraphQL disassembly for each module (default: false) |
 | `audit_capabilities` | boolean | no | Audit who holds the package's UpgradeCap/TreasuryCap/admin caps (default: true) |
+| `publish_pages` | integer (1 to 20) | no | Publish transaction object-change pages per segment (default 6, max 20). Follow capabilities.next_call for more. |
+| `authority_structs` | integer (1 to 48) | no | Authority-named types per segment (default 12, max 48). Follow capabilities.next_call for more. |
+| `registry_probes` | integer (1 to 400) | no | Key structs checked for registered coins per segment (default 200, max 400). Follow capabilities.next_call for more. |
+| `witness_checks` | integer (1 to 48) | no | Unregistered witness types checked per segment (default 12, max 48). Follow capabilities.next_call for more. |
+| `capability_cursor` | string | no | Opaque continuation from capabilities.next_call; resumes the next unscanned page, type or probe without repeating earlier reads. |
+| `max_versions_compared` | integer (2 to 120) | no | Package versions compared in one segment, including the newest (default 30, max 120); follow bytecode_scan.version_gates.next_call for more. |
+| `version_offset` | integer (at least 0) | no | First older lineage version in this segment (default 0); use the version-gates next_call when the 120-version limit is reached. |
 | `detail` | `summary` \| `full` | no | 'summary' (default): module counts/public and entry names, caps grouped by type with all holders, first leads. 'full': all signatures, struct shapes, individual caps and leads, including weak. |
 | `modules` | array of string | no | Only these modules' full signatures and struct shapes; others omitted. Omit for all modules at the chosen detail. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
@@ -38,7 +45,7 @@ Scan a Move package's API, struct shapes and heuristic risks: freeze/denylist, m
 - Profile: `developer`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Developer) Decompile Move module(s) from a Sui package into readable source code. Optional: requires an external move-decompiler binary (SUI_DECOMPILER_PATH). disassemble_module, get_move_function and diff_package_upgrade read the same bytecode with no binary. If module_name is omitted, lists available modules and says whether the binary is available. Pass function_name with module_name for one function's source plus the `use` lines and constants it refers to, when the decompiler prints them. Set all_modules=true to decompile the entire package. A line holding a large decimal literal carries a `//` note with its hex or shift form, as disassemble_module gives.
+(Developer) Decompile Move module(s) from a Sui package into readable source code. Optional: requires an external move-decompiler binary (SUI_DECOMPILER_PATH). disassemble_module, get_move_function and diff_package_upgrade read the same bytecode with no binary. If module_name is omitted, lists available modules and says whether the binary is available. Pass function_name with module_name for one function's source plus the `use` lines and constants it refers to, when the decompiler prints them. Set all_modules=true to read up to 32 modules per call; next_call continues from module_offset after a module, time or output budget. A line holding a large decimal literal carries a `//` note with its hex or shift form, as disassemble_module gives.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -46,6 +53,7 @@ Scan a Move package's API, struct shapes and heuristic risks: freeze/denylist, m
 | `module_name` | string | no | Module name to decompile. If omitted, lists available modules. |
 | `function_name` | string | no | Return only this function of module_name (default: the whole module). |
 | `all_modules` | boolean | no | Decompile all modules in the package (default: false) |
+| `module_offset` | integer (at least 0) | no | First module to decompile in all_modules mode; use next_call to continue after a module or time/output budget. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## diff_package_upgrade
@@ -116,7 +124,7 @@ Scan a Move package's API, struct shapes and heuristic risks: freeze/denylist, m
 - Profile: `developer`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Developer) Get the dependency graph of a Sui Move package from its linkage table: every package it is linked against, with the exact version linked (`linked_version`), which can be older than the dependency's current version. With depth > 1 each dependency's own linkage is read too, up to depth 3. System packages (0x1, 0x2, 0x3) upgrade in place, so their nodes show the current version while the edge shows the one linked.
+(Developer) Get the dependency graph of a Sui Move package from its linkage table: every package it is linked against, with the exact version linked (`linked_version`), which can be older than the dependency's current version. With depth > 1 each dependency's own linkage is read too, up to depth 3. `complete` says whether the graph ends at that depth; `unexpanded` gives a call for each branch beyond the depth limit or a dependency read to retry. System packages (0x1, 0x2, 0x3) upgrade in place, so their nodes show the current version while the edge shows the one linked.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

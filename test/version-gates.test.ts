@@ -38,4 +38,26 @@ describe("scanVersionGates", () => {
     expect(scan?.unreadable?.map((u) => u.version)).toEqual([2]);
     expect(fetchAllModuleDisassembly).not.toHaveBeenCalledWith(id(1));
   });
+  it("reads every version when the caller raises the comparison bound", async () => {
+    const count = MAX_VERSIONS_COMPARED + 2;
+    fetchPackageVersions.mockResolvedValue(Array.from({ length: count }, (_, i) => ({ address: id(i + 1), version: i + 1 })));
+    fetchAllModuleDisassembly.mockResolvedValue(EMPTY);
+    const scan = await scanVersionGates(id(1), undefined, count);
+    expect(scan?.versions_compared).toHaveLength(count);
+    expect(scan?.versions_not_compared).toBeUndefined();
+});
+
+  it("covers each older version once across the 120-version ceiling", async () => {
+    const count = 125;
+    fetchPackageVersions.mockResolvedValue(Array.from({ length: count }, (_, i) => ({ address: id(i + 1), version: i + 1 })));
+    fetchAllModuleDisassembly.mockResolvedValue(EMPTY);
+    const first = await scanVersionGates(id(1), undefined, 120);
+    expect(first?.next_offset).toBe(119);
+    const last = await scanVersionGates(id(1), undefined, 120, first!.next_offset);
+    expect(last?.next_offset).toBeUndefined();
+    const older = [...first!.versions_compared, ...last!.versions_compared].filter((version) => version !== count);
+    expect(older).toEqual(Array.from({ length: count - 1 }, (_, i) => i + 1));
+    expect(last?.versions_not_compared?.count).toBe(119);
+    await expect(scanVersionGates(id(1), undefined, 120, count - 1)).rejects.toThrow(RangeError);
+});
 });

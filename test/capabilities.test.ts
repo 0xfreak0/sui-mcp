@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { gqlPage } from "./helpers/service-shapes.js";
+import { deriveObjectID, normalizeSuiAddress } from "@mysten/sui/utils";
 
 const { gqlQuery, withArchiveFallback, getCoinInfo, neverSigned } = vi.hoisted(() => ({
   gqlQuery: vi.fn(),
@@ -33,6 +34,193 @@ const { auditPackageCapabilities, classifyCapType, classifyCapabilityRisk, NEVER
 );
 
 const P2 = "0x0000000000000000000000000000000000000000000000000000000000000002";
+
+describe("auditPackageCapabilities — publish page budget", () => {
+ it("resumes the next publish page instead of repeating the first", async () => {
+  gqlQuery.mockReset();
+  gqlQuery.mockImplementation(async (_query: string, vars: { after?: string | null }) => ({
+   package: {
+    packageAt: {
+     previousTransaction: {
+      effects: {
+       objectChanges: gqlPage([], vars.after
+        ? { hasNextPage: false }
+        : { hasNextPage: true, endCursor: "next" }),
+      },
+     },
+    },
+   },
+  }));
+  const first = await auditPackageCapabilities("0xpkg", null, undefined, { publish_pages: 1 });
+  expect(first).toMatchObject({ checked: false, complete: false, limits_hit: { publish_pages: 1 } });
+  expect(first.next_cursor).toEqual(expect.any(String));
+  expect(gqlQuery).toHaveBeenCalledTimes(1);
+  const complete = await auditPackageCapabilities("0xpkg", null, undefined, { publish_pages: 1 }, first.next_cursor);
+  expect(complete).toMatchObject({ checked: true, capabilities: [] });
+  expect(complete.next_cursor).toBeUndefined();
+  expect(gqlQuery).toHaveBeenCalledTimes(2);
+  expect(gqlQuery.mock.calls.map(([, vars]) => vars.after)).toEqual([null, "next"]);
+ });
+});
+describe("capability audit hard-cap continuations", () => {
+ const pkg = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+ const upgrade = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+ const modules = [
+  { name: "authority", structs: Array.from({ length: 49 }, (_, i) => ({ name: `Control${i}Cap`, abilities: ["key", "store"] })) },
+  { name: "tokens", structs: Array.from({ length: 401 }, (_, i) => ({ name: `Token${i}`, abilities: ["key"] })) },
+  ...Array.from({ length: 49 }, (_, i) => ({ name: `w${i}`, structs: [{ name: `W${i}`, abilities: ["drop"] }] })),
+ ];
+
+ it("follows every phase at its schema maximum with disjoint rows and no repeated chain reads", async () => {
+  gqlQuery.mockReset();
+  gqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown>) => {
+   if (query.includes("packageAt(version: 1)")) {
+    const page = vars.after === null ? 0 : Number(vars.after);
+    return {
+     package: {
+      packageAt: {
+       previousTransaction: {
+        effects: {
+         objectChanges: gqlPage(
+          page === 0
+           ? [{ idCreated: true, outputState: { address: upgrade, asMoveObject: { contents: { type: { repr: `${P2}::package::UpgradeCap` } } } } }]
+           : [],
+          page < 20 ? { hasNextPage: true, endCursor: String(page + 1) } : { hasNextPage: false },
+         )
+        }
+       }
+      }
+     }
+    };
+   }
+   if (query.includes("typeOrigins")) return { package: { typeOrigins: [] } };
+   if (query.includes("multiGetObjects")) return { multiGetObjects: [] };
+   if (query.includes("objects(filter")) {
+    const match = /Control(\d+)Cap/.exec(String(vars.t));
+    if (!match) throw new Error(`unexpected type scan: ${vars.t}`);
+    const id = `0x${(Number(match[1]) + 1).toString(16).padStart(64, "0")}`;
+    return { objects: gqlPage([{ address: id, owner: { __typename: "Shared" } }]) };
+   }
+   if (vars.id === upgrade) return { object: { owner: { __typename: "Shared" }, asMoveObject: { contents: { json: { policy: 0 } } } } };
+   throw new Error(`unexpected audit query: ${query}`);
+  });
+  const max = { publish_pages: 20, authority_structs: 48, registry_probes: 400, witness_checks: 48 };
+  const segments = [];
+  let cursor: string | undefined;
+  do {
+   const result = await auditPackageCapabilities(pkg, null, modules, max, cursor);
+   segments.push(result);
+   cursor = result.next_cursor;
+  } while (cursor);
+  expect(segments.map((s) => Object.keys(s.limits_hit ?? {}))).toEqual([
+   ["publish_pages"], ["authority_structs"], ["registry_probes"], ["witness_checks"], [],
+  ]);
+  expect(segments.slice(0, -1).every((s) => s.checked === false && s.complete === false && s.note?.includes("totals are unavailable"))).toBe(true);
+  expect(segments.at(-1)).toMatchObject({ checked: true });
+  const ids = segments.flatMap((s) => s.capabilities.map((c) => c.object_id));
+  expect(ids).toHaveLength(50);
+  expect(new Set(ids).size).toBe(ids.length);
+  const publishReads = gqlQuery.mock.calls.filter(([q]) => q.includes("packageAt(version: 1)"));
+  expect(publishReads.map(([, v]) => v.after)).toEqual([null, ...Array.from({ length: 20 }, (_, i) => String(i + 1))]);
+  const instanceReads = gqlQuery.mock.calls.filter(([q]) => q.includes("objects(filter") && q.includes("first: 50"));
+  expect(instanceReads).toHaveLength(49);
+  expect(new Set(instanceReads.map(([, v]) => v.t)).size).toBe(49);
+  const registryKeys = gqlQuery.mock.calls.filter(([q]) => q.includes("multiGetObjects"))
+   .flatMap(([, v]) => v.keys as Array<{ address: string }>);
+  expect(registryKeys).toHaveLength(499);
+  expect(new Set(registryKeys.map((k) => k.address)).size).toBe(499);
+  expect(getCoinInfo).toHaveBeenCalledTimes(49);
+
+  gqlQuery.mockClear();
+  getCoinInfo.mockClear();
+  const whole = await auditPackageCapabilities(pkg, null, modules, {
+   publish_pages: 21, authority_structs: 49, registry_probes: 499, witness_checks: 49,
+  });
+  expect(whole.checked).toBe(true);
+  expect(ids.sort()).toEqual(whole.capabilities.map((c) => c.object_id).sort());
+  expect(segments.flatMap((s) => s.user_held_types ?? [])).toEqual(whole.user_held_types ?? []);
+  expect(segments.flatMap((s) => s.coins_without_located_mint_authority ?? [])).toEqual(whole.coins_without_located_mint_authority ?? []);
+ });
+ it("retains minted caps and registry discoveries while withholding unlocated verdicts until the last segment", async () => {
+  const minted = `${pkg}::minted::MINTED`;
+  const missing = `${pkg}::missing::MISSING`;
+  const treasury = "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+  const registeredCap = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+  const registered = `${pkg}::tokens::Token`;
+  const registryId = normalizeSuiAddress(deriveObjectID("0xc", `0x2::coin_registry::CurrencyKey<${registered}>`, new Uint8Array([0])));
+  const smallModules = [
+   { name: "admin", structs: [{ name: "FirstCap", abilities: ["key"] }, { name: "SecondCap", abilities: ["key"] }] },
+   { name: "tokens", structs: [{ name: "Token", abilities: ["key"] }] },
+   { name: "a", structs: [{ name: "A", abilities: ["drop"] }] },
+   { name: "b", structs: [{ name: "B", abilities: ["drop"] }] },
+  ];
+  gqlQuery.mockReset();
+  gqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown>) => {
+   if (query.includes("packageAt(version: 1)")) {
+    const nodes = vars.after ? [] : [
+     { idCreated: true, outputState: { address: treasury, asMoveObject: { contents: { type: { repr: `${P2}::coin::TreasuryCap<${minted}>` } } } } },
+     { idCreated: true, outputState: { address: "0xf", asMoveObject: { contents: { type: { repr: `${P2}::coin::CoinMetadata<${missing}>` } } } } },
+    ];
+    return {
+     package: {
+      packageAt: {
+       previousTransaction: {
+        effects: {
+         objectChanges: gqlPage(nodes, vars.after ? { hasNextPage: false } : { hasNextPage: true, endCursor: "page2" }),
+        }
+       }
+      }
+     }
+    };
+   }
+   if (query.includes("typeOrigins")) return { package: { typeOrigins: [] } };
+   if (query.includes("multiGetObjects")) return {
+    multiGetObjects: (vars.keys as Array<{ address: string }>)
+     .filter((k) => k.address === registryId)
+     .map((k) => ({
+      address: k.address, asMoveObject: {
+       contents: {
+        json: {
+         decimals: 9, treasury_cap_id: registeredCap,
+        }
+       }
+      }
+     }))
+   };
+   if (query.includes("objects(filter")) return { objects: gqlPage([]) };
+   if (vars.id === treasury || vars.id === registeredCap) return { object: { owner: { __typename: "Shared" }, asMoveObject: { contents: { json: null } } } };
+   throw new Error(`unexpected audit query: ${query}`);
+  });
+  const segments = [];
+  let cursor: string | undefined;
+  do {
+   const segment = await auditPackageCapabilities(pkg, null, smallModules,
+    { publish_pages: 1, authority_structs: 1, registry_probes: 1, witness_checks: 1 }, cursor);
+   segments.push(segment);
+   cursor = segment.next_cursor;
+  } while (cursor);
+  expect(segments[0].capabilities).toEqual([expect.objectContaining({ object_id: treasury })]);
+  expect(segments.slice(0, -1).every((s) => s.coins_without_located_mint_authority === undefined)).toBe(true);
+  expect(segments.at(-1)?.coins_without_located_mint_authority).toEqual([expect.objectContaining({ coin_type: missing })]);
+  expect(segments.flatMap((s) => s.capabilities.map((c) => c.object_id))).toEqual([treasury, registeredCap]);
+  expect(gqlQuery.mock.calls.filter(([, v]) => v?.id === treasury)).toHaveLength(1);
+  expect(gqlQuery.mock.calls.filter(([, v]) => v?.id === registeredCap)).toHaveLength(1);
+  expect(gqlQuery.mock.calls.filter(([, v]) => String(v?.t).includes(`TreasuryCap<${minted}>`))).toHaveLength(0);
+  expect(gqlQuery.mock.calls.filter(([, v]) => String(v?.type).includes(`Currency<${registered}>`))).toHaveLength(0);
+  const keys = gqlQuery.mock.calls.filter(([q]) => q.includes("multiGetObjects")).flatMap(([, v]) => v.keys as Array<{ address: string }>);
+  expect(keys).toHaveLength(5);
+  expect(new Set(keys.map((k) => k.address)).size).toBe(5);
+  expect(getCoinInfo).toHaveBeenCalledTimes(2);
+  gqlQuery.mockClear();
+  getCoinInfo.mockClear();
+  const whole = await auditPackageCapabilities(pkg, null, smallModules,
+   { publish_pages: 2, authority_structs: 2, registry_probes: 5, witness_checks: 2 });
+  expect(whole.checked).toBe(true);
+  expect(segments.flatMap((s) => s.capabilities)).toEqual(whole.capabilities);
+  expect(segments.flatMap((s) => s.coins_without_located_mint_authority ?? []))
+   .toEqual(whole.coins_without_located_mint_authority);
+ });
+});
 
 describe("classifyCapType", () => {
   it("identifies framework caps", () => {
@@ -486,6 +674,17 @@ describe("auditPackageCapabilities — authority-struct discovery", () => {
     } finally {
       neverSigned.clear();
     }
+ });
+
+ it("reports authority structs outside the default bound and includes them when raised", async () => {
+  const modules = [{
+   name: "vault",
+   structs: Array.from({ length: 13 }, (_, i) => ({ name: `Authority${i}Cap`, abilities: ["key", "store"] })),
+  }];
+  const bounded = await auditPackageCapabilities(PKG, MULTISIG, modules);
+  expect(bounded.limits_hit).toMatchObject({ authority_structs: 1 });
+  const expanded = await auditPackageCapabilities(PKG, MULTISIG, modules, { authority_structs: 13 });
+  expect(expanded.limits_hit?.authority_structs).toBeUndefined();
   });
 
   it("does not scan standard framework cap names as authority structs", async () => {

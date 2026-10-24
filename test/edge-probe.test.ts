@@ -589,6 +589,22 @@ describe("buildWalletEdges", () => {
     expect(rec!.signals[0].digests).toContain("0xbac");
   });
 
+ it("pages reciprocal counterparties and marks either page incomplete on its own", async () => {
+  const others = ["0x07e", "0x07f"];
+  mockGqlQuery.mockImplementation(router({
+   recent: (addr) => addr === A ? page(others.map((other, i) => payment(`out-${i}`, A, other))) : page([]),
+   sent: (addr) => others.includes(addr) ? page([payment(`back-${addr}`, addr, A)]) : page([]),
+  }));
+  const first = await buildWalletEdges([A], { expand: false, reciprocalBudget: 1 });
+  const second = await buildWalletEdges([A], { expand: false, reciprocalBudget: 1, reciprocalOffset: 1 });
+  expect(first.reciprocal_scan).toMatchObject({ total: 2, offset: 0, checked: 1, next_offset: 1 });
+  expect(second.reciprocal_scan).toMatchObject({ total: 2, offset: 1, checked: 1 });
+  expect(first.truncated).toBe(true);
+  expect(second.truncated).toBe(true);
+  expect(first.edges.filter((e) => e.signal_types.includes("reciprocal"))).toHaveLength(1);
+  expect(second.edges.filter((e) => e.signal_types.includes("reciprocal"))).toHaveLength(1);
+ });
+
   it("does NOT link a one-directional payment", async () => {
     // Everyone pays an exchange. Paying someone who never pays you back is the
     // commonest relationship on chain and carries almost no information.
@@ -755,6 +771,12 @@ describe("buildWalletEdges", () => {
     const members = new Set(r.edges.flatMap((e) => [e.wallet_a, e.wallet_b]));
     expect(members.has(SIB)).toBe(true);
     expect(members.has(STRANGER)).toBe(false);
+  const pageOne = await buildWalletEdges([A], { expand: true, expandBudget: 1 });
+  const pageTwo = await buildWalletEdges([A], { expand: true, expandBudget: 1, expandOffset: 1 });
+  expect(pageOne.expansion_scan).toMatchObject({ total: 2, offset: 0, checked: 1, next_offset: 1 });
+  expect(pageTwo.expansion_scan).toMatchObject({ total: 2, offset: 1, checked: 1 });
+  expect(pageOne.truncated).toBe(true);
+  expect(pageTwo.truncated).toBe(true);
   });
 });
 

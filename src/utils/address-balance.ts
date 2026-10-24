@@ -87,9 +87,9 @@ const OBJECT_BALANCE_PAGES = 4;
  * Empty when the object holds nothing. A failed lookup is said, never
  * returned as empty: an absent `address_balances` reads as "holds nothing".
  */
-export async function objectAddressBalanceFields(objectId: string): Promise<Record<string, unknown>> {
+export async function objectAddressBalanceFields(objectId: string, startCursor?: string): Promise<Record<string, unknown>> {
   const balances: HeldAddressBalance[] = [];
-  let cursor: string | null = null;
+  let cursor: string | null = startCursor ?? null;
   let truncated = false;
   try {
     for (let page = 0; page < OBJECT_BALANCE_PAGES; page++) {
@@ -99,11 +99,13 @@ export async function objectAddressBalanceFields(objectId: string): Promise<Reco
         balances.push({ coin_type: b.coinType, balance: b.addressBalance, formatted: null });
       }
       if (!res.hasNextPage) break;
+      const previousCursor = cursor;
       cursor = res.cursor;
-      // A page that claims more and gives no cursor, or the last page read,
-      // leaves coin types unread.
-      if (!cursor || page === OBJECT_BALANCE_PAGES - 1) {
+      // A page that claims more without advancing a cursor cannot be continued.
+      // The last page read also leaves coin types unread.
+      if (!cursor || cursor === previousCursor || page === OBJECT_BALANCE_PAGES - 1) {
         truncated = true;
+        if (cursor === previousCursor) cursor = null;
         break;
       }
     }
@@ -118,9 +120,12 @@ export async function objectAddressBalanceFields(objectId: string): Promise<Reco
   for (const b of balances) b.formatted = formatCoinAmount(b.balance, b.coin_type);
   return {
     address_balances: balances,
-    ...(truncated ? { address_balances_truncated: true } : {}),
+    ...(truncated ? {
+      address_balances_truncated: true,
+      ...(cursor ? { address_balances_next_call: { tool: "get_object", args: { object_id: objectId, balance_cursor: cursor } } } : {}),
+    } : {}),
     address_balances_note:
-      "These funds sit in this object's own address balance. They are not among its fields, so the object's content does not show them. Only code holding the object's &mut UID, normally its defining module, can withdraw them (0x2::balance::withdraw_funds_from_object).",
+      `These funds sit in this object's own address balance. They are not among its fields, so the object's content does not show them. Only code holding the object's &mut UID, normally its defining module, can withdraw them (0x2::balance::withdraw_funds_from_object).${truncated ? " This page does not cover every coin type; follow address_balances_next_call when available." : ""}`,
   };
 }
 

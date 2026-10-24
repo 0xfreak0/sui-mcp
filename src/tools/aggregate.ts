@@ -129,6 +129,10 @@ export function registerAggregateTools(server: McpServer) {
         .max(2000)
         .optional()
         .describe(`Distinct transactions read for group_pnl, oldest first (default ${DEFAULT_PNL_TRANSACTIONS}). Check pnl.truncated.`),
+   pnl_transaction_offset: numArg().int().min(0).optional().describe("First matched transaction for group_pnl (default 0); follow pnl.transactions_next_call to read later transaction slices."),
+   event_type_offset: numArg().int().min(0).optional().describe("First discovered event type to show when value_field is omitted (15 per page); follow event_types_page.next_call."),
+   pnl_sender_offset: numArg().int().min(0).optional().describe("First P&L sender to list (default 0). Follow pnl.senders_next_call to page beyond top."),
+   pnl_digest_offset: numArg().int().min(0).optional().describe("First digest to list for each P&L sender (default 0, five per sender). Follow pnl.digests_next_call."),
       detail: z
         .enum(["summary", "full"])
         .optional()
@@ -148,10 +152,16 @@ export function registerAggregateTools(server: McpServer) {
       max_events,
       max_reads,
       cursor,
+   event_type_offset,
       group_pnl,
       pnl_max_transactions,
+   pnl_transaction_offset,
+   pnl_sender_offset,
+   pnl_digest_offset,
       detail,
     }) => {
+   if (!group_pnl && (pnl_sender_offset || pnl_digest_offset || pnl_transaction_offset)) return errorResult("pnl_sender_offset, pnl_digest_offset and pnl_transaction_offset require group_pnl: true.");
+   if (value_field && event_type_offset) return errorResult("event_type_offset applies only when value_field is omitted.");
       try {
         if (!event_type && !module && !sender) {
           return errorResult(
@@ -260,6 +270,7 @@ export function registerAggregateTools(server: McpServer) {
               (fields.length ? `Numeric fields they carry: ${fields.slice(0, 20).join(", ")}.` : "They carry no numeric fields."),
           );
         }
+    const discoveredTypes = value_field ? [] : [...countsByType.entries()].sort((a, b) => b[1] - a[1]);
 
         const result = aggregateEvents(events, {
           groupBy: group_by ?? "sender",
@@ -269,11 +280,15 @@ export function registerAggregateTools(server: McpServer) {
           sortOrder: sort_order,
         });
 
+    if (pnl_transaction_offset && pnl_transaction_offset >= txDigests.size) return errorResult("pnl_transaction_offset is past the last matched transaction.");
         const pnl = group_pnl
           ? await senderPnl([...txDigests], {
               packages: [typeFilter?.filter, module].filter((f): f is string => !!f).map((f) => f.split("::")[0]),
               max: pnl_max_transactions ?? DEFAULT_PNL_TRANSACTIONS,
+      transactionOffset: pnl_transaction_offset ?? 0,
               top: top ?? 20,
+      senderOffset: pnl_sender_offset ?? 0,
+      digestOffset: pnl_digest_offset ?? 0,
               sortOrder: sort_order ?? "desc",
               eventsTruncated: truncated,
             })
@@ -356,15 +371,17 @@ export function registerAggregateTools(server: McpServer) {
                 // Discovery, per event type — this is what replaces a
                 // per-protocol schema registry. Ordered by frequency so
                 // the noisy bookkeeping events are visible as such.
-                event_types: [...countsByType.entries()]
-                  .sort((a, b) => b[1] - a[1])
-                  .slice(0, 15)
-                  .map(([type, count]) => ({
+       event_types: discoveredTypes.slice(event_type_offset ?? 0, (event_type_offset ?? 0) + 15).map(([type, count]) => ({
                     type,
                     count,
                     numeric_fields: suggestValueFields(samplesByType.get(type)),
                     sample: samplesByType.get(type),
                   })),
+       event_types_page: {
+        total: discoveredTypes.length,
+        offset: event_type_offset ?? 0,
+        ...(discoveredTypes.length > (event_type_offset ?? 0) + 15 ? { next_call: { tool: "aggregate_events", repeat_with: { event_type_offset: (event_type_offset ?? 0) + 15 } } } : {}),
+       },
                 hint:
                   "Pick the event type that represents the action you care about (user actions are " +
                   "usually rarer than bookkeeping events), then re-run with event_type set to it and " +
@@ -375,6 +392,8 @@ export function registerAggregateTools(server: McpServer) {
             ? {
                 pnl: {
                   ...pnl,
+        ...(pnl.senders_not_shown_after ? { senders_next_call: { tool: "aggregate_events", repeat_with: { pnl_sender_offset: (pnl_sender_offset ?? 0) + (top ?? 20) } } } : {}),
+        ...(pnl.senders.some((s) => s.more_digests) ? { digests_next_call: { tool: "aggregate_events", repeat_with: { pnl_digest_offset: (pnl_digest_offset ?? 0) + PNL_DIGESTS } } } : {}),
                   ...(moduleFilter?.resolution?.other_version_ids
                     ? {
                         scope_note:
@@ -396,7 +415,7 @@ export function registerAggregateTools(server: McpServer) {
         };
         const { payload: out } = capPayload(
           "aggregate_events",
-          { event_type, module, sender, from, to, group_by, value_field, value_scale, top, sort_order, max_events, max_reads, cursor, group_pnl, pnl_max_transactions },
+     { event_type, module, sender, from, to, group_by, value_field, value_scale, top, sort_order, max_events, max_reads, cursor, group_pnl, pnl_max_transactions, pnl_transaction_offset, event_type_offset, pnl_sender_offset, pnl_digest_offset },
           payload,
           {
             ...Object.fromEntries((pnl?.senders ?? []).map((_, i) => [`pnl.senders.${i}.net`, coinCap])),
@@ -421,9 +440,9 @@ export function registerAggregateTools(server: McpServer) {
  */
 async function senderPnl(
   digests: string[],
-  opts: { packages: string[]; max: number; top: number; sortOrder: "asc" | "desc"; eventsTruncated: boolean },
+ opts: { packages: string[]; max: number; top: number; sortOrder: "asc" | "desc"; eventsTruncated: boolean; transactionOffset: number; senderOffset: number; digestOffset: number },
 ) {
-  const wanted = digests.slice(0, opts.max);
+ const wanted = digests.slice(opts.transactionOffset, opts.transactionOffset + opts.max);
   const [read, lineages] = await Promise.all([
     readAttackTransactions(wanted),
     Promise.all(opts.packages.map(async (p) => [p, ...((await fetchPackageVersions(p).catch(() => null)) ?? []).map((v) => v.address)])),
@@ -469,10 +488,14 @@ async function senderPnl(
   return {
     transactions_matched: digests.length,
     transactions_read: read.txs.length,
-    ...(digests.length > wanted.length
+  transaction_offset: opts.transactionOffset,
+  ...(opts.transactionOffset + wanted.length < digests.length
+   ? { transactions_next_call: { tool: "aggregate_events", repeat_with: { pnl_transaction_offset: opts.transactionOffset + wanted.length } } }
+   : {}),
+  ...(opts.transactionOffset > 0 || digests.length > wanted.length
       ? {
           truncated: true,
-          truncation_warning: `Read the oldest ${wanted.length} of ${digests.length} transactions. Raise pnl_max_transactions or narrow the window before ranking anyone.`,
+    truncation_warning: `Ranked only matched transactions ${opts.transactionOffset + 1}–${opts.transactionOffset + wanted.length} of ${digests.length} in this call. Follow transactions_next_call or narrow the window; rankings from separate slices do not add.`,
         }
       : {}),
     ...(opts.eventsTruncated ? { events_truncated: "The event scan hit its budget, so transactions after it are not in this ranking." } : {}),
@@ -480,7 +503,7 @@ async function senderPnl(
     usd_basis: prices.basis,
     meaning:
       "Each sender's own balance changes summed over the matched transactions, gas included. A transaction marked multi-leg also called packages outside the filtered one, so its P&L may have been made there.",
-    senders: ranked.slice(0, opts.top).map(({ r, net, gained, lost }) => {
+  senders: ranked.slice(opts.senderOffset, opts.senderOffset + opts.top).map(({ r, net, gained, lost }) => {
       const label = getLabel(r.sender);
       return {
         sender: r.sender,
@@ -500,10 +523,14 @@ async function senderPnl(
               })),
             }
           : {}),
-        digests: r.digests.slice(0, PNL_DIGESTS),
-        ...(r.digests.length > PNL_DIGESTS ? { more_digests: r.digests.length - PNL_DIGESTS } : {}),
+    digests: r.digests.slice(opts.digestOffset, opts.digestOffset + PNL_DIGESTS),
+    ...(r.digests.length > opts.digestOffset + PNL_DIGESTS ? { more_digests: r.digests.length - opts.digestOffset - PNL_DIGESTS } : {}),
       };
     }),
-    ...(ranked.length > opts.top ? { senders_not_shown: ranked.length - opts.top } : {}),
+  sender_count: ranked.length,
+  sender_offset: opts.senderOffset,
+  digest_offset: opts.digestOffset,
+  ...(opts.senderOffset ? { senders_before_page: Math.min(opts.senderOffset, ranked.length) } : {}),
+  ...(ranked.length > opts.senderOffset + opts.top ? { senders_not_shown_after: ranked.length - opts.senderOffset - opts.top } : {}),
   };
 }

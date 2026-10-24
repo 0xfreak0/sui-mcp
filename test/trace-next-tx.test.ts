@@ -24,7 +24,7 @@ vi.mock("../src/utils/names.js", () => ({
 const mockFanout = vi.fn();
 vi.mock("../src/utils/fanout.js", () => ({ measureFanout: mockFanout }));
 
-const { registerTraceTools } = await import("../src/tools/trace.js");
+const { registerTraceTools, nextObjectTransaction } = await import("../src/tools/trace.js");
 const { addSessionLabel, removeSessionLabel } = await import("../src/utils/labels.js");
 
 /**
@@ -518,4 +518,40 @@ describe("trace_funds — residual (received more than the followed hop moved)",
     const data = await run({ digest: START, direction: "forward", hops: 2 });
     expect(data.hops[1].residual).toBeUndefined();
   });
+});
+
+describe("object next-hop search", () => {
+ it("checks every tracked object and reads past already visited touches", async () => {
+  const objects = Array.from({ length: 6 }, (_, i) => `0x${String(i).padStart(64, "0")}`);
+  const visited = new Set(["already-read"]);
+  mockGqlQuery.mockImplementation(async (_query: string, vars: { f: { affectedObject: string }; first: number }) => {
+   expect(vars.first).toBe(2);
+   const index = objects.indexOf(vars.f.affectedObject);
+   return {
+    transactions: {
+     nodes: index === 5
+      ? [
+       { digest: "already-read", effects: { checkpoint: { sequenceNumber: 500 } } },
+       { digest: "earliest-unread", effects: { checkpoint: { sequenceNumber: 501 } } },
+      ]
+      : [{ digest: `later-${index}`, effects: { checkpoint: { sequenceNumber: 510 + index } } }],
+     pageInfo: { hasNextPage: false, endCursor: null },
+    },
+   };
+  });
+  expect(await nextObjectTransaction(objects, 500, visited)).toBe("earliest-unread");
+  expect(mockGqlQuery).toHaveBeenCalledTimes(6);
+ });
+
+ it("continues after a short filtered page of only visited rows", async () => {
+  const id = `0x${"a".repeat(64)}`;
+  const visited = new Set(["already-read"]);
+  mockGqlQuery.mockImplementation(async (_query: string, vars: { after: string | null }) => ({
+   transactions: vars.after
+    ? { nodes: [{ digest: "unread", effects: { checkpoint: { sequenceNumber: 501 } } }], pageInfo: { hasNextPage: false, endCursor: null } }
+    : { nodes: [{ digest: "already-read", effects: { checkpoint: { sequenceNumber: 500 } } }], pageInfo: { hasNextPage: true, endCursor: "next" } },
+  }));
+  expect(await nextObjectTransaction([id], 500, visited)).toBe("unread");
+  expect(mockGqlQuery).toHaveBeenCalledTimes(2);
+ });
 });

@@ -432,8 +432,9 @@ registerValuer({
     const unread: ValuerResult["unread"] = [];
     const stakes: Stake[] = [];
     for (const type of [STAKED_SUI_TYPE, FUNGIBLE_STAKED_SUI_TYPE]) {
-      const { objects, complete } = await listOwnedWithJson(ctx.owner, type, MAX_STAKES);
-      if (!complete) unread.push({ what: type, reason: `more than ${MAX_STAKES} held; only the first ${objects.length} are valued` });
+      const max = ctx.ownedMaxScan ?? MAX_STAKES;
+      const { objects, complete } = await listOwnedWithJson(ctx.owner, type, max);
+      if (!complete) unread.push({ what: type, reason: `more than ${max} held; only the first ${objects.length} are valued` });
       for (const o of objects) {
         const stake = readStake({ object_id: o.objectId, type: o.type, json: o.json });
         if (stake) stakes.push(stake);

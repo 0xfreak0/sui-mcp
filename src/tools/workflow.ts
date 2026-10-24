@@ -5,7 +5,7 @@ import { normalizeCoinType } from "../utils/coin-registry.js";
 import { registeredValuers, valuePositions, type ValuedPosition } from "../utils/position-value.js";
 import { capPayload, capRows, type ListCap, type NextCall } from "../utils/output-cap.js";
 import { healthLeads, positionRows, positionTotals, type PositionRow, type PositionTotals } from "./defi.js";
-import { boolArg, addressArg } from "./args.js";
+import { boolArg, addressArg, numArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { getNetwork } from "../config.js";
 import { describeError, errorResult } from "../utils/errors.js";
@@ -31,10 +31,10 @@ const STAKED_SUI_TYPE = "0x3::staking_pool::StakedSui";
 type BalanceNode = { coinType: { repr: string }; totalBalance: string; coinBalance: string | null; addressBalance: string | null };
 type BalancePage = { nodes: BalanceNode[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
 
-const FIRST_QUERY = `query($address: SuiAddress!, $first: Int, $txFirst: Int) {
+const FIRST_QUERY = `query($address: SuiAddress!, $first: Int, $txFirst: Int, $balanceAfter: String) {
   address(address: $address) {
     defaultNameRecord { domain }
-    balances(first: $first) {
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                balances(first: $first, after: $balanceAfter) {
       nodes { coinType { repr } totalBalance coinBalance addressBalance }
       pageInfo { hasNextPage endCursor }
     }
@@ -68,19 +68,26 @@ export function registerWorkflowTools(server: McpServer) {
       include_nfts: boolArg()
         .optional()
         .describe("With include_prices, also estimate held NFTs (default: false). Takes many requests on a wallet with many objects; list_nft_collections does this alone."),
+      balance_cursor: z.string().optional().describe("Opaque balance cursor from holdings_next_call. Returns the next bounded block of coin types; totals cover only this block."),
+      owned_max_scan: numArg().int().min(1).max(50_000).optional().describe("Raise owned-object and position scan bounds for include_prices (defaults vary by reader); unread still reports any incomplete read."),
+      nft_max_collections: numArg().int().min(1).max(5_000).optional().describe("NFT collection types valued with include_nfts (default 100); raise through nft_scan_next_call."),
+      nft_market_depth: numArg().int().min(1).max(20).optional().describe("Multiplier for bounded NFT market listing/sale reads (default 1); raise through nft_market_next_call."),
+      operated_recent_limit: numArg().int().min(1).max(50).optional().describe("Sent transactions per operated-shared-object scan page (default 20)."),
+      operated_candidate_limit: numArg().int().min(1).max(500).optional().describe("Shared objects checked per operated scan page (default 20)."),
+      operated_cursor: z.string().min(1).optional().describe("Older sent-transaction cursor from operated_scan.next_call."),
       detail: z
         .enum(["summary", "full"])
         .optional()
         .describe("'summary' (default): holdings and unrecognised object types that fit about 12k characters each, the rest in `omitted`. 'full': every row."),
     },
-    async ({ address, include_prices, include_nfts, detail }) => {
+    async ({ address, include_prices, include_nfts, detail, balance_cursor, owned_max_scan, nft_max_collections, nft_market_depth, operated_recent_limit, operated_candidate_limit, operated_cursor }) => {
       const [gqlResult, stakedResult, kioskResult, packageActivity] = await Promise.all([
         // A failed read is an error, never an empty wallet: `holdings: []`
         // and no transactions is exactly what a real unused address returns.
         gqlQuery<{
           address: { defaultNameRecord: { domain: string } | null; balances: BalancePage } | null;
           transactions: { nodes: Array<{ digest: string; sender?: { address: string }; effects?: { status: string; timestamp?: string } }>; pageInfo?: { hasPreviousPage: boolean; startCursor: string | null } };
-        }>(FIRST_QUERY, { address, first: BALANCE_PAGE, txFirst: 50 }).catch(asError),
+        }>(FIRST_QUERY, { address, first: BALANCE_PAGE, txFirst: 50, balanceAfter: balance_cursor }).catch(asError),
         countOwned(address, STAKED_SUI_TYPE, MAX_STAKES_COUNTED).catch(asError),
         discoverKiosks(address).catch(asError),
         readWalletPackageActivityBounded(address).catch(asError),
@@ -100,11 +107,16 @@ export function registerWorkflowTools(server: McpServer) {
       const nodes = [...(addrData?.balances.nodes ?? [])];
       let pageInfo = addrData?.balances.pageInfo ?? { hasNextPage: false, endCursor: null };
       let pages = 1;
+      let balancesCursor = balance_cursor;
       let balancesUnread: string | null = null;
-      while (pageInfo.hasNextPage && pageInfo.endCursor && pages < MAX_BALANCE_PAGES) {
+      while (pageInfo.hasNextPage && pageInfo.endCursor && pageInfo.endCursor !== balancesCursor && pages < MAX_BALANCE_PAGES) {
         try {
-          const next = await gqlQuery<{ address: { balances: BalancePage } | null }>(BALANCES_QUERY, { address, first: BALANCE_PAGE, after: pageInfo.endCursor });
-          if (!next.address) break;
+          balancesCursor = pageInfo.endCursor;
+          const next = await gqlQuery<{ address: { balances: BalancePage } | null }>(BALANCES_QUERY, { address, first: BALANCE_PAGE, after: balancesCursor });
+          if (!next.address) {
+            balancesUnread = "The address was unavailable during the balance continuation.";
+            break;
+          }
           nodes.push(...next.address.balances.nodes);
           pageInfo = next.address.balances.pageInfo;
           pages++;
@@ -129,11 +141,11 @@ export function registerWorkflowTools(server: McpServer) {
       // the coverage count share one walk of the owned objects. A reader
       // that fails is listed in `unread`, never counted as holding nothing.
       // NFTs only on request: their walk reads every object and kiosk item.
-      const ctx = { owner: address, memo: new Map<string, Promise<unknown>>() };
+      const ctx = { owner: address, ownedMaxScan: owned_max_scan, nftMaxCollections: nft_max_collections, nftMarketDepth: nft_market_depth, memo: new Map<string, Promise<unknown>>() };
       const valuing = include_prices
         ? valuePositions(ctx, include_nfts ? undefined : registeredValuers().filter((name) => name !== "nft"))
         : null;
-      const operating = include_prices ? operatedSharedObjects(address, ctx).catch(asError) : null;
+      const operating = include_prices ? operatedSharedObjects(address, ctx, { recent: operated_recent_limit, candidates: operated_candidate_limit, before: operated_cursor }).catch(asError) : null;
 
       let priceData: Record<string, { price: number; priceChange24HoursPercentage: number }> | null = null;
       if (include_prices && coinTypes.length > 0) {
@@ -200,21 +212,33 @@ export function registerWorkflowTools(server: McpServer) {
         timestamp: n.effects?.timestamp,
       }));
 
+      const operatedArgs = { ...(nft_max_collections ? { nft_max_collections } : {}), ...(nft_market_depth ? { nft_market_depth } : {}), ...(operated_recent_limit ? { operated_recent_limit } : {}), ...(operated_candidate_limit ? { operated_candidate_limit } : {}), ...(operated_cursor ? { operated_cursor } : {}) };
       const result: Record<string, unknown> = {
         address,
         sui_name: nameResult,
         holdings_count: holdings.length,
-        holdings_truncated: hasNextPage,
-        ...(hasNextPage
+        holdings_truncated: Boolean(balance_cursor) || hasNextPage,
+        ...(balance_cursor ? { holdings_page_from: balance_cursor } : {}),
+        ...(balancesUnread
+     ? { holdings_next_call: { tool: "get_wallet_overview", args: { address, include_prices, include_nfts, detail, ...operatedArgs, ...(owned_max_scan ? { owned_max_scan } : {}), balance_cursor: balancesCursor } } }
+          : hasNextPage && pageInfo.endCursor && pageInfo.endCursor !== balancesCursor
+            ? { holdings_next_call: { tool: "get_wallet_overview", args: { address, include_prices, include_nfts, detail, ...operatedArgs, ...(owned_max_scan ? { owned_max_scan } : {}), balance_cursor: pageInfo.endCursor } } }
+            : {}),
+        ...(hasNextPage || balance_cursor
           ? {
               holdings_truncated_reason: balancesUnread
-                ? `The balance pages after the first ${pages} could not be read (${balancesUnread}).`
-                : `Only the first ${nodes.length} coin types (${pages} page(s)) were read.`,
+              ? `The balance pages after the first ${pages} could not be read (${balancesUnread}). Retry this call to continue.`
+              : hasNextPage && (!pageInfo.endCursor || pageInfo.endCursor === balancesCursor)
+                ? "The balance connection has more rows but gave no advancing cursor; retry this call."
+                : `Only ${nodes.length} coin types (${pages} page(s)) were read in this block; follow holdings_next_call for later coin types. Totals cover this block only.`,
             }
           : {}),
         holdings,
         staked_sui_count: stakedResult instanceof Error ? null : stakedResult.count,
-        ...(stakedResult instanceof Error || stakedResult.complete ? {} : { staked_sui_count_truncated: `Counted up to ${MAX_STAKES_COUNTED}; the count is a floor.` }),
+        ...(stakedResult instanceof Error || stakedResult.complete ? {} : {
+          staked_sui_count_truncated: `Counted up to ${MAX_STAKES_COUNTED}; the count is a floor.`,
+          staked_sui_count_next_call: { tool: "list_owned_objects", args: { owner: address, object_type: STAKED_SUI_TYPE } },
+        }),
         kiosk_count: kioskResult instanceof Error ? null : kioskResult.length,
         recent_transactions: recentTransactions,
         package_activity: packageActivity instanceof Error ? null : packageActivity,
@@ -256,11 +280,11 @@ export function registerWorkflowTools(server: McpServer) {
         result.priced_holdings = priced.length;
         result.unpriced_holdings = unpriced;
         result.verified_holdings = holdings.filter((h) => h.verified === true).length;
-        result.positions = overviewList(defi, defiTotals, { tool: "get_defi_positions", args: { address, detail: "full" } });
+        result.positions = overviewList(defi, defiTotals, { tool: "get_defi_positions", args: { address, detail: "full", ...(owned_max_scan ? { owned_max_scan } : {}) } });
         if (nfts.length > 0) {
           const nftTotals = positionTotals(nfts);
           result.nft_estimate_usd = nftTotals.total_usd;
-          result.nfts = overviewList(nfts, nftTotals, { tool: "list_nft_collections", args: { address, detail: "full" } });
+          result.nfts = overviewList(nfts, nftTotals, { tool: "list_nft_collections", args: { address, detail: "full", ...(nft_max_collections ? { max_collections: nft_max_collections } : {}), ...(nft_market_depth ? { market_depth: nft_market_depth } : {}) } });
           result.nft_estimate_note =
             "NFT values are heuristic estimates from market evidence (floor listings and past sales), labelled per collection with their method; they are not in total_value_usd.";
         } else if (!include_nfts) {
@@ -269,11 +293,53 @@ export function registerWorkflowTools(server: McpServer) {
 
         const unread = [...(valued?.unread ?? [])];
         const walk = heldWalk(ctx);
-        const coverage: OwnedCoverage | null = walk ? ownedCoverage(await walk, valuedPositions, unread, include_nfts === true) : null;
+        const coverage: OwnedCoverage | null = walk ? ownedCoverage(await walk, valuedPositions, unread, include_nfts === true, address) : null;
+        const incompleteScan = (coverage !== null && (!coverage.complete || (coverage.dynamic_fields_unread ?? 0) > 0)) || unread.some((u) => /more than \d+|only the first \d+|past its first \d+|past \d+ containers|elements of .*first \d+/.test(u.reason));
+        if (incompleteScan && (!owned_max_scan || owned_max_scan < 50_000)) {
+          result.owned_scan_next_call = {
+            tool: "get_wallet_overview",
+            args: { address, include_prices, include_nfts, detail, ...operatedArgs, ...(balance_cursor ? { balance_cursor } : {}), owned_max_scan: Math.min(50_000, (owned_max_scan ?? 5_000) * 2) },
+          };
+        }
+        if (include_nfts && (nft_max_collections ?? 100) < 5_000 && unread.some((u) => /past the \d+ most-held collections/.test(u.reason))) {
+          result.nft_scan_next_call = {
+            tool: "get_wallet_overview", args: {
+              address, include_prices, include_nfts, detail, ...operatedArgs, ...(owned_max_scan ? { owned_max_scan } : {}),
+              ...(balance_cursor ? { balance_cursor } : {}), nft_max_collections: Math.min(5_000, (nft_max_collections ?? 100) * 2),
+            }
+          };
+        }
+        const limitedMarkets = nfts.filter((p) => p.detail?.market_scan_limited === true).length;
+        if (limitedMarkets) {
+          result.nft_market_scan_limited_collections = limitedMarkets;
+          if ((nft_market_depth ?? 1) < 20) result.nft_market_next_call = {
+            tool: "get_wallet_overview", args: {
+              address, include_prices, include_nfts, detail, ...operatedArgs, ...(owned_max_scan ? { owned_max_scan } : {}),
+              ...(balance_cursor ? { balance_cursor } : {}), nft_market_depth: Math.min(20, (nft_market_depth ?? 1) * 2),
+            },
+          };
+        }
         if (coverage) result.coverage = coverage;
 
         const operated = operating ? await operating : null;
         if (operated instanceof Error) unread.push({ what: "operated shared objects", reason: operated.message });
+        if (operated && !(operated instanceof Error) && operated.scan) {
+          const canRaiseCandidates = operated.scan.candidates_truncated && (operated_candidate_limit ?? 20) < 500;
+          result.operated_scan = {
+            transactions_read: operated.transactions_read,
+            objects_read: operated.objects_read,
+            ...operated.scan,
+            incomplete_transactions: operated.scan.incomplete_transactions.map((digest) => ({ digest, next_call: { tool: "get_transaction", args: { digest } } })),
+            ...(canRaiseCandidates || (!operated.scan.candidates_truncated && operated.scan.cursor) ? {
+              next_call: {
+                tool: "get_wallet_overview", args: {
+                  address, include_prices, include_nfts, detail, ...operatedArgs, ...(owned_max_scan ? { owned_max_scan } : {}), ...(balance_cursor ? { balance_cursor } : {}),
+                  ...(canRaiseCandidates ? { operated_candidate_limit: Math.min(500, (operated_candidate_limit ?? 20) * 2) } : { operated_cursor: operated.scan.cursor }),
+                }
+              },
+            } : {}),
+          };
+        }
         const leads = [
           ...healthLeads(defi).map((l) => ({ kind: "near_borrow_limit", ...l })),
           ...(operated && !(operated instanceof Error) ? operated.leads.map(operatedLeadRow) : []),
@@ -301,7 +367,7 @@ export function registerWorkflowTools(server: McpServer) {
           parts.push(`${defiTotals.unpriced_positions} DeFi position(s) have a leg with no price and contribute nothing; each states why.`);
         }
         if ((valued?.unread.length ?? 0) > 0) parts.push("Some positions could not be read (see `unread`) and are not in the total.");
-        if (hasNextPage) parts.push("The holdings list was also truncated, so coin types past it are excluded entirely.");
+        if (hasNextPage || balance_cursor) parts.push("The holdings list covers only this block of balance pages, so coin types outside it are excluded entirely.");
         if (coverage) parts.push(coverage.note);
         const operatedLeads = operated && !(operated instanceof Error) ? operated.leads : [];
         if (operatedLeads.length > 0) {
@@ -310,14 +376,14 @@ export function registerWorkflowTools(server: McpServer) {
           );
         }
         const leftOut =
-          unpriced > 0 || hasNextPage || defiTotals.unpriced_positions > 0 || unread.length > 0 || (coverage !== null && (coverage.not_recognised > 0 || !coverage.complete)) || operatedLeads.length > 0;
+          unpriced > 0 || hasNextPage || Boolean(balance_cursor) || defiTotals.unpriced_positions > 0 || unread.length > 0 || (coverage !== null && (coverage.not_recognised > 0 || !coverage.complete)) || operatedLeads.length > 0;
         result.total_value_note = `${parts.join(" ")}${leftOut ? " Treat this as a floor, not a portfolio value." : ""}`;
       }
 
       const usdOf = (h: Record<string, unknown>) => (typeof h.value_usd === "number" ? h.value_usd : null);
       const { payload } = capPayload(
         "get_wallet_overview",
-        { address, include_prices, include_nfts },
+        { address, include_prices, include_nfts, owned_max_scan, ...operatedArgs, ...(balance_cursor ? { balance_cursor } : {}) },
         result,
         {
           holdings: {

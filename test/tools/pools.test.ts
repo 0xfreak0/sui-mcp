@@ -60,6 +60,29 @@ describe("find_pools", () => {
     expect(data.venues.find((venue: { venue: string }) => venue.venue === "cetus").status).toBe("complete");
   });
 
+  it("reads an Aftermath pool whose other type names contain nested unprefixed addresses", async () => {
+    const aftermath = "0xefe170ec0be4d762196bedecd7a065816576198a6527c99282a2551aaa7da38c::pool::Pool";
+    mockGqlQuery.mockResolvedValue(page([{
+      address: "0xa1",
+      asMoveObject: {
+        contents: {
+          type: { repr: `${aftermath}<0xa::af_lp::AF_LP>` },
+          json: {
+            type_names: [
+              SUI.slice(2),
+              USDC.slice(2),
+              `0x3::lp::LP<${SUI.slice(2)},${USDC.slice(2)}>`,
+            ]
+          },
+        }
+      },
+    }]));
+
+    const data = JSON.parse((await tools.get("find_pools")!({ token_a: SUI, token_b: USDC, protocol: "aftermath" })).content[0].text);
+    expect(data.venues[0].status).toBe("complete");
+    expect(data.pools).toEqual([expect.objectContaining({ pool_id: "0xa1", token_a: SUI, token_b: USDC })]);
+  });
+
   it("says when a search failed instead of reporting no pools", async () => {
     mockGqlQuery.mockImplementation(async (query: string) => {
       if (query.includes("object(address")) throw new Error("Rate-limited by graphql.mainnet.sui.io (HTTP 429)");
@@ -116,6 +139,7 @@ describe("find_pools", () => {
     for (let call = 0; call < 20; call++) {
       const data = JSON.parse((await tools.get("find_pools")!(args)).content[0].text);
       expect(data.total).toBe(900);
+      expect(data.offset).toBe(seen.length);
       expect(JSON.stringify(data).length).toBeLessThan(50_000);
       seen.push(...data.pools.map((pool: { pool_id: string }) => pool.pool_id));
       if (!data.omitted) break;
@@ -124,6 +148,94 @@ describe("find_pools", () => {
       args = data.omitted.next_call.args;
     }
     expect(seen).toEqual(ids);
+  });
+
+  it("resumes only the capped selectors, without repeating pools or skipping the final page", async () => {
+    const bluefin = "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267::pool::Pool";
+    const forward = `${bluefin}<${SUI}, ${USDC}>`;
+    const reverse = `${bluefin}<${USDC}, ${SUI}>`;
+    const reads: Array<{ type: string; after?: string | null }> = [];
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { type: string; after?: string | null }) => {
+      reads.push(vars);
+      if (vars.type === reverse) return page([node("0xreverse", reverse)]);
+      const index = vars.after ? Number(vars.after) : 0;
+      return page([node(`0xforward${index}`, forward)], index < 20 ? String(index + 1) : null);
+    });
+
+    const initial = JSON.parse((await tools.get("find_pools")!({
+      token_a: SUI, token_b: USDC, protocol: "bluefin",
+    })).content[0].text);
+    expect(initial.total).toBe(21);
+    expect(initial.venues[0].status).toBe("incomplete");
+    expect(initial.total_note).toContain("Lower bound");
+    expect(initial.total_is_lower_bound).toBe(true);
+    const continuation = initial.venues[0].next_call;
+    expect(continuation).toMatchObject({ tool: "find_pools", args: { token_a: SUI, token_b: USDC, protocol: "bluefin" } });
+    expect(continuation.args.venue_cursor).toEqual(expect.any(String));
+    const resumed = JSON.parse((await tools.get("find_pools")!(continuation.args)).content[0].text);
+    expect(resumed.venues[0].status).toBe("complete");
+    expect(resumed.venues[0].next_call).toBeUndefined();
+    expect(resumed.total).toBe(1);
+    expect(resumed.total_is_lower_bound).toBe(true);
+    expect(resumed.total_note).toContain("earlier slices");
+    expect(reads.filter((r) => r.type === reverse)).toHaveLength(1);
+    expect(reads.filter((r) => r.type === forward).map((r) => r.after)).toEqual([
+      null, ...Array.from({ length: 20 }, (_, i) => String(i + 1)),
+    ]);
+    expect([...initial.pools, ...resumed.pools].map((p: { pool_id: string }) => p.pool_id)).toEqual([
+      ...Array.from({ length: 20 }, (_, i) => `0xforward${i}`), "0xreverse", "0xforward20",
+    ]);
+  });
+
+  it("continues failed selectors from their last successful page and retries a failed first page", async () => {
+    const bluefin = "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267::pool::Pool";
+    const forward = `${bluefin}<${SUI}, ${USDC}>`;
+    const reverse = `${bluefin}<${USDC}, ${SUI}>`;
+    const reads: Array<{ type: string; after: string | null }> = [];
+    let failedForward = false;
+    let failedReverse = false;
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { type: string; after: string | null }) => {
+      reads.push(vars);
+      if (vars.type === reverse) {
+        if (!failedReverse) {
+          failedReverse = true;
+          throw new Error("Temporary reverse read failure");
+        }
+        return page([node("0xreverse", reverse)]);
+      }
+      if (vars.after === "p2") {
+        if (!failedForward) {
+          failedForward = true;
+          throw new Error("Temporary forward read failure");
+        }
+        return page([node("0xlast", forward)]);
+      }
+      return page([node("0xfirst", forward)], "p2");
+    });
+    const initial = JSON.parse((await tools.get("find_pools")!({ token_a: SUI, token_b: USDC, protocol: "bluefin" })).content[0].text);
+    expect(initial.venues[0].status).toBe("failed");
+    expect(initial.pools.map((p: { pool_id: string }) => p.pool_id)).toEqual(["0xfirst"]);
+    const next = initial.venues[0].next_call;
+    expect(next.args.venue_cursor).toEqual(expect.any(String));
+    const resumed = JSON.parse((await tools.get("find_pools")!(next.args)).content[0].text);
+    expect(resumed.venues[0].status).toBe("complete");
+    expect([...initial.pools, ...resumed.pools].map((p: { pool_id: string }) => p.pool_id)).toEqual(["0xfirst", "0xlast", "0xreverse"]);
+    expect(reads).toEqual([
+      { type: forward, after: null }, { type: reverse, after: null },
+      { type: forward, after: "p2" }, { type: forward, after: "p2" },
+      { type: reverse, after: null },
+    ]);
+  });
+
+  it("stops on an unchanged end cursor rather than exposing a looping continuation", async () => {
+    const bluefin = "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267::pool::Pool";
+    const forward = `${bluefin}<${SUI}, ${USDC}>`;
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { type: string; after: string | null }) =>
+      vars.type === forward ? page([node("0xfirst", forward)], "same") : page([]));
+    const data = JSON.parse((await tools.get("find_pools")!({ token_a: SUI, token_b: USDC, protocol: "bluefin" })).content[0].text);
+    expect(data.venues[0].status).toBe("incomplete");
+    expect(data.venues[0].next_call).toBeUndefined();
+    expect(mockGqlQuery).toHaveBeenCalledTimes(3);
   });
 
   it("stops a coin's pool discovery at its time budget and marks the venue incomplete", async () => {

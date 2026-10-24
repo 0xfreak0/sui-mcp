@@ -77,6 +77,29 @@ describe("fetchActiveValidators", () => {
     expect(mockGqlQuery.mock.calls.length).toBeLessThanOrEqual(20);
   });
 
+  it("returns a resumable cursor at the page budget and resumes from it", async () => {
+    let calls = 0;
+    mockGqlQuery.mockImplementation(() => Promise.resolve(page([`0x${++calls}`], calls <= 20, `cur${calls}`)));
+    const first = await fetchActiveValidators();
+    expect(first.truncated).toBe(true);
+    expect(first.nextCursor).toBe("cur20");
+    const second = await fetchActiveValidators(first.nextCursor);
+    expect(mockGqlQuery.mock.calls[20][1].after).toBe("cur20");
+    expect(second.validators).toHaveLength(1);
+    expect(second.truncated).toBe(false);
+  });
+
+  it("flags missing or non-advancing cursors instead of claiming a complete set", async () => {
+    const absentCursor = page(["0xa"], false);
+    absentCursor.epoch.validatorSet.activeValidators.pageInfo = { hasNextPage: true, endCursor: null };
+    mockGqlQuery.mockResolvedValueOnce(absentCursor);
+    const missing = await fetchActiveValidators();
+    expect(missing).toMatchObject({ truncated: true, nextCursor: null });
+    mockGqlQuery.mockResolvedValueOnce(page(["0xa"], true, "same"));
+    const repeated = await fetchActiveValidators("same");
+    expect(repeated).toMatchObject({ truncated: true, nextCursor: null });
+  });
+
 });
 
 describe("findValidatorByAddress", () => {

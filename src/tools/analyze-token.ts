@@ -135,15 +135,23 @@ export function registerAnalyzeTokenTools(server: McpServer) {
       include_holders: boolArg()
         .optional()
         .describe("Include top 5 holders (default: true). Set false for faster response."),
+      holder_max_scan: numArg().int().min(1).max(50_000).optional().describe("Coin objects and address balances scanned per holder walk (default 2000, max 50000)."),
+      holder_time_budget_ms: numArg().int().min(1_000).max(600_000).optional().describe("Holder scan wall-clock budget in milliseconds (default 35000, max 600000)."),
    include_liquidity: boolArg()
     .optional()
     .describe("Inspect current liquidity and its LP or position holders in up to three discovered pools (default: true). Set false for metadata-only calls."),
    liquidity_pool_offset: numArg().int().min(0).optional().describe("Start at this discovered pool after ranking by its current SUI or USDC reserve (default 0)."),
    liquidity_holder_pool: addressArg().optional().describe("For a holder continuation, restrict the page to this discovered pool ID."),
-   liquidity_offset: numArg().int().min(0).max(1000).optional().describe("Start at this holder index within liquidity_holder_pool (default 0)."),
+      liquidity_offset: numArg().int().min(0).optional().describe("Start at this holder index within liquidity_holder_pool (default 0)."),
+   liquidity_flagged_done: boolArg().optional().describe("Holder-page continuation marker; keep the value from omitted.next_call to avoid repeating flagged holders."),
+      liquidity_max_scan: numArg().int().min(1).max(100_000).optional().describe("Max LP coins or position objects scanned per pool (default 1000, max 100000); follow liquidity_custody.pools[].scan.next_call after a bound."),
+      liquidity_time_budget_ms: numArg().int().min(1_000).max(600_000).optional().describe("Wall-clock budget for pool position scans in milliseconds (default 35000, max 600000)."),
+      liquidity_venue: z.string().optional().describe("Search one venue; use pool_discovery.venues[].next_call to continue a bounded venue search."),
+      liquidity_venue_cursor: z.string().optional().describe("Opaque per-venue cursor; resumes discovery over both SUI and USDC pairs."),
     },
-  async ({ query, include_holders, include_liquidity, liquidity_pool_offset, liquidity_holder_pool, liquidity_offset }) => {
+  async ({ query, include_holders, include_liquidity, liquidity_pool_offset, liquidity_holder_pool, liquidity_offset, liquidity_flagged_done, holder_max_scan, holder_time_budget_ms, liquidity_max_scan, liquidity_time_budget_ms, liquidity_venue, liquidity_venue_cursor }) => {
    if (liquidity_offset && !liquidity_holder_pool) return errorResult("liquidity_offset requires liquidity_holder_pool to identify which pool's holders to page.");
+      if (liquidity_venue_cursor && !liquidity_venue) return errorResult("liquidity_venue_cursor requires liquidity_venue.");
       const wantHolders = include_holders !== false;
       // Whether a curated list vouches for this coin, or the symbol merely
       // matched something on chain.
@@ -192,7 +200,20 @@ export function registerAnalyzeTokenTools(server: McpServer) {
                 };
           return { content: [{ type: "text" as const, text: JSON.stringify(body) }] };
         }
-        if (detailed.status === "not_found" || detailed.status === "could_not_confirm") return errorResult(notFoundMessage(query, detailed));
+        if (detailed.status === "not_found" || detailed.status === "could_not_confirm") {
+          const message = notFoundMessage(query, detailed);
+          if (!detailed.scan.next_cursor) return errorResult(message);
+          return {
+            isError: true,
+            content: [{
+              type: "text" as const, text: JSON.stringify({
+                error: message,
+                next_call: { tool: "search_token", args: { query, scan_cursor: detailed.scan.next_cursor } },
+                note: "Continue the CoinMetadata scan with search_token, then pass a full coin_type to analyze_token if it finds an exact symbol match.",
+              })
+            }],
+          };
+        }
         symbolVerified = detailed.status === "resolved";
         if (detailed.status === "unverified") resolvedBySymbol = symbolResolution(detailed);
         if (detailed.status === "unverified" && detailed.source === "dex_search") resolvedCandidate = detailed.token;
@@ -216,7 +237,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
         fetchDefiLlamaChange24h([coinType]),
 
         wantHolders
-          ? scanTokenTopHolders(coinType, 5, 2000).catch(() => null)
+          ? scanTokenTopHolders(coinType, 5, holder_max_scan ?? 2000, holder_time_budget_ms).catch(() => null)
           : Promise.resolve(null),
 
         fetchRegistryCurrency(coinType),
@@ -405,6 +426,13 @@ export function registerAnalyzeTokenTools(server: McpServer) {
           result.holder_scan_note =
             `No Coin<${coinType}> objects and no address balances of it were found, so there is no holder scan to report. That reads the same as a mistyped coin type or one that exists on another network. It is not evidence that the coin has no holders.`;
         } else if (holderResult.truncated) {
+          result.holder_scan_next_call = {
+            tool: "get_top_holders", args: {
+              type: coinType, mode: "token", limit: 5,
+              max_scan: Math.min((holder_max_scan ?? 2000) * 2, 50_000),
+              time_budget_ms: Math.min((holder_time_budget_ms ?? 35_000) * (holderResult.time_budget_reached ? 2 : 1), 600_000),
+            }
+          };
           result.sampled_holders = await sampledHolders(holderResult.holders, coinType);
           result.holder_scan_note =
             `INCOMPLETE: ${stoppedWalks(holderResult)} stopped before the end. Both walk in object-id order, which is unrelated to balance. ` +
@@ -415,12 +443,38 @@ export function registerAnalyzeTokenTools(server: McpServer) {
       }
    if (include_liquidity !== false) {
     try {
-     const discovery = await discoverCoinPools(coinType);
+          const discovery = await discoverCoinPools(coinType, liquidity_venue, liquidity_venue_cursor);
      result.pool_discovery = {
-      venues: discovery.venues, pairs_searched: discovery.pairs_searched, pools_found: discovery.pools.length,
-      scope: "Only the pairs in pairs_searched on the venues listed were searched. Pools against other coins and on other venues are not included, and a venue whose status is not complete may hold more pools. DeepBook order books have no LP holders and are not inspected for custody.",
+            venues: discovery.venues.map((venue) => {
+              if (!venue.next_cursor) return venue;
+              const { next_cursor, ...status } = venue;
+              return {
+                ...status, next_call: {
+                  tool: "analyze_token", args: {
+                    query: coinType, include_holders: false, liquidity_venue: venue.venue, liquidity_venue_cursor: next_cursor,
+                  }
+                }
      };
-     result.liquidity_custody = await analyzeLiquidityCustody(coinType, discovery.pools, liquidity_offset ?? 0, liquidity_pool_offset ?? 0, liquidity_holder_pool);
+            }),
+            pairs_searched: discovery.pairs_searched, pools_found: discovery.pools.length,
+      ...(liquidity_venue_cursor
+       ? { pools_found_note: "Only pools found in this continuation slice; combine its pages with earlier slices. Follow the venue's next_call while it remains incomplete." }
+       : discovery.venues.some((venue) => venue.status !== "complete")
+              ? { pools_found_note: "Lower bound for this search slice; follow each incomplete venue's next_call to inspect later pools." }
+              : {}),
+            scope: "Only the pairs in pairs_searched on the venues listed were searched. A venue continuation reports only its own search slice. Pools against other coins and on other venues are not included, and a venue whose status is not complete may hold more pools. DeepBook order books have no LP holders and are not inspected for custody.",
+          };
+          result.liquidity_custody = await analyzeLiquidityCustody(
+            coinType, discovery.pools, liquidity_offset ?? 0, liquidity_pool_offset ?? 0, liquidity_holder_pool,
+            liquidity_max_scan, liquidity_time_budget_ms,
+            {
+              ...(liquidity_venue ? { liquidity_venue } : {}),
+              ...(liquidity_venue_cursor ? { liquidity_venue_cursor } : {}),
+              ...(liquidity_max_scan ? { liquidity_max_scan } : {}),
+              ...(liquidity_time_budget_ms ? { liquidity_time_budget_ms } : {}),
+       ...(liquidity_flagged_done ? { liquidity_flagged_done } : {}),
+            },
+          );
     } catch (err) {
      result.liquidity_custody_unavailable = describeError(err, getNetwork());
     }

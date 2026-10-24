@@ -34,7 +34,7 @@ vi.mock("../src/clients/grpc.js", () => {
 
 // Imported after the mocks above.
 const { registerValuer } = await import("../src/utils/position-value.js");
-const { keptDelta, movedObjects, objectValueByAddress, readMovedObjects, valueMovedObjects, valueTransactionObjects } = await import("../src/utils/moved-value.js");
+const { keptDelta, movedObjects, nextSpecificObjectOffset, objectValueByAddress, readMovedObjects, valueMovedObjects, valueTransactionObjects } = await import("../src/utils/moved-value.js");
 
 const STAKE = "0x0000000000000000000000000000000000000000000000000000000000000003::staking_pool::StakedSui";
 const ART = `0x${"a".repeat(64)}::art::Art`;
@@ -86,6 +86,21 @@ const versions = (id: number, input: string | null, output: string | null, heldB
   inputVersion: input,
   outputVersion: output,
   ...(heldBy ? { heldBy } : {}),
+});
+it("starts the full deep-dive after the specific-reader page without repeating or missing objects", () => {
+ const movements = Array.from({ length: 180 }, (_, i) => move(i + 1, i % 3 === 0 ? STAKE : ART, "transferred", A, B));
+ const objects = movements.map((_, i) => versions(i + 1, "1", "2"));
+ const full = movedObjects(movements, objects);
+ const specific = movedObjects(movements, objects, true);
+ const offset = nextSpecificObjectOffset(full, specific);
+ expect(specific).toHaveLength(60);
+ expect(offset).toBe(150);
+ const seen = [...specific.slice(0, 50).map((m) => m.object_id)];
+ for (let next = offset!; next < full.length; next += 50) {
+  seen.push(...full.slice(next, next + 50).filter((m) => m.type === STAKE).map((m) => m.object_id));
+ }
+ expect(seen).toEqual(specific.map((m) => m.object_id));
+ expect(new Set(seen).size).toBe(seen.length);
 });
 
 describe("movedObjects", () => {
@@ -243,6 +258,16 @@ describe("valueMovedObjects", () => {
     expect(r.rows).toEqual([]);
     expect(r.unread.map((u) => u.what)).toEqual([ID(23)]);
   });
+ it("retrieves every valued object beyond the first fifty through an offset page", async () => {
+  const moved = Array.from({ length: 52 }, (_, i) => ({ object_id: ID(500 + i), type: STAKE, from: A, to: B, version: "2" }));
+  const first = await valueMovedObjects(moved, "100");
+  expect(first.rows).toHaveLength(50);
+  expect(first.unread.map((u) => u.what)).toEqual([ID(550), ID(551)]);
+  const later = await valueMovedObjects(moved, "100", undefined, undefined, undefined, 50);
+  expect(later.rows.map((r) => r.object_id)).toEqual([ID(550), ID(551)]);
+  expect(later.unread).toHaveLength(50);
+ });
+
 });
 
 describe("objectValueByAddress", () => {

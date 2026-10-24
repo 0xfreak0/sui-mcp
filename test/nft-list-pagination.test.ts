@@ -116,6 +116,10 @@ describe("list_nfts — exact-boundary pagination", () => {
     const r = await run({ address: OWNER, limit: 3 });
     expect(r.page_size).toBe(3);
     expect(r.next_cursor).toBeDefined();
+    expect(r.next_call).toEqual({
+      tool: "list_nfts",
+      args: { address: OWNER, limit: 3, cursor: r.next_cursor, detail: "summary", value: false },
+    });
   });
 
   it("keeps returning a cursor until every kiosk is actually read", async () => {
@@ -125,6 +129,7 @@ describe("list_nfts — exact-boundary pagination", () => {
     const page2 = await run({ address: OWNER, limit: 3, cursor: page1.next_cursor });
     expect(page2.page_size).toBe(2);
     expect(page2.next_cursor).toBeUndefined();
+    expect(page2.next_call).toBeUndefined();
   });
 
   it("probes direct-owned objects when the target is met exactly as the last kiosk drains", async () => {

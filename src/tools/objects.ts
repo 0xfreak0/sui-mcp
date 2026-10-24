@@ -77,8 +77,12 @@ export function registerObjectTools(server: McpServer) {
     {
       object_id: addressArg().describe("The object ID (0x...)"),
       version: u64StringArg().optional().describe("Specific version to fetch"),
+      balance_cursor: z.string().optional().describe("Continue the object's bounded address-balance list from address_balances_next_call (latest object version only)."),
+      kiosk_scan_pages: numArg().int().min(1).max(2000).optional().describe("Max pages of a kiosk creation or wrapper transaction to inspect for its owner cap (default 40, max 2000)."),
+      kiosk_wrap_steps: numArg().int().min(1).max(32).optional().describe("Max nested wrapper/move steps followed for a kiosk owner cap (default 4, max 32)."),
     },
-    async ({ object_id, version }) => {
+    async ({ object_id, version, balance_cursor, kiosk_scan_pages, kiosk_wrap_steps }) => {
+      if (version && (balance_cursor || kiosk_scan_pages || kiosk_wrap_steps)) return errorResult("balance_cursor, kiosk_scan_pages and kiosk_wrap_steps are available only for the latest object version.");
       const readMask = {
         paths: [
           "object_id", "version", "digest", "object_type", "owner",
@@ -101,7 +105,7 @@ export function registerObjectTools(server: McpServer) {
       const content = protoValueToJson(obj?.json);
       // Funds held in the object's own address balance are current state, so
       // they are read only for the latest version, alongside the Display.
-      const heldRequest = !version && obj?.objectId ? objectAddressBalanceFields(obj.objectId) : null;
+      const heldRequest = !version && obj?.objectId ? objectAddressBalanceFields(obj.objectId, balance_cursor) : null;
       // The struct's own fields first, because they cost nothing. Only when
       // they carry nothing is the rendered Display worth a second request.
       let display: Record<string, string | null> | null = extractDisplay(content);
@@ -125,7 +129,7 @@ export function registerObjectTools(server: McpServer) {
       // holder is not who controlled the kiosk in a past snapshot.
       const kiosk =
         !version && obj?.objectType && baseType(obj.objectType) === KIOSK_TYPE && obj.objectId
-          ? await resolveKioskCapHolder(obj.objectId)
+          ? await resolveKioskCapHolder(obj.objectId, kiosk_scan_pages, kiosk_wrap_steps)
           : null;
 
       const result: Record<string, unknown> = {
@@ -148,6 +152,16 @@ export function registerObjectTools(server: McpServer) {
                     kiosk_cap_holder: kiosk.result.holder,
                     kiosk_cap_id: kiosk.result.cap_id,
                     ...(kiosk.result.wrapped_in ? { kiosk_cap_wrapped_in: kiosk.result.wrapped_in } : {}),
+                ...(!kiosk.result.holder && ((kiosk_scan_pages ?? 40) < 2000 || (kiosk_wrap_steps ?? 4) < 32)
+                  ? {
+                    kiosk_cap_holder_next_call: {
+                      tool: "get_object", args: {
+                        object_id, kiosk_scan_pages: Math.min(2000, (kiosk_scan_pages ?? 40) * 2),
+                        kiosk_wrap_steps: Math.min(32, (kiosk_wrap_steps ?? 4) * 2),
+                      },
+                    }
+                  }
+                  : {}),
                     ...(kiosk.result.holder ? {} : { kiosk_cap_holder_note: unresolvedCapHolderNote(kiosk.result) }),
                   }
                 : {
@@ -155,8 +169,11 @@ export function registerObjectTools(server: McpServer) {
                       kiosk.status === "creation_unreachable"
                         ? "The kiosk's creation transaction could not be read, so its KioskOwnerCap could not be found."
                         : kiosk.status === "cap_not_found"
-                          ? `No KioskOwnerCap naming this kiosk was found in its creation transaction (scanned ${kiosk.scanned_pages} page(s)${kiosk.truncated ? ", truncated before reaching the end" : ""}).`
+                      ? `No KioskOwnerCap naming this kiosk was found in its creation transaction (scanned ${kiosk.scanned_pages} page(s)${kiosk.cursor_unavailable ? ", the service supplied no advancing cursor for remaining pages" : kiosk.truncated ? ", truncated before reaching the end" : ""}).`
                           : `The KioskOwnerCap lookup failed and was skipped: ${kiosk.message}`,
+                ...(kiosk.status === "cap_not_found" && kiosk.truncated && !kiosk.cursor_unavailable && (kiosk_scan_pages ?? 40) < 2000
+                  ? { kiosk_cap_holder_next_call: { tool: "get_object", args: { object_id, kiosk_scan_pages: Math.min(2000, (kiosk_scan_pages ?? 40) * 2), ...(kiosk_wrap_steps ? { kiosk_wrap_steps } : {}) } } }
+                  : {}),
                   }),
             }
           : {}),
@@ -215,7 +232,12 @@ export function registerObjectTools(server: McpServer) {
       const { payload } = capPayload(
         "list_owned_objects",
         { owner, object_type, limit, cursor },
-        { count: objects.length, objects, next_cursor: res.cursor },
+        {
+     count: objects.length, objects, has_next_page: res.hasNextPage, next_cursor: res.cursor === cursor ? null : res.cursor,
+     ...(res.hasNextPage && (!res.cursor || res.cursor === cursor)
+      ? { page_note: "The object list has more rows but no advancing cursor; this page cannot be continued." } : {}),
+     ...(res.hasNextPage && res.cursor && res.cursor !== cursor ? { next_call: { tool: "list_owned_objects", args: { owner, object_type, limit, cursor: res.cursor, detail } } } : {})
+        },
         { objects: { budget: 30_000, keepOrder: true } },
         { full: detail === "full", next_call: { tool: "list_owned_objects", repeat_with: { detail: "full" } } },
       );
@@ -249,7 +271,12 @@ export function registerObjectTools(server: McpServer) {
             text: JSON.stringify({
               dynamic_fields: fields,
               has_next_page: res.hasNextPage,
-              next_cursor: res.cursor,
+       next_cursor: res.cursor === cursor ? null : res.cursor,
+       ...(res.hasNextPage && (!res.cursor || res.cursor === cursor)
+        ? { page_note: "The dynamic field list has more rows but no advancing cursor; this page cannot be continued." } : {}),
+       ...(res.hasNextPage && res.cursor && res.cursor !== cursor
+                ? { next_call: { tool: "list_dynamic_fields", args: { parent_id, limit, cursor: res.cursor } } }
+                : {}),
             }),
           },
         ],

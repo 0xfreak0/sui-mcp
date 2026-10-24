@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { boolArg, addressArg } from "./args.js";
+import { boolArg, addressArg, numArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
-import { DECOMPILER_PATH, suivisionPackageUrl } from "../config.js";
+import { DECOMPILER_PATH, suivisionPackageUrl, getNetwork } from "../config.js";
 import { errorResult } from "../utils/errors.js";
 import { annotateSource, extractSourceFunction, sourceFunctionNames } from "../utils/move-source.js";
 import { execFile } from "node:child_process";
@@ -39,9 +39,9 @@ export const DECOMPILE_LIMITS = {
  * Decide which modules a single call will attempt. Split out from the loop so
  * the ceiling is testable without invoking a decompiler binary.
  */
-export function planModuleBatch<T>(modules: T[]): { selected: T[]; skipped: number } {
-  const selected = modules.slice(0, DECOMPILE_LIMITS.maxModules);
-  return { selected, skipped: modules.length - selected.length };
+export function planModuleBatch<T>(modules: T[], offset = 0): { selected: T[]; skipped: number } {
+  const selected = modules.slice(offset, offset + DECOMPILE_LIMITS.maxModules);
+  return { selected, skipped: Math.max(0, modules.length - offset - selected.length) };
 }
 
 /**
@@ -167,7 +167,7 @@ async function decompileModule(
 export function registerDecompilerTools(server: McpServer) {
   server.tool(
     "decompile_module",
-    "(Developer) Decompile Move module(s) from a Sui package into readable source code. Optional: requires an external move-decompiler binary (SUI_DECOMPILER_PATH). disassemble_module, get_move_function and diff_package_upgrade read the same bytecode with no binary. If module_name is omitted, lists available modules and says whether the binary is available. Pass function_name with module_name for one function's source plus the `use` lines and constants it refers to, when the decompiler prints them. Set all_modules=true to decompile the entire package. A line holding a large decimal literal carries a `//` note with its hex or shift form, as disassemble_module gives.",
+    "(Developer) Decompile Move module(s) from a Sui package into readable source code. Optional: requires an external move-decompiler binary (SUI_DECOMPILER_PATH). disassemble_module, get_move_function and diff_package_upgrade read the same bytecode with no binary. If module_name is omitted, lists available modules and says whether the binary is available. Pass function_name with module_name for one function's source plus the `use` lines and constants it refers to, when the decompiler prints them. Set all_modules=true to read up to 32 modules per call; next_call continues from module_offset after a module, time or output budget. A line holding a large decimal literal carries a `//` note with its hex or shift form, as disassemble_module gives.",
     {
       package_id: addressArg().describe("Package ID (0x...)"),
       module_name: z
@@ -181,13 +181,18 @@ export function registerDecompilerTools(server: McpServer) {
       all_modules: boolArg()
         .optional()
         .describe("Decompile all modules in the package (default: false)"),
+      module_offset: numArg().int().min(0).optional()
+        .describe("First module to decompile in all_modules mode; use next_call to continue after a module or time/output budget."),
     },
-    async ({ package_id, module_name, function_name, all_modules }) => {
+    async ({ package_id, module_name, function_name, all_modules, module_offset }) => {
       if (function_name && !module_name) {
         return errorResult("function_name needs module_name: name the module that declares the function.");
       }
       if (function_name && all_modules) {
         return errorResult("function_name reads one function of module_name; drop all_modules.");
+       }
+      if (module_offset !== undefined && !all_modules) {
+        return errorResult("module_offset requires all_modules: true.");
       }
       const pkg = await fetchPackageModules(package_id);
       if (!pkg) return errorResult("Package not found");
@@ -227,13 +232,16 @@ export function registerDecompilerTools(server: McpServer) {
           return errorResult("Package has no modules with bytecode");
         }
 
-        const { selected, skipped } = planModuleBatch(modulesWithBytecode);
+        const offset = module_offset ?? 0;
+    if (offset >= modulesWithBytecode.length) {
+          return errorResult(`module_offset ${offset} is beyond the ${modulesWithBytecode.length} modules with bytecode.`);
+    }
+        const { selected, skipped } = planModuleBatch(modulesWithBytecode, offset);
         const notes: string[] = [];
         if (skipped > 0) {
           notes.push(
-            `Package has ${modulesWithBytecode.length} modules with bytecode; ` +
-              `decompiled the first ${selected.length}. Request the remaining ${skipped} ` +
-              "individually with module_name.",
+            `decompiled up to ${selected.length} modules from index ${offset}. Request the remaining ${skipped} ` +
+              "with next_call or individually with module_name.",
           );
         }
 
@@ -265,11 +273,11 @@ export function registerDecompilerTools(server: McpServer) {
             totalBytes += source.length;
             results.push({ module: mod.name!, source });
           } catch (err) {
-            if (err instanceof MissingDecompiler) return errorResult(err.message);
-            results.push({
-              module: mod.name!,
-              source: `// Error decompiling: ${err instanceof Error ? err.message : String(err)}`,
-            });
+      return errorResult(
+       err instanceof MissingDecompiler
+        ? err.message
+        : `Could not decompile module ${mod.name ?? "(unnamed)"} at offset ${offset + results.length}: ${err instanceof Error ? err.message : String(err)}. Retry this module or use disassemble_module.`,
+      );
           }
         }
 
@@ -282,8 +290,11 @@ export function registerDecompilerTools(server: McpServer) {
                 module_count: results.length,
                 // Surfaced so a truncated result is never mistaken for the
                 // whole package.
-                total_modules_with_bytecode: modulesWithBytecode.length,
-                complete: results.length === modulesWithBytecode.length,
+                module_offset: offset,
+                complete: offset + results.length === modulesWithBytecode.length,
+                ...(offset + results.length < modulesWithBytecode.length && results.length > 0
+                  ? { next_call: { tool: "decompile_module", args: { package_id, all_modules: true, module_offset: offset + results.length, network: getNetwork() } } }
+                  : {}),
                 ...(notes.length ? { notes } : {}),
                 suivision_url: suivisionPackageUrl(package_id),
                 modules: results,

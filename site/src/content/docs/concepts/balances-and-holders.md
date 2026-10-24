@@ -72,6 +72,11 @@ FungibleStakedSui and liquid-staking tokens are outside this total. An empty
 set says nothing about those excluded holdings.
 Single-address consensus ownership counts as direct ownership.
 
+For a current position walk, `position_cursor` resumes at a position block.
+Add the position counts from each block; wallet-wide totals stay null until
+the walk completes. A stopped `get_wallet_overview` coin-balance walk resumes
+from its last cursor rather than starting its balance pages again.
+
 `method: checkpoint_objects` reads the owned set at that checkpoint when the
 provider retains it. Outside that range, `reconstructed_object_changes`
 replays every transaction affecting the address, including incoming objects:

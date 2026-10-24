@@ -20,7 +20,7 @@ const sentPage = (signatures: string[], digest: string) => ({
   },
 });
 
-beforeEach(() => mockGqlQuery.mockReset());
+beforeEach(() => { mockGqlQuery.mockReset(); });
 
 describe("analyze_multisig", () => {
   it("answers after one page for a wallet that signs with its own single key", async () => {
@@ -48,5 +48,65 @@ describe("analyze_multisig", () => {
     });
     const res = await analyze({ address: fixtures.ed25519.address });
     expect(res.content[0].text).toMatch(/none carries its own signature: they were authorized by 0xa1eb94d1/);
+  });
+
+  it("continues past a scanned segment with only foreign signatures without claiming the address never sent", async () => {
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { before: string | null }) => ({
+      transactions: {
+        pageInfo: { hasPreviousPage: !vars.before, startCursor: vars.before ? null : "older" },
+        nodes: [{
+          digest: vars.before ? "tx-old" : "tx-new", effects: null, gasInput: null,
+          signatures: fixtures.ms_2of3.signatures.map((signatureBytes) => ({ signatureBytes }))
+        }],
+      },
+    }));
+    const initial = JSON.parse((await analyze({ address: fixtures.ed25519.address, max_transactions: 1 })).content[0].text);
+    expect(initial).toMatchObject({
+      committee: null, history_complete: false,
+      next_call: { tool: "analyze_multisig", repeat_with: { cursor: "older" } },
+    });
+    const last = JSON.parse((await analyze({
+      address: fixtures.ed25519.address, max_transactions: 1, cursor: initial.next_call.repeat_with.cursor,
+    })).content[0].text);
+    expect(last.history_complete).toBe(false);
+    expect(last.next_call).toBeUndefined();
+    expect(last.note).toMatch(/combine it with prior segments/);
+    expect(mockGqlQuery.mock.calls.map(([, vars]) => vars.before)).toEqual([null, "older"]);
+  });
+  it("walks an advancing empty page without declaring the history complete", async () => {
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { before: string | null }) => ({
+      transactions: vars.before
+        ? {
+          pageInfo: { hasPreviousPage: false, startCursor: null },
+          nodes: [{ digest: "old", signatures: fixtures.ms_2of3.signatures.map((signatureBytes) => ({ signatureBytes })) }],
+        }
+        : { pageInfo: { hasPreviousPage: true, startCursor: "older" }, nodes: [] },
+    }));
+    const result = await analyze({ address: fixtures.ed25519.address, max_transactions: 1 });
+    expect(mockGqlQuery.mock.calls.map(([, vars]) => vars.before)).toEqual([null, "older"]);
+    expect(result.content[0].text).toContain("has sent 1 transaction(s) in the 1 examined");
+});
+
+  it("does not treat an empty stale cursor as the end of history", async () => {
+    mockGqlQuery.mockResolvedValue({
+      transactions: { pageInfo: { hasPreviousPage: true, startCursor: "stale" }, nodes: [] },
+    });
+    const result = JSON.parse((await analyze({ address: fixtures.ed25519.address, cursor: "stale" })).content[0].text);
+    expect(result).toMatchObject({ committee: null, history_complete: false });
+    expect(result.next_call).toBeUndefined();
+    expect(mockGqlQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds advancing empty pages and resumes after the last read", async () => {
+    let pages = 0;
+    mockGqlQuery.mockImplementation(async () => ({
+      transactions: { pageInfo: { hasPreviousPage: true, startCursor: `older-${++pages}` }, nodes: [] },
+    }));
+    const first = JSON.parse((await analyze({ address: fixtures.ed25519.address, max_transactions: 1 })).content[0].text);
+    expect(first).toMatchObject({
+      transactions_examined: 0, scan_stop: "read_budget", scan_reads: 20,
+      next_call: { tool: "analyze_multisig", repeat_with: { cursor: "older-20" } },
+});
+    expect(mockGqlQuery).toHaveBeenCalledTimes(20);
   });
 });

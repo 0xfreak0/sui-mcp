@@ -68,6 +68,8 @@ export function nftPosition(
           ? `each item at the collection's last sale ${window}, with no active listing found`
           : `each item at the lower of the collection's lowest active listing and its last sale ${window}, and neither could be used`;
   const floorCounted = est.basis === "lower_of_floor_and_last_sale" || est.basis === "floor";
+  const marketScanLimited = Object.values(market.listings_seen).some((seen) => seen.truncated)
+    || market.not_read.some(({ reason }) => /^(Sale scan stopped after|Only the \d+ (newest ItemListed|cheapest recent ItemListed)|the \d+ cheapest orderbook entries)/.test(reason));
   const saleCounted = est.basis === "lower_of_floor_and_last_sale" || est.basis === "last_sale";
   const priced = sui ? `, converted from SUI at the ${sui.source} price at ${new Date(sui.publishTime * 1000).toISOString()}` : "";
   const position: ValuedPosition = {
@@ -85,8 +87,10 @@ export function nftPosition(
       unit_sui: unitSui,
       unit_usd: unitUsd,
       basis: est.basis,
-      sui_usd: sui ? { price: sui.price, source: sui.source, at: new Date(sui.publishTime * 1000).toISOString(),
-        price_offset_sec: sui.publishTime - asOfSec, ...(sui.market ? { market: sui.market } : {}) } : null,
+      sui_usd: sui ? {
+        price: sui.price, source: sui.source, at: new Date(sui.publishTime * 1000).toISOString(),
+        price_offset_sec: sui.publishTime - asOfSec, ...(sui.market ? { market: sui.market } : {})
+      } : null,
       window_days: MARKET_WINDOW_DAYS,
       floor: market.floor
         ? {
@@ -117,6 +121,7 @@ export function nftPosition(
         : {}),
       listings_seen: market.listings_seen,
       ...(market.sales_unattributed ? { sales_unattributed: market.sales_unattributed } : {}),
+      ...(marketScanLimited ? { market_scan_limited: true } : {}),
       ...(market.not_read.length ? { not_read: market.not_read } : {}),
     },
   };
@@ -140,6 +145,7 @@ async function valueHoldings(ctx: ValuationContext): Promise<ValuerResult> {
     };
   }
   const held = await readHeldCollections(ctx.owner);
+  const maxCollections = ctx.nftMaxCollections ?? MAX_COLLECTIONS;
   const unread: ValuerResult["unread"] = [];
   if (held.kiosks_unread > 0) {
     unread.push({ what: NFT_VALUER, reason: `${held.kiosks_unread} kiosk(s) could not be read, so their items are not valued.` });
@@ -153,18 +159,18 @@ async function valueHoldings(ctx: ValuationContext): Promise<ValuerResult> {
     .map(([type, count]): [string, number] => [type, readerFor(type) === NFT_VALUER ? count : count - (held.direct.get(type) ?? 0)])
     .filter(([, count]) => count > 0)
     .sort((a, b) => b[1] - a[1]);
-  const valued = types.slice(0, MAX_COLLECTIONS);
+  const valued = types.slice(0, maxCollections);
   if (types.length > valued.length) {
-    const rest = types.slice(MAX_COLLECTIONS);
+    const rest = types.slice(maxCollections);
     unread.push({
       what: NFT_VALUER,
-      reason: `${rest.length} collection(s) holding ${rest.reduce((s, [, n]) => s + n, 0)} item(s) not valued: past the ${MAX_COLLECTIONS} most-held collections.`,
+      reason: `${rest.length} collection(s) holding ${rest.reduce((s, [, n]) => s + n, 0)} item(s) not valued: past the ${maxCollections} most-held collections.`,
     });
   }
   if (valued.length === 0) return { positions: [], unread };
   const asOfSec = Math.floor(Date.now() / 1000);
   const [markets, prices] = await Promise.all([
-    collectionMarkets(valued.map(([type]) => type), { asOfSec }),
+    collectionMarkets(valued.map(([type]) => type), { asOfSec, depth: ctx.nftMarketDepth }),
     priceCoinTypes([SUI_TYPE], ctx),
   ]);
   const sui = prices.points.get(SUI_TYPE);
@@ -227,8 +233,9 @@ const isItemType = (p: CollectionPresence): boolean =>
 
 async function readBatch(counts: Map<string, number>, ctx: ValuationContext): Promise<BatchRead> {
   const ranked = [...counts].sort((a, b) => b[1] - a[1]).map(([type]) => type);
-  const kept = ranked.slice(0, MAX_COLLECTIONS);
-  const capped = new Set(ranked.slice(MAX_COLLECTIONS));
+  const maxCollections = ctx.nftMaxCollections ?? MAX_COLLECTIONS;
+  const kept = ranked.slice(0, maxCollections);
+  const capped = new Set(ranked.slice(maxCollections));
   // Presence does not depend on the valuation time, so a scan over many
   // transactions asks once per type, and a type that is no NFT stops here.
   const presence = await collectionPresence(kept);
@@ -237,7 +244,7 @@ async function readBatch(counts: Map<string, number>, ctx: ValuationContext): Pr
   const asOfSec = (items.length > 0 ? await valuationTime(ctx) : undefined) ?? Math.floor(Date.now() / 1000);
   const markets =
     items.length > 0
-      ? await collectionMarkets(items, { asOfSec, historical, ...(ctx.atCheckpoint !== undefined ? { atCheckpoint: Number(ctx.atCheckpoint) } : {}) })
+      ? await collectionMarkets(items, { asOfSec, historical, depth: ctx.nftMarketDepth, ...(ctx.atCheckpoint !== undefined ? { atCheckpoint: Number(ctx.atCheckpoint) } : {}) })
       : new Map<string, CollectionMarket>();
   const priced = [...markets.values()].some((m) => m.floor || m.last_sale);
   const sui = priced ? (await priceCoinTypes([SUI_TYPE], ctx)).points.get(SUI_TYPE) : undefined;
@@ -278,7 +285,7 @@ async function valueItem(obj: ObjectToValue, ctx: ValuationContext): Promise<Val
       unread: [
         {
           what: obj.object_id,
-          reason: `Not valued: ${batch.capped.size} of the ${batch.types} collections valued together are past the ${MAX_COLLECTIONS} with the most items, and this item's is one of them.`,
+          reason: `Not valued: ${batch.capped.size} of the ${batch.types} collections valued together are past the ${ctx.nftMaxCollections ?? MAX_COLLECTIONS} with the most items, and this item's is one of them.`,
         },
       ],
     };

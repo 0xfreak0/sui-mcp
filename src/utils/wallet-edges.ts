@@ -194,7 +194,7 @@ export interface EdgeEvidence {
   type: SignalType;
   /** The shared intermediary, when the signal is a shared one. */
   via?: string;
-  /** Transaction digests supporting this signal. Capped; see MAX_EVIDENCE. */
+ /** Every distinct supporting digest. The tool pages this list for display. */
   digests: string[];
   /** Plain-language statement of the observed fact — never the inference. */
   detail: string;
@@ -220,14 +220,6 @@ export interface WalletEdge {
   weight: number;
 }
 
-/**
- * Evidence digests kept per signal.
- *
- * A pair sharing a funder across 40 transactions does not become more true at
- * the 40th; five digests is enough for a reader to verify the claim and keeps
- * the response readable.
- */
-const MAX_EVIDENCE = 5;
 
 /**
  * Accumulates signals into canonical pairs.
@@ -241,6 +233,7 @@ export class EdgeSet {
   private pairs = new Map<string, WalletEdge>();
   /** Best weight seen per (pair, signal type). See {@link recompute}. */
   private typeWeights = new Map<string, Map<SignalType, number>>();
+ private evidenceSeen = new WeakMap<EdgeEvidence, Set<string>>();
 
   /**
    * An edge's weight is the sum over distinct signal types of the *strongest*
@@ -286,14 +279,18 @@ export class EdgeSet {
     // funder seen twice is one fact observed twice.
     const existing = edge.signals.find((s) => s.type === type && s.via === via);
     if (existing) {
+   const seen = this.evidenceSeen.get(existing)!;
       for (const d of digests) {
-        if (existing.digests.length < MAX_EVIDENCE && !existing.digests.includes(d)) {
+    if (!seen.has(d)) {
+     seen.add(d);
           existing.digests.push(d);
         }
       }
       return;
     }
-    edge.signals.push({ type, via, digests: digests.slice(0, MAX_EVIDENCE), detail, weight: w });
+  const evidence = { type, via, digests: [...new Set(digests)], detail, weight: w };
+  this.evidenceSeen.set(evidence, new Set(evidence.digests));
+  edge.signals.push(evidence);
     if (!edge.signal_types.includes(type)) edge.signal_types.push(type);
     const tw = this.typeWeights.get(k)!;
     tw.set(type, Math.max(tw.get(type) ?? 0, w));

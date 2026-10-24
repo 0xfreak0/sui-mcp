@@ -122,8 +122,8 @@ beforeEach(() => {
   mockGqlQuery.mockReset();
   mockGqlQuery.mockImplementation(async (q: string, vars: Record<string, unknown> = {}) => {
     const filter = vars.f as { affectedObject?: string } | undefined;
-    if (filter?.affectedObject === STAKE) return { transactions: { nodes: [{ digest: "unstake", effects: { checkpoint: { sequenceNumber: 101 } } }] } };
-    if (String(q).includes("transactions(")) return { transactions: { nodes: [] } };
+  if (filter?.affectedObject === STAKE) return { transactions: { nodes: [{ digest: "unstake", effects: { checkpoint: { sequenceNumber: 101 } } }], pageInfo: { hasNextPage: false, endCursor: null } } };
+  if (String(q).includes("transactions(")) return { transactions: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } };
     if (vars.digest === "drain") return drain;
     if (vars.digest === "unstake") return unstake;
     return { transaction: null };
@@ -152,10 +152,11 @@ describe("trace_funds keeps the object trail through in-place changes", () => {
               { digest: "fee", effects: { checkpoint: { sequenceNumber: 101 } } },
               { digest: "close", effects: { checkpoint: { sequenceNumber: 102 } } },
             ],
+      pageInfo: { hasNextPage: false, endCursor: null },
           },
         };
       }
-      if (String(q).includes("transactions(")) return { transactions: { nodes: [] } };
+   if (String(q).includes("transactions(")) return { transactions: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } };
       if (vars.digest === "drain") return drain;
       if (vars.digest === "fee") return fee;
       if (vars.digest === "close") return close;
@@ -176,9 +177,9 @@ describe("trace_funds leaves a position emptied in place for its payout", () => 
     mockGqlQuery.mockImplementation(async (q: string, vars: Record<string, unknown> = {}) => {
       const filter = vars.f as { affectedObject?: string } | undefined;
       if (filter?.affectedObject === STAKE) {
-        return { transactions: { nodes: [{ digest: "drawdown", effects: { checkpoint: { sequenceNumber: 101 } } }] } };
+    return { transactions: { nodes: [{ digest: "drawdown", effects: { checkpoint: { sequenceNumber: 101 } } }], pageInfo: { hasNextPage: false, endCursor: null } } };
       }
-      if (String(q).includes("transactions(")) return { transactions: { nodes: [] } };
+   if (String(q).includes("transactions(")) return { transactions: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } };
       if (vars.digest === "drain") return drain;
       if (vars.digest === "drawdown") return drawdown;
       if (vars.digest === "payee") return payee;

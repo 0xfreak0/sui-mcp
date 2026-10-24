@@ -113,7 +113,11 @@ export async function discoverKiosks(owner: string): Promise<string[]> {
         const id = node.contents?.json ? key.kiosk(node.contents.json) : undefined;
         if (typeof id === "string") ids.add(id);
       }
-      cursor = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
+      const next = conn.pageInfo.endCursor;
+      if (conn.pageInfo.hasNextPage && (!next || next === cursor)) {
+        throw new Error("Kiosk discovery has more objects but no advancing cursor");
+      }
+      cursor = conn.pageInfo.hasNextPage ? next : null;
     } while (cursor);
   }
   return [...ids];
@@ -239,10 +243,9 @@ export async function scanKioskPage(
       cursor = null;
       break;
     }
-    cursor = conn.pageInfo.endCursor;
-    // Another page claimed with no cursor restarts the walk, so the same items
-    // would be collected again until the target filled with duplicates.
-    if (!cursor) break;
+    const next = conn.pageInfo.endCursor;
+    if (!next || next === cursor) throw new Error("Kiosk fields have more objects but no advancing cursor");
+    cursor = next;
   }
   return { items, nextInnerCursor: cursor };
 }
@@ -373,10 +376,9 @@ export async function listDirectNftsPage(
       cursor = null;
       break;
     }
-    cursor = conn.pageInfo.endCursor;
-    // Another page claimed with no cursor restarts the walk, so the same items
-    // would be collected again until the target filled with duplicates.
-    if (!cursor) break;
+    const next = conn.pageInfo.endCursor;
+    if (!next || next === cursor) throw new Error("Owned objects have more rows but no advancing cursor");
+    cursor = next;
   }
   return { items: out, nextCursor: cursor };
 }
@@ -433,7 +435,7 @@ export function readHeldCollections(owner: string): Promise<HeldCollections> {
     }
     return { counts, direct, kiosk_count: kioskIds.length, kiosks_unread: kiosksUnread };
   })();
-  value.catch(() => holdingsCache.delete(key));
+  value.then((held) => { if (held.kiosks_unread) holdingsCache.delete(key); }, () => holdingsCache.delete(key));
   holdingsCache.set(key, { at: Date.now(), value });
   return value;
 }

@@ -46,10 +46,14 @@ beforeAll(() => {
     name: "nft",
     fallback: true,
     handles: () => true,
-    value: async () => ({
+    value: async (ctx) => ctx.nftMarketDepth === 1
+      ? { positions: [{ ...position(PRICED_A, 3, 30), detail: { unit_usd: 10, market_scan_limited: true } }], unread: [] }
+      : ctx.nftMaxCollections === 1
+        ? { positions: [position(PRICED_A, 3, 30)], unread: [{ what: PRICED_B, reason: "Collection types past the 1 most-held collections were not valued." }] }
+        : {
       positions: [position(PRICED_A, 3, 30), position(PRICED_B, 1, 12.5), ...SPAM.map((t) => position(t, 1, null))],
       unread: [],
-    }),
+        },
   });
   registerValuer({
     name: "test_lp",
@@ -85,6 +89,22 @@ describe("list_nft_collections with values", () => {
     const r = await run({ detail: "full" });
     expect(r.collections).toHaveLength(303);
     expect(r.collections.find((c: { collection: string }) => c.collection === LP_TYPE).value).toEqual({ valued_by: "test_lp" });
+  });
+
+  it("repeats collection valuation with a raised bound when a market scan was capped", async () => {
+    const first = await run({ max_collections: 1 });
+    expect(first.estimated_value.unread).toHaveLength(1);
+    expect(first.estimated_value.next_call).toEqual({ tool: "list_nft_collections", args: { address: OWNER, max_collections: 2 } });
+    const next = await run({ max_collections: 2 });
+    expect(next.estimated_value.next_call).toBeUndefined();
+  });
+
+  it("marks limited collection-market evidence and offers a deeper scan", async () => {
+    const first = await run({ market_depth: 1 });
+    expect(first.estimated_value.market_scan_limited_collections).toBe(1);
+    expect(first.estimated_value.market_next_call).toEqual({ tool: "list_nft_collections", args: { address: OWNER, market_depth: 2 } });
+    const next = await run(first.estimated_value.market_next_call.args);
+    expect(next.estimated_value.market_scan_limited_collections).toBeUndefined();
   });
 
   it("lists counts alone with value off", async () => {

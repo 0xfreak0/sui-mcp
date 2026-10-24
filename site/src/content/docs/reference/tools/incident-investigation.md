@@ -60,6 +60,10 @@ sidebar:
 | `cursor` | string | no | Opaque cursor from scan.next_call. Keep the same filters and network. |
 | `group_pnl` | boolean | no | Rank senders by own balance-change P&L, gas included, at historical prices. A multi-leg PTB's gains may come from other packages. |
 | `pnl_max_transactions` | integer (1 to 2000) | no | Distinct transactions read for group_pnl, oldest first (default 500). Check pnl.truncated. |
+| `pnl_transaction_offset` | integer (at least 0) | no | First matched transaction for group_pnl (default 0); follow pnl.transactions_next_call to read later transaction slices. |
+| `event_type_offset` | integer (at least 0) | no | First discovered event type to show when value_field is omitted (15 per page); follow event_types_page.next_call. |
+| `pnl_sender_offset` | integer (at least 0) | no | First P&L sender to list (default 0). Follow pnl.senders_next_call to page beyond top. |
+| `pnl_digest_offset` | integer (at least 0) | no | First digest to list for each P&L sender (default 0, five per sender). Follow pnl.digests_next_call. |
 | `detail` | `summary` \| `full` | no | 'summary' (default) caps P&L coin and missing-price lists and states omissions. 'full' returns every row. Totals cover all rows. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
@@ -76,6 +80,8 @@ sidebar:
 |---|---|---|---|
 | `digest` | string | yes | Transaction digest (Base58) |
 | `attacker` | string | no | Profit address; default sender. May switch to largest priced gainer (>= $1) if sender has only a SUI payment/no coin change and no priced object movement, or gives away valued objects without taking value. Unpriced gains outside sender/chosen gainer block it, excluding flagged coins and sender-paid coin types. Reports attacker_defaulted_from_sender; pass an address to override. |
+| `state_read_multiplier` | integer (1 to 1000) | no | Raise the per-kind state-object and dynamic-field read budgets together (default 1, max 1000: shared 24, holding/child 48, created/caps 12, price rows 32). Check state_deltas.skipped and raise if needed. |
+| `object_offset` | integer (at least 0) | no | First custody-changing object to value (50 per page); follow object_values_page.next_call. Profit and object USD values on a page are partial until all pages are read. |
 | `detail` | `summary` \| `full` | no | 'summary' (default): ~40k chars across lists; keeps anomaly/flash-linked pools, holders and addresses, sender and profit address. Totals/anomalies cover all rows; omitted counts the rest. 'full': all rows. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
@@ -91,6 +97,7 @@ sidebar:
 |---|---|---|---|
 | `address` | string | yes | The multisig wallet's address (0x...) |
 | `max_transactions` | integer (1 to 500) | no | Sent transactions to examine, newest first (default 200). A key that signed only before this window looks dormant, so more is better. |
+| `cursor` | string | no | Older-history cursor from next_call. Signer frequencies on each call cover only that segment; combine segments for whole-history statistics. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## build_timeline
@@ -125,12 +132,15 @@ sidebar:
 | `addresses` | array of string (1 to 25 items) | yes | 1–25 seed addresses suspected of shared control. Chain-derived and heuristic links are distinguished in the result. |
 | `expand` | boolean | no | Find unknown siblings too (default true); each candidate's first funder is verified before admission. |
 | `expand_budget` | integer (0 to 200) | no | Sibling candidates to verify while expanding (default 25). Unverified candidates are reported, never silently dropped. |
+| `expand_offset` | integer (at least 0) | no | First sibling candidate in this page; follow expansion_scan.next_call. |
 | `popularity_limit` | integer (5 to 500) | no | Discard funders/sponsors above this counterparty count (default 50). Funder recipients count at >=0.01 SUI or $0.10. Raise only with cause; service ancestry does not link users. |
 | `min_signal_types` | integer (1 to 4) | no | Signal types needed to merge a pair (default 1). Set 2 for higher precision, but ordinary alt-wallets may share only one. |
 | `max_cluster_size` | integer (2 to 1000) | no | Refuse merges beyond this size (default 100). |
 | `reciprocal_budget` | integer (0 to 100) | no | Reciprocal counterparties to check for service popularity before trusting the signal (default 15). |
+| `reciprocal_offset` | integer (at least 0) | no | First reciprocal counterparty in this page; follow reciprocal_scan.next_call. |
 | `query_budget` | integer (10 to 600) | no | Hard ceiling on GraphQL requests (default 150). Check `truncated` in the response. |
 | `format` | `json` \| `mermaid` \| `graph_json` \| `csv` | no | Default json. mermaid draws clusters and signal-labelled edges; graph_json gives nodes/edges; csv gives one row per edge. |
+| `digest_offset` | integer (at least 0) | no | Offset into each edge signal's supporting digests (five per list). Follow digest_listing.next_call for remaining evidence. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## check_coin_restrictions
@@ -139,13 +149,15 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Read issuer freezes and whole-coin pauses from regulated coins' on-chain deny lists. Give coin_type to list frozen addresses, address to check every regulated coin regardless of holdings, or both for one pair. Address-only checks read many lists. Freezes are issuer decisions, not protocol rules, and the DenyCap holder can reverse them. Off-chain validator freezes are invisible here. Use when a traced address cannot move a token or to check whether an issuer has frozen a counterparty.
+(Incident investigation) Read issuer freezes and whole-coin pauses from regulated coins' on-chain deny lists. Give coin_type to page frozen addresses (follow next_call until the list ends), address to check every regulated coin regardless of holdings, or both for one pair. Address-only checks read many lists. Freezes are issuer decisions, not protocol rules, and the DenyCap holder can reverse them. Off-chain validator freezes are invisible here. Use when a traced address cannot move a token or to check whether an issuer has frozen a counterparty.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `coin_type` | string | no | Full coin type (e.g. '0xabc::usdc::USDC'). Lists every address frozen for it. |
 | `address` | string | no | Address to check against coin_type, or against every coin with a deny list if coin_type is omitted, regardless of holdings. |
-| `max_addresses` | integer (1 to 1000) | no | Cap on denied addresses returned for a coin (default 200). |
+| `max_addresses` | integer (1 to 1000) | no | Frozen addresses displayed per scan segment (default 200, max 1000); use next_call for the rest. |
+| `denied_offset` | integer (at least 0) | no | Offset into this scan segment's denied rows; use next_call to page the display cap. |
+| `cursor` | string | no | Next scan segment cursor from next_call; each segment covers up to 20 GraphQL pages. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## classify_deposit_address
@@ -162,7 +174,8 @@ sidebar:
 | `from` | string | no | Window start: ISO 8601 time (inclusive) or checkpoint (exclusive). |
 | `to` | string | no | Window end: ISO 8601 time (inclusive), 'now', or checkpoint (exclusive). |
 | `max_transactions` | integer (5 to 5000) | no | Newest transactions to read within the window (default 50). |
-| `max_balance_transactions` | integer (50 to 10000) | no | Later transactions to undo for historical sweep balances (default 1000). An incomplete reconstruction withholds that check. |
+| `max_balance_transactions` | integer (50 to 100000) | no | Later transactions to undo for historical sweep balances (default 1000). An incomplete reconstruction withholds that check. |
+| `max_balance_reads` | integer (1 to 2000) | no | Historical balance reconstruction pages (default 200, up to 50 transactions each); raise with max_balance_transactions for a busy wallet. |
 | `detail` | `summary` \| `full` | no | Summary caps evidence lists with omissions; full returns every scanned sweep, deposit and other outflow. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
@@ -190,6 +203,7 @@ sidebar:
 |---|---|---|---|
 | `case_name` | string | yes | Case to render. |
 | `include_appendix` | boolean | no | Append the full-address list (default true). |
+| `digest_offset` | integer (at least 0) | no | First cited transaction to read for mermaid or graph_json (50 per page). Follow next_call to cover later digests. |
 | `format` | `markdown` \| `mermaid` \| `graph_json` \| `csv` | no | markdown (default): the report. mermaid: the report plus a fund-flow diagram of transfers between the case's addresses in the findings' transactions, including flows with protocols' shared objects; it reads those transactions from the chain. graph_json: that diagram as {nodes, edges}. csv: one row per finding. |
 
 ## find_flow_path
@@ -209,7 +223,11 @@ sidebar:
 | `window_start` | string | no | Only transactions after this: ISO date or checkpoint. Set it to the incident time to skip the source's older history. |
 | `window_end` | string | no | Only transactions before this: ISO date or checkpoint. |
 | `max_nodes` | integer (1 to 100) | no | Address nodes to expand on each side (default 30, max 100); larger shares take priority when the queued nodes exceed the remaining limit. |
+| `max_tx_reads` | integer (1 to 4000) | no | Full transaction reads on each search side before stopping (default 400, max 4000). Raise it if a read budget stopped the search. |
 | `min_share` | number (0 to 1) | no | Skip branches below this fraction of each side's value (default 0.001), except those to a lookalike of a reached address. |
+| `path_offset` | integer (at least 0) | no | First path to show when more than five are found; follow next_call for later paths. |
+| `terminal_entry_offset` | integer (at least 0) | no | First entry in each terminal group (15 per page); follow explored.terminals[].entries_next_call. |
+| `pruned_offset` | integer (at least 0) | no | First pruned branch example (10 per page); follow explored.largest_pruned_page.next_call. |
 | `format` | `json` \| `mermaid` \| `graph_json` \| `csv` | no | Output format (default json). mermaid: a fenced flowchart for a markdown viewer. graph_json: {nodes, edges}, plus address_poisoning in trace_flow_graph. csv: one row per edge. |
 | `detail` | `summary` \| `full` | no | summary (default) caps the unvalued-object list; full lists every unvalued object. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
@@ -226,6 +244,7 @@ sidebar:
 |---|---|---|---|
 | `address` | string | yes | Address to attribute (0x...) |
 | `max_hops` | integer (at most 12, greater than 0) | no | Max funding hops to walk back (default 5, max 12) |
+| `paid_in` | string | no | Funding transaction from the preceding hop's continue_with; keeps the established-funder stop when resuming. Omit to investigate this wallet independently. |
 | `measure_fanout` | boolean | no | Measure origin fan-out (default true), using get_address_fanout's default window and matching counts/truncation. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
@@ -245,6 +264,8 @@ sidebar:
 | `max_hops` | integer (at most 12, greater than 0) | no | Max hops per address (default 5, max 12). |
 | `depth` | `first_hop` \| `full` | no | 'first_hop' reads one funding hop per address; 'full' (default) walks to max_hops. |
 | `measure_fanout` | boolean | no | Measure fan-out for funders shared by 2+ addresses (default true). |
+| `max_shared_fanouts` | integer (0 to 100) | no | Shared funders to measure for fan-out (default 10). Every unmeasured funder has a get_address_fanout follow-up. |
+| `max_cofunded_lookups` | integer (0 to 500) | no | Co-funded transactions whose recipient count is measured (default 10, max 500). Unmeasured groups retain a get_transaction follow-up. |
 | `detail` | `summary` \| `full` | no | 'summary' (default) keeps origin, first funder/hop and dust counts; results and subject_paid_subject fit ~20k chars, prioritizing all shared-funder, subject-link, co-funding, burst and payment results. 'full' lists every chain hop, dust row and list row. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
@@ -353,6 +374,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `package_id` | string | no | Any package ID in the lineage, of any age. Its whole upgrade history is walked. |
 | `since` | string | no | How far back to probe for activity: ISO 8601 timestamp or checkpoint. Defaults to roughly the last day. |
 | `max_versions` | integer (1 to 20) | no | Most recent versions to probe (default 8). Older ones are rarely still live. |
+| `version_offset` | integer (at least 0) | no | Skip this many newest versions in the combined lineage (default 0). Follow versions_page.next_call to probe older versions. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## sample_control_addresses
@@ -373,6 +395,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `to` | string | no | Window end: ISO 8601 timestamp, 'now', or a checkpoint. |
 | `seed` | integer | no | Integer seed for a reproducible draw. Record it with the result. |
 | `max_events` | integer (50 to 50000) | no | Events to scan when building the population (default 5000). |
+| `cursor` | string | no | Opaque cursor from scan.next_call. Each call draws a separate slice of the same population. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## save_finding
@@ -411,6 +434,8 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `direction` | `both` \| `in` \| `out` | no | 'out' = where this address's funds went, 'in' = where they came from (default both). |
 | `max_transactions` | integer (10 to 300) | no | Recent subject transactions per direction (default/max 300); expanded counterparties get 50. |
 | `max_expand` | integer (1 to 20) | no | Counterparties expanded per hop, highest value first (default 8). |
+| `max_bridge_lookups` | integer (1 to 300) | no | Exit transactions whose on-chain destinations are read (default 10, max 300). Unread exits leave bridge screening incomplete. |
+| `digest_offset` | integer (at least 0) | no | First digest shown for each exposure or path leg (five per page); follow digest_listing.next_call. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## summarize_address_flows
@@ -430,6 +455,8 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `coin_type` | string | no | Only this coin in the totals and counterparties (e.g. 0x2::sui::SUI). Bridge exits and gas are always reported in full. |
 | `max_transactions` | integer (50 to 5000) | no | Transactions to scan, newest first (default 1000). |
 | `top` | integer (1 to 50) | no | Recipients to list, and counterparties to identify in each direction (default 10). |
+| `digest_offset` | integer (at least 0) | no | First digest listed in each transaction-bearing row (default 0, five per row). Follow digest_listing.next_call for later digests. |
+| `object_transaction_offset` | integer (at least 0) | no | First successful transaction to inspect for non-coin objects (300 per page). Follow objects_page.next_call; coin totals still cover the full scan, object totals cover this slice only. |
 | `detail` | `summary` \| `full` | no | 'summary' (default) keeps ~20k chars of counterparties, coins and unattributed rows by value, retaining all labelled, non-wallet and lookalike addresses. Totals/counts cover all rows; omitted reports the rest. 'full': every row. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
@@ -448,9 +475,11 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `sender` | string | no | Read every transaction this address sent inside the window instead of a digest list. |
 | `start` | number \| string | no | Window start with `sender`: a checkpoint number or ISO 8601 time. Inclusive. |
 | `end` | number \| string | no | Window end with `sender`: a checkpoint number or ISO 8601 time. Inclusive. |
-| `max_transactions` | integer (1 to 1000) | no | Cap on transactions read in `sender` mode (default 1000, the most). Hitting it is reported. |
+| `max_transactions` | integer (1 to 1000) | no | Transactions per sender-mode page (default and maximum 1000); follow next_call for the next page. |
+| `transaction_cursor` | string | no | Opaque cursor from next_call in sender mode; reads the next oldest-first transaction slice in the same window. |
 | `attacker` | string | no | Gain address; defaults to sender or each transaction's sender. If every successful sender only paid gas, uses the largest priced gainer above the gas-only threshold across those transactions, reported in attacker_defaulted_from_sender. An unpriced gain by another non-sender blocks that default. Pass attacker to override. |
 | `price_at` | number \| string | no | Fixed-time valuation for every coin and object (Unix seconds or ISO 8601). Default: hourly coin quotes; objects at their transaction times. Check usd_basis for coarsening. |
+| `state_read_multiplier` | integer (1 to 1000) | no | Raise each transaction's state-object and dynamic-field budgets together (default 1, max 1000). A transaction still cut by those limits is named under state_reads.capped and does not contribute partial pool state. |
 | `max_groups` | integer (at least 1) | no | List only the largest N groups; the totals still cover all of them and the omission is reported. |
 | `group_offset` | integer (at least 0) | no | First group to return with detail: 'full' when an oversized view is paged. |
 | `coverage_offset` | integer (at least 0) | no | First historical pricing coverage row for an oversized detail: 'full' view; follow omitted.next_call to page. |
@@ -476,6 +505,9 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `to` | string | no | Window end: ISO date or checkpoint. With `address` and backward, where the walk starts. Bounds every search. |
 | `max_depth` | integer (1 to 8) | no | Hops to follow from the start (default 4, max 8). |
 | `max_nodes` | integer (1 to 150) | no | Address nodes to expand (default 40, max 150). Expands by depth while all queued nodes fit; otherwise prioritizes the largest share. |
+| `max_tx_reads` | integer (1 to 4000) | no | Full transaction reads before stopping (default 400, max 4000). A budget stop stays incomplete; raise this to continue deeper. |
+| `terminal_entry_offset` | integer (at least 0) | no | First entry in each terminal group (15 per page); follow terminals[].entries_next_call. |
+| `pruned_offset` | integer (at least 0) | no | First pruned branch example (10 per page); follow largest_pruned_page.next_call. |
 | `min_share` | number (0 to 1) | no | Prune below this fraction of traced value (default 0.01 = 1%); never prune lookalikes. coverage.pruned counts them. |
 | `min_usd` | number (at least 0) | no | Prune below this USD value at transaction time, except lookalikes. Unpriced branches use min_share. |
 | `format` | `json` \| `mermaid` \| `graph_json` \| `csv` | no | Output format (default json). mermaid: a fenced flowchart for a markdown viewer. graph_json: {nodes, edges}, plus address_poisoning in trace_flow_graph. csv: one row per edge. |
@@ -505,7 +537,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Trace an object's versions, producing transactions, times and ownership transitions, including transfers, sharing, freezing and party transfers. Use this for a pool, vault or capability's creator and past holders. Deleted or wrapped objects have current:null and an end transaction. Party ownership names its single owner; kiosk ownership and kiosk_cap_holder describe today's custody only, never a historical controller. Beyond the shown page, owner_change_count is always a lower bound: checkpoint search can miss an ownership round trip within a probed span. owner_change_note and more_versions_note explain the limit; owner_change_unpinned lists budget-stopped checkpoint ranges and their endpoint owners, each containing an unpinned change. Versions default to oldest first from the earliest retained version; newest starts at the current version and pages back. Pass next_cursor as cursor with the same order, or follow next_call. Changes compare each listed version to its predecessor regardless of page order.
+(Incident investigation) Trace an object's versions, producing transactions, times and ownership transitions, including transfers, sharing, freezing and party transfers. Use this for a pool, vault or capability's creator and past holders. Deleted or wrapped objects have current:null and an end transaction. Party ownership names its single owner; kiosk ownership and kiosk_cap_holder describe today's custody only, never a historical controller. Beyond the shown page, owner_change_count is a lower bound: checkpoint search can miss an ownership round trip within a probed span. owner_change_note and more_versions_note explain the limit; owner_change_unpinned lists budget-stopped checkpoint ranges and their endpoint owners. Follow owner_change_next_call to search only unresolved ranges; continuation owner_changes and owner_change_count contain only newly found transitions, not the history page again. Versions default to oldest first from the earliest retained version; newest starts at the current version and pages back. Pass next_cursor as cursor with the same order, or follow next_call. Changes compare each listed version to its predecessor regardless of page order.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -513,4 +545,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `limit` | integer (at most 50, greater than 0) | no | Versions per page (default 25). Newest-first pages and pages after a cursor list at most 49. |
 | `order` | `oldest` \| `newest` | no | 'oldest' (default) pages forward from the first retained version; 'newest' pages back from the current version. |
 | `cursor` | string | no | `next_cursor` from the previous page. Continues in the same direction; pass the same `order`. |
+| `owner_change_cursor` | string | no | Opaque owner_change_cursor returned with owner_change_next_call. Continue only the unresolved owner-change ranges, without listing the history page again. |
+| `transition_reads` | integer (1 to 500) | no | Checkpoint probes for owner-change search (default 80, max 500). Raise when owner_change_unpinned lists unresolved ranges. |
+| `transition_time_ms` | integer (1000 to 120000) | no | Wall-clock budget for owner-change search in milliseconds (default 20000, max 120000). Raise on a slow endpoint. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

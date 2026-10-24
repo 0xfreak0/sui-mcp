@@ -24,9 +24,10 @@ export async function listOwnedWithJson(
   owner: string,
   type: string | null,
   max: number,
-): Promise<{ objects: OwnedObjectJson[]; complete: boolean }> {
+ startCursor?: string,
+): Promise<{ objects: OwnedObjectJson[]; complete: boolean; nextCursor?: string }> {
   const objects: OwnedObjectJson[] = [];
-  let cursor: string | null = null;
+ let cursor: string | null = startCursor ?? null;
   for (;;) {
     const page: SuiClientTypes.ListOwnedObjectsResponse<{ json: true }> = await sui.listOwnedObjects({
       owner,
@@ -41,7 +42,9 @@ export async function listOwnedWithJson(
     if (!page.hasNextPage) return { objects, complete: true };
     // More claimed with no cursor to reach it, or the budget spent: either
     // way the set is not whole.
-    if (!page.cursor || objects.length >= max) return { objects, complete: false };
+  if (!page.cursor || page.cursor === cursor || objects.length >= max) return {
+   objects, complete: false, ...(page.cursor && page.cursor !== cursor ? { nextCursor: page.cursor } : {}),
+  };
     cursor = page.cursor;
   }
 }
@@ -58,7 +61,7 @@ export async function countOwned(owner: string, type: string, max: number): Prom
     const page: SuiClientTypes.ListOwnedObjectsResponse = await sui.listOwnedObjects({ owner, type, limit: Math.min(PAGE_SIZE, max - count), cursor });
     count += page.objects.length;
     if (!page.hasNextPage) return { count, complete: true };
-    if (!page.cursor || count >= max) return { count, complete: false };
+    if (!page.cursor || page.cursor === cursor || count >= max) return { count, complete: false };
     cursor = page.cursor;
   }
 }
@@ -74,12 +77,13 @@ export const OWNED_WALK_MAX = 5 * PAGE_SIZE;
 export function ownedObjectsWalk(
   owner: string,
   memo?: Map<string, Promise<unknown>>,
+  max = OWNED_WALK_MAX,
 ): Promise<{ objects: OwnedObjectJson[]; complete: boolean }> {
-  if (!memo) return listOwnedWithJson(owner, null, OWNED_WALK_MAX);
-  const key = `owned-walk:${owner}`;
+  if (!memo) return listOwnedWithJson(owner, null, max);
+  const key = `owned-walk:${owner}:${max}`;
   let hit = memo.get(key) as Promise<{ objects: OwnedObjectJson[]; complete: boolean }> | undefined;
   if (!hit) {
-    hit = listOwnedWithJson(owner, null, OWNED_WALK_MAX);
+    hit = listOwnedWithJson(owner, null, max);
     memo.set(key, hit);
     hit.catch(() => memo.delete(key));
   }

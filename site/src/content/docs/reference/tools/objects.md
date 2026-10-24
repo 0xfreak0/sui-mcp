@@ -25,6 +25,9 @@ Get a Sui object by its ID. Returns type, owner, version, content (JSON), and di
 |---|---|---|---|
 | `object_id` | string | yes | The object ID (0x...) |
 | `version` | string | no | Specific version to fetch |
+| `balance_cursor` | string | no | Continue the object's bounded address-balance list from address_balances_next_call (latest object version only). |
+| `kiosk_scan_pages` | integer (1 to 2000) | no | Max pages of a kiosk creation or wrapper transaction to inspect for its owner cap (default 40, max 2000). |
+| `kiosk_wrap_steps` | integer (1 to 32) | no | Max nested wrapper/move steps followed for a kiosk owner cap (default 4, max 32). |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## list_dynamic_fields

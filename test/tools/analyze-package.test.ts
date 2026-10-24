@@ -1,9 +1,42 @@
 import { describe, it, expect } from "vitest";
 import {
   analyzePackageModules,
+  capabilityLimitNextCall,
+  versionGateNextCall,
+  registerAnalyzePackageTools,
   bytecodeFindings,
   type AnalyzedModule,
 } from "../../src/tools/analyze-package.js";
+
+describe("capabilityLimitNextCall", () => {
+  it("continues with the opaque audit cursor even when every configured cap is at its maximum", () => {
+    expect(capabilityLimitNextCall("stage-offset")).toEqual({
+      tool: "analyze_package",
+      repeat_with: { capability_cursor: "stage-offset" },
+    });
+    expect(capabilityLimitNextCall(undefined)).toBeNull();
+      });
+  });
+it("advertises the capability cursor in analyze_package's input schema", () => {
+  let schema: Record<string, { safeParse(value: unknown): { success: boolean } }> | undefined;
+  registerAnalyzePackageTools({
+    tool: (_name: string, _description: string, input: typeof schema) => { schema = input; },
+  } as unknown as Parameters<typeof registerAnalyzePackageTools>[0]);
+  expect(schema?.capability_cursor.safeParse("opaque-cursor").success).toBe(true);
+});
+
+it("continues beyond the maximum version bound without revisiting older versions", () => {
+  expect(versionGateNextCall(29)).toEqual({
+    tool: "analyze_package", repeat_with: { version_offset: 29 },
+  });
+  expect(versionGateNextCall(119)).toEqual({
+    tool: "analyze_package", repeat_with: { version_offset: 119 },
+  });
+  expect(versionGateNextCall(238)).toEqual({
+    tool: "analyze_package", repeat_with: { version_offset: 238 },
+  });
+  expect(versionGateNextCall(undefined)).toBeNull();
+});
 
 function mod(partial: Partial<AnalyzedModule> & { name: string }): AnalyzedModule {
   return { functions: [], structs: [], ...partial };
@@ -63,6 +96,19 @@ describe("analyzePackageModules", () => {
     const freeze = findings.find((f) => f.code === "freeze-authority");
     expect(freeze?.severity).toBe("high");
     expect(freeze?.evidence).toContain("struct regcoin::DenyCap");
+  });
+
+  it("counts all surface evidence and returns every row in full detail", () => {
+    const structs = Array.from({ length: 15 }, (_, i) => ({
+      name: `Admin${i}Cap`, abilities: ["key"], fields: [],
+    }));
+    const modules = [mod({ name: "vault", structs })];
+    const summary = analyzePackageModules(modules).find((f) => f.code === "privileged-capability");
+    const full = analyzePackageModules(modules, { full: true }).find((f) => f.code === "privileged-capability");
+    expect(summary?.evidence).toHaveLength(12);
+    expect(summary?.evidence_count).toBe(15);
+    expect(full?.evidence).toHaveLength(15);
+    expect(full?.evidence.at(-1)).toBe("struct vault::Admin14Cap");
   });
 
   it("flags freeze authority from a deny_list function param", () => {
@@ -257,4 +303,39 @@ describe("bytecodeFindings", () => {
     expect(scan.weak_leads?.map((l) => [l.check, l.function, l.grade])).toEqual([["sibling-guard-gap", "pool::sweep", "weak"]]);
     expect(scan.weak_leads?.[0].instructions.some((i) => i.includes("Call assert_version"))).toBe(true);
   });
+
+  it("lists every function whose stack was not modelled in the full view", () => {
+    const unknowns = Array.from({ length: 10 }, (_, i) =>
+      `entry public opaque${i}() {\nB0:\n\t0: Unmodelled\n\t1: Ret\n}`);
+    const disassembly = `module 00000000000000000000000000000000000000000000000000000000000000aa.pool {\n${unknowns.join("\n")}\n}`;
+    const compact = bytecodeFindings(new Map([["pool", disassembly]])).scan.functions_partial;
+    const full = bytecodeFindings(new Map([["pool", disassembly]]), { full: true }).scan.functions_partial;
+    expect(compact).toMatchObject({ count: 10 });
+    expect(compact?.names).toHaveLength(8);
+    expect(full?.names).toEqual(unknowns.map((_, i) => `pool::opaque${i}`));
+});
+
+  it("lists the evidence for every bytecode lead in full detail", () => {
+    const checks = Array.from({ length: 10 }, (_, i) => [
+      `entry public update${i}(Arg0: &Authority, Arg1: &mut TxContext) {`,
+      "B0:",
+      "\t0: MoveLoc[1](Arg1: &mut TxContext)",
+      "\t1: FreezeRef",
+      "\t2: Call tx_context::sender(&TxContext): address",
+      "\t3: MoveLoc[0](Arg0: &Authority)",
+      "\t4: ImmBorrowField[0](Authority.owner: address)",
+      "\t5: ReadRef",
+      "\t6: Eq",
+      "\t7: Pop",
+      "\t8: Ret",
+      "}",
+    ].join("\n"));
+    const disassembly = `module 00000000000000000000000000000000000000000000000000000000000000aa.pool {\nstruct Authority has key {\n\tid: UID,\n\towner: address\n}\n${checks.join("\n")}\n}`;
+    const summary = bytecodeFindings(new Map([["pool", disassembly]])).findings.find((f) => f.code === "discarded-check");
+    const full = bytecodeFindings(new Map([["pool", disassembly]]), { full: true }).findings.find((f) => f.code === "discarded-check");
+    expect(summary?.lead_count).toBe(10);
+    expect(summary?.evidence).toHaveLength(8);
+    expect(full?.evidence).toHaveLength(10);
+    expect(full?.evidence.at(-1)).toContain("pool::update9");
+});
 });

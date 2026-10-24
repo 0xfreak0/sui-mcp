@@ -8,6 +8,7 @@
  * classification stays cheap.
  */
 
+import { z } from "zod";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { numArg, addressArg, addressListArg } from "./args.js";
@@ -26,6 +27,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /** GraphQL page cap. */
 const PAGE = 50;
+/** Short/empty filtered pages can advance without counting a transaction. */
+const MAX_SCAN_READS = 20;
 
 /** Aliased queries per request — the service's store-backed limit. */
 const ALIAS_BATCH = 20;
@@ -89,14 +92,18 @@ export function registerMultisigTools(server: McpServer) {
         .describe(
           "Sent transactions to examine, newest first (default 200). A key that signed only before this window looks dormant, so more is better.",
         ),
+   cursor: z.string().min(1).optional()
+    .describe("Older-history cursor from next_call. Signer frequencies on each call cover only that segment; combine segments for whole-history statistics."),
     },
-    async ({ address, max_transactions }) => {
+  async ({ address, max_transactions, cursor }) => {
       const limit = max_transactions ?? 200;
       const observations: SignerObservation[] = [];
       let committee = null;
-      let before: string | null = null;
+   let before: string | null = cursor ?? null;
       let scanned = 0;
+   let reads = 0;
       let complete = false;
+   let stalled = false;
       // The address's own signature in a scheme other than multisig. One is
       // proof: an address hashes exactly one authenticator, so it cannot also
       // be a multisig, and reading further only burns requests.
@@ -108,16 +115,30 @@ export function registerMultisigTools(server: McpServer) {
         // Bounded by transactions SCANNED, not by multisig observations: a
         // non-multisig sender never adds an observation, and a loop waiting
         // for one paged through the address's entire history.
-        scan: while (scanned < limit) {
+    scan: while (scanned < limit && reads < MAX_SCAN_READS) {
+     reads++;
           const r: SentNewestPageResult = await gqlQuery<SentNewestPageResult>(SENT_NEWEST_PAGE, {
             a: address,
             last: Math.min(PAGE, limit - scanned),
             before,
           });
           const conn = r.transactions;
-          if (!conn?.nodes?.length) {
+     if (!conn?.nodes) {
+      stalled = true;
+      break;
+     }
+     if (conn.nodes.length === 0) {
+      if (!conn.pageInfo.hasPreviousPage) {
             complete = true;
             break;
+      }
+      const next = conn.pageInfo.startCursor;
+      if (!next || next === before) {
+       stalled = true;
+       break;
+      }
+      before = next;
+      continue;
           }
 
           // A `last` page arrives oldest-first.
@@ -154,10 +175,10 @@ export function registerMultisigTools(server: McpServer) {
             complete = true;
             break;
           }
-          before = conn.pageInfo.startCursor;
-          // Restarting the walk would count the same transactions again and
-          // skew every signer-set frequency in the result.
-          if (!before) break;
+     const next = conn.pageInfo.startCursor;
+     // A missing or repeated cursor cannot safely advance the walk.
+     if (!next || next === before) { stalled = true; break; }
+     before = next;
         }
       } catch (err) {
         return errorResult(
@@ -166,6 +187,26 @@ export function registerMultisigTools(server: McpServer) {
         );
       }
 
+   const nextCall = !complete && !stalled && before
+    ? { tool: "analyze_multisig", repeat_with: { cursor: before } }
+    : null;
+   const scanStop = complete ? null : stalled ? "cursor_unavailable" : reads >= MAX_SCAN_READS ? "read_budget" : "max_transactions";
+   if (!committee && !ownScheme && (!complete || !!cursor)) {
+    return {
+     content: [{
+      type: "text" as const, text: JSON.stringify({
+       address, committee: null, transactions_examined: scanned, history_complete: false,
+       ...(scanStop ? { scan_stop: scanStop, scan_reads: reads } : {}),
+       ...(nextCall ? { next_call: nextCall } : {}),
+       note: nextCall
+        ? "No self-signed multisig transaction appeared in this segment. Authentication remains unknown; follow next_call to examine older sent transactions."
+        : complete
+         ? "This older segment reached the end without a self-signed multisig transaction; combine it with prior segments before judging authentication."
+         : "No self-signed multisig transaction appeared in this segment, and the cursor did not advance. Authentication remains unknown; retry the read.",
+      })
+     }],
+    };
+   }
       if (!committee) {
         const signers = [...new Set(foreign.flatMap((f) => f.authorized_by))];
         return errorResult(
@@ -218,7 +259,12 @@ export function registerMultisigTools(server: McpServer) {
               transactions_examined: history.transactions_examined,
               // The count is what a dormancy claim rests on. Said next to the
               // claim, not only in the metadata.
-              history_complete: complete,
+       history_complete: complete && !cursor,
+       ...(scanStop ? { scan_stop: scanStop, scan_reads: reads } : {}),
+       ...((cursor || !complete) ? {
+        history_scope: "Signer frequencies cover this segment only; previous segments are not combined.",
+       } : {}),
+       ...(nextCall ? { next_call: nextCall } : {}),
               ...(foreign.length
                 ? {
                     not_self_signed: {

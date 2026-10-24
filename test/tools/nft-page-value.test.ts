@@ -73,10 +73,12 @@ beforeAll(() => {
     fallback: true,
     handles: () => true,
     value: async () => ({ positions: [], unread: [] }),
-    valueObject: async (obj) => ({
+    valueObject: async (obj, ctx) => ctx.nftMaxCollections === 1 && obj.type !== PRICED
+      ? { positions: [], unread: [{ what: obj.object_id, reason: "collections valued together are past the 1 most-held collections" }] }
+      : {
       positions: [position(obj.object_id, obj.type, obj.type === UNPRICED ? null : obj.type === PRICED ? 10.123456 : 1)],
       unread: [],
-    }),
+      },
   });
 });
 
@@ -112,6 +114,15 @@ describe("list_nfts page values", () => {
     expect(rows.find((c: { collection_ref: number }) => body.collection_types[c.collection_ref] === PRICED).floor.source).toBe("TradePort orderbook");
     expect(rows.find((c: { collection_ref: number }) => body.collection_types[c.collection_ref] === UNPRICED).unpriced).toBeTruthy();
     expect(body.omitted).toBeUndefined();
+  });
+
+  it("offers a repeat of the same page with a higher NFT collection bound", async () => {
+    const { body } = await run({ max_collections: 1 });
+    expect(body.valuation.unread.length).toBeGreaterThan(0);
+    expect(body.valuation.next_call).toEqual({
+      tool: "list_nfts",
+      args: { address: OWNER, limit: 100, detail: "summary", max_collections: 2 },
+    });
   });
 
   it.each(["summary", "full"])("resolves every %s row to its exact type without changing ownership or value", async (detail) => {

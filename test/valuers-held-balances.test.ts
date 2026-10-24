@@ -163,6 +163,32 @@ describe("balances held inside owned objects", () => {
     expect(positions).toEqual([]);
     expect(layoutAsks.map((t) => t.toLowerCase())).not.toContain(n(NFT).toLowerCase());
   });
+  it("marks a bounded container as partial and accepts a raised entry limit", async () => {
+    const table = hex("1");
+    owned = [{ objectId: table, version: "1", type: TABLE, json: { id: table, size: "2" } }];
+    const one = { __typename: "MoveObject", address: hex("2"), contents: { type: { repr: n(COIN(USDC)) }, json: { id: hex("2"), balance: "5000000" } } };
+    const two = { __typename: "MoveObject", address: hex("3"), contents: { type: { repr: n(COIN(USDC)) }, json: { id: hex("3"), balance: "7000000" } } };
+    gqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) => {
+      if (q.includes("$first: Int") && "id" in v) {
+        const first = Number(v.first);
+        return {
+          address: {
+            dynamicFields: {
+              nodes: [one, two].slice(0, first).map((value) => ({ value })),
+              pageInfo: { hasNextPage: first < 2, endCursor: first < 2 ? "next" : null },
+            }
+          }
+        };
+      }
+      return serve(q, v);
+    });
+    const narrow = await valuePositions({ owner: OWNER, ownedMaxScan: 1, memo: new Map() }, [HELD_BALANCES]);
+    expect(narrow.unread).toEqual([expect.objectContaining({ what: table, reason: expect.stringContaining("past its first 1 entries") })]);
+    expect(narrow.positions[0].assets).toEqual([expect.objectContaining({ amount: "5000000" })]);
+    const broad = await valuePositions({ owner: OWNER, ownedMaxScan: 2, memo: new Map() }, [HELD_BALANCES]);
+    expect(broad.unread).toEqual([]);
+    expect(broad.positions[0].assets).toEqual([expect.objectContaining({ amount: "12000000" })]);
+  });
 });
 
 describe("coverage of owned objects", () => {
@@ -195,6 +221,15 @@ describe("coverage of owned objects", () => {
       expect(c.unread).toBe(1);
     }
   });
+  it("links to every object when a type has more ids than its preview", () => {
+    const objects = Array.from({ length: 4 }, (_, i) => ({ objectId: hex(String(i + 1)), version: "1", type: NFT, json: { id: hex(String(i + 1)) } }));
+    const coverage = ownedCoverage({ objects, complete: true, fields_read: [] }, [], [], false, OWNER);
+    expect(coverage.not_recognised_types[0]).toEqual({
+      type: NFT, count: 4, object_ids: objects.slice(0, 3).map((o) => o.objectId),
+      next_call: { tool: "list_owned_objects", args: { owner: OWNER, object_type: NFT, detail: "full" } },
+    });
+  });
+
 });
 
 describe("shared objects an address operates", () => {

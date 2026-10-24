@@ -327,12 +327,12 @@ async function valueHoldings(holdings: Holding[], ctx: ValuationContext): Promis
   return { positions, unread };
 }
 
-async function listLpBalances(owner: string): Promise<{ holdings: Holding[]; complete: boolean }> {
+async function listLpBalances(owner: string, max: number): Promise<{ holdings: Holding[]; complete: boolean }> {
   const holdings: Holding[] = [];
   let cursor: string | null = null;
   let seen = 0;
   for (;;) {
-    const page: SuiClientTypes.ListBalancesResponse = await sui.listBalances({ owner, limit: 1000, cursor });
+    const page: SuiClientTypes.ListBalancesResponse = await sui.listBalances({ owner, limit: Math.min(1000, max - seen), cursor });
     for (const b of page.balances) {
       seen++;
       const family = lpCoinFamily(b.coinType);
@@ -340,7 +340,7 @@ async function listLpBalances(owner: string): Promise<{ holdings: Holding[]; com
       if (family && amount > 0n) holdings.push({ family, lpType: normalizeStructTag(b.coinType), objectId: null, amount });
     }
     if (!page.hasNextPage) return { holdings, complete: true };
-    if (!page.cursor || seen >= MAX_BALANCES) return { holdings, complete: false };
+    if (!page.cursor || page.cursor === cursor || seen >= max) return { holdings, complete: false };
     cursor = page.cursor;
   }
 }
@@ -354,11 +354,13 @@ function kriyaHolding(objectId: string, type: string, json: Record<string, unkno
 
 async function value(ctx: ValuationContext): Promise<ValuerResult> {
   const unread: ValuerResult["unread"] = [];
-  const { holdings, complete } = await listLpBalances(ctx.owner);
-  if (!complete) unread.push({ what: "coin balances", reason: `only the first ${MAX_BALANCES} coin balances were checked for LP coins` });
+  const balanceMax = ctx.ownedMaxScan ?? MAX_BALANCES;
+  const { holdings, complete } = await listLpBalances(ctx.owner, balanceMax);
+  if (!complete) unread.push({ what: "coin balances", reason: `only the first ${balanceMax} coin balances were checked for LP coins` });
 
-  const tokens = await listOwnedWithJson(ctx.owner, KRIYA_LP_TOKEN_TYPE, MAX_LP_TOKENS);
-  if (!tokens.complete) unread.push({ what: KRIYA_LP_TOKEN_TYPE, reason: `more than ${MAX_LP_TOKENS} Kriya LP tokens; the rest were not read` });
+  const max = ctx.ownedMaxScan ?? MAX_LP_TOKENS;
+  const tokens = await listOwnedWithJson(ctx.owner, KRIYA_LP_TOKEN_TYPE, max);
+  if (!tokens.complete) unread.push({ what: KRIYA_LP_TOKEN_TYPE, reason: `more than ${max} Kriya LP tokens; the rest were not read` });
   let kriya = tokens.objects;
   // Historical: the tokens the owner holds now, each as it stood at the checkpoint.
   if (ctx.atCheckpoint !== undefined && kriya.length > 0) {

@@ -156,6 +156,23 @@ describe("a collection's market at the latest state", () => {
     await Promise.all([collectionMarkets([COLLECTION], { asOfSec: NOW }), collectionMarkets([COLLECTION], { asOfSec: NOW })]);
     expect(mockGql.mock.calls.filter(([q]) => String(q).includes("p0: objects"))).toHaveLength(1);
   });
+
+  it("reports a bounded sale walk and re-reads deeper instead of reusing its cached short scan", async () => {
+    const base = mockGql.getMockImplementation()!;
+    let saleReads = 0;
+    mockGql.mockImplementation((query: string, vars: Record<string, unknown>) => {
+      if (!query.includes("transactions(")) return base(query, vars);
+      saleReads++;
+      const page = Number(String(vars.c0 ?? "c0").slice(1));
+      return { x0: { pageInfo: { hasPreviousPage: page < 3, startCursor: `c${page + 1}` }, nodes: [] } };
+    });
+    const bounded = (await collectionMarkets([COLLECTION], { asOfSec: NOW })).get(COLLECTION)!;
+    expect(bounded.not_read).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining("Sale scan stopped after 3 pages") })]));
+    expect(saleReads).toBe(3);
+    const deeper = (await collectionMarkets([COLLECTION], { asOfSec: NOW, depth: 2 })).get(COLLECTION)!;
+    expect(deeper.not_read.some((n) => n.reason.includes("Sale scan stopped"))).toBe(false);
+    expect(saleReads).toBe(7);
+  });
 });
 
 describe("a collection's market for a past time", () => {

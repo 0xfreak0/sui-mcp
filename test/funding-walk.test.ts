@@ -219,6 +219,7 @@ describe("find_funding_source stops at a service-scale funder", () => {
     const d = await run("find_funding_source", { address: DISTRIBUTOR, max_hops: 2 });
     expect(d.chain.map((s: { funded_by: string }) => s.funded_by)).toEqual([ANCESTOR, ANCESTOR2]);
     expect(d.chain[0].funder_popularity).toMatchObject({ popular: false, observed_recipients: 0, scan_complete: true });
+  expect(d.continue_with).toEqual({ tool: "find_funding_source", args: { address: ANCESTOR2, max_hops: 2, paid_in: "DyTQ1vSu" } });
   });
 });
 
@@ -242,6 +243,20 @@ describe("find_funding_source stops at an established funder", () => {
     expect(d.origin.address).toBe(HOLDER);
     expect(d.hops).toBe(1);
     expect(JSON.stringify(d.chain)).not.toContain(HOLDER_FUNDER);
+ });
+
+ it("preserves the established-wallet stop across a max-hops continuation", async () => {
+  earliest[RECEIVER] = [fundingTx("LaterPay", HOLDER, RECEIVER, "500000000000000", "2024-06-01T00:00:00.000Z")];
+  earliest[HOLDER] = holderHistory;
+  earliest[HOLDER_FUNDER] = [];
+  const first = await run("find_funding_source", { address: RECEIVER, max_hops: 1 });
+  expect(first.stop_reason).toContain("hit max_hops");
+  expect(first.continue_with.args).toMatchObject({ address: HOLDER, paid_in: "LaterPay" });
+  const resumed = await run(first.continue_with.tool, first.continue_with.args);
+  expect(resumed.hops).toBe(0);
+  expect(resumed.stop_reason).toContain("established wallet");
+  expect(resumed.continue_with).toBeUndefined();
+  expect(JSON.stringify(resumed)).not.toContain(HOLDER_FUNDER);
   });
 
   it("walks on when the payment is among the funder's earliest transactions", async () => {
@@ -452,6 +467,60 @@ describe("find_funding_sources counts each chain once", () => {
     const d = await run("find_funding_sources", { addresses: [ATTACKER, DISTRIBUTOR], measure_fanout: false });
     expect(d.shared_funders).toEqual([]);
     expect(d.subject_funded_subject).toMatchObject([{ funder: DISTRIBUTOR, funded: ATTACKER }]);
+ });
+
+ it("exposes and overrides the shared-funder fan-out limit", async () => {
+  const secondA = `0x${"7".repeat(64)}`;
+  const secondB = `0x${"8".repeat(64)}`;
+  earliest[secondA] = [fundingTx("SharedA", DISTRIBUTOR, secondA, "40000000000", "2025-09-07T09:17:15.000Z")];
+  earliest[secondB] = [fundingTx("SharedB", PAYER_FUNDER, secondB, "40000000000", "2025-09-07T14:00:05.000Z")];
+  const addresses = [ATTACKER, secondA, PAYER, secondB];
+
+  const limited = await run("find_funding_sources", { addresses, depth: "first_hop", max_shared_fanouts: 1 });
+  expect(limited.shared_fanouts_measured).toBe(1);
+  expect(limited.shared_fanouts_unmeasured).toBe(1);
+  expect(limited.shared_funders[1]).toMatchObject({
+   fanout_unmeasured: expect.stringContaining("limit (1)"),
+   fanout_next_call: { tool: "get_address_fanout", args: { address: PAYER_FUNDER, max_transactions: 300 } },
+  });
+
+  const complete = await run("find_funding_sources", { addresses, depth: "first_hop", max_shared_fanouts: 2 });
+  expect(complete.shared_fanouts_measured).toBe(2);
+  expect(complete.shared_fanouts_unmeasured).toBe(0);
+  expect(complete.shared_funders.every((f: { fanout?: unknown }) => f.fanout)).toBe(true);
+ });
+
+ it("keeps co-funded recipient counts reachable past their default lookup budget", async () => {
+  const a = `0x${"3".repeat(64)}`;
+  const b = `0x${"4".repeat(64)}`;
+  const c = `0x${"5".repeat(64)}`;
+  const d = `0x${"6".repeat(64)}`;
+  const first = fundingTx("Together1", DISTRIBUTOR, a, "40000000000", "2025-09-07T09:17:15.000Z");
+  first.effects.balanceChanges = conn([bc(DISTRIBUTOR, "-80000000000"), bc(a, "40000000000"), bc(b, "40000000000")]);
+  const second = fundingTx("Together2", PAYER_FUNDER, c, "40000000000", "2025-09-07T14:00:05.000Z");
+  second.effects.balanceChanges = conn([bc(PAYER_FUNDER, "-80000000000"), bc(c, "40000000000"), bc(d, "40000000000")]);
+  earliest[a] = earliest[b] = [first];
+  earliest[c] = earliest[d] = [second];
+  const args = { addresses: [a, b, c, d], depth: "first_hop", measure_fanout: false };
+  const skipped = await run("find_funding_sources", { ...args, max_cofunded_lookups: 0 });
+  expect(skipped.co_funded_in_one_transaction).toHaveLength(2);
+  expect(skipped.co_funded_in_one_transaction.map((g: { recipient_count_next_call: { args: { digest: string } } }) => g.recipient_count_next_call.args.digest)).toEqual(expect.arrayContaining(["Together1", "Together2"]));
+  const baseGql = gqlQuery.getMockImplementation()!;
+  gqlQuery.mockImplementation(async (q: string, vars: Record<string, unknown> = {}) => {
+   if (q.includes("transactionEffects(digest")) {
+    const to = vars.digest === "Together1" ? [a, b] : [c, d];
+    const sender = vars.digest === "Together1" ? DISTRIBUTOR : PAYER_FUNDER;
+    return {
+     transactionEffects: {
+      transaction: { sender: { address: sender }, gasInput: { gasSponsor: { address: sender } } },
+      balanceChanges: conn([bc(sender, "-80000000000"), ...to.map((address) => bc(address, "40000000000"))]),
+     },
+    };
+   }
+   return baseGql(q, vars);
+  });
+  const read = await run("find_funding_sources", { ...args, max_cofunded_lookups: 2 });
+  expect(read.co_funded_in_one_transaction.every((g: { recipient_count_next_call?: unknown }) => !g.recipient_count_next_call)).toBe(true);
   });
 
   it("does not let a hub's measured window call it narrow", async () => {

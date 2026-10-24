@@ -117,6 +117,11 @@ describe("an NFT position", () => {
     expect(p.detail).toMatchObject({ unit_sui: 2, unit_usd: null });
     expect(p.unpriced_reason).toBeTruthy();
   });
+
+  it("marks estimates whose listing or sale search did not reach its end", () => {
+    const p = nftPosition({ ...priced(3, 2), listings_seen: { kiosk: { count: 8, truncated: true } } }, 1, null, NOW, suiPoint);
+    expect(p.detail).toMatchObject({ market_scan_limited: true, listings_seen: { kiosk: { truncated: true } } });
+  });
 });
 
 describe("what the nft reader values", () => {
@@ -195,6 +200,9 @@ describe("what the nft reader values", () => {
     expect(r.positions.some((p) => p.object_id === left)).toBe(false);
     expect(r.unread.map((u) => u.what)).toEqual([left]);
     expect(r.positions).toHaveLength(MAX_COLLECTIONS + 1);
+    const raised = await valueObjects(objs, { owner: OWNER, nftMaxCollections: MAX_COLLECTIONS + 1, memo: new Map() });
+    expect(raised.positions).toHaveLength(objs.length);
+    expect(raised.unread).toEqual([]);
   });
 
   it("skips a collection another reader values, so a wallet total never counts it twice", async () => {
@@ -211,6 +219,20 @@ describe("what the nft reader values", () => {
     const r = await valuePositions({ owner: OWNER }, ["nft"]);
     expect(r.positions.map((p) => p.assets[0].coin_type)).toEqual([COLLECTION]);
     expect(r.positions[0].usd_net).toBe(8);
+  });
+
+  it("raises the most-held collection bound for a wallet valuation", async () => {
+    const second = `${pad("d0")}::nft::Other`;
+    held.set(COLLECTION, 2);
+    held.set(second, 1);
+    displays.add(COLLECTION);
+    displays.add(second);
+    const bounded = await valuePositions({ owner: OWNER, nftMaxCollections: 1 }, ["nft"]);
+    expect(bounded.positions).toHaveLength(1);
+    expect(bounded.unread[0].reason).toContain("past the 1 most-held collections");
+    const raised = await valuePositions({ owner: OWNER, nftMaxCollections: 2 }, ["nft"]);
+    expect(raised.positions).toHaveLength(2);
+    expect(raised.unread).toEqual([]);
   });
 
   it("values no holdings for a past time rather than today's holdings at old prices", async () => {

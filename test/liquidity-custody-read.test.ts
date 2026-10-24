@@ -3,11 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const getObjects = vi.fn();
 const gqlQuery = vi.fn();
 const scanTokenTopHolders = vi.fn();
+const sampledHolders = vi.fn();
 const objectTypes = new Map<string, string>();
 
 vi.mock("../src/clients/grpc.js", () => ({ sui: { getObjects }, archive: { getObjects } }));
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery }));
-vi.mock("../src/tools/holders.js", () => ({ scanTokenTopHolders, sampledHolders: vi.fn() }));
+vi.mock("../src/tools/holders.js", () => ({ scanTokenTopHolders, sampledHolders }));
 vi.mock("../src/utils/publisher.js", () => ({ resolvePublisher: async () => ({ publisher: DEPLOYER, publish_tx: "tx" }) }));
 vi.mock("../src/utils/identity.js", () => ({
   fetchKinds: async (addresses: string[]) => new Map(addresses.map((address) =>
@@ -30,6 +31,7 @@ const CETUS = pad("1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b
 beforeEach(() => {
   getObjects.mockReset();
   gqlQuery.mockReset();
+  sampledHolders.mockReset();
   scanTokenTopHolders.mockReset();
   pricesForRanking.mockReset();
   pricesForRanking.mockResolvedValue(new Map());
@@ -54,7 +56,7 @@ describe("liquidity custody reads", () => {
     scanTokenTopHolders.mockResolvedValue({ holders: [], truncated: false, unique_holders: 0, total_scanned: 0 });
     const result = await analyzeLiquidityCustody(GOBBLE, [{
       pool_id: pool, protocol: "bluemove", object_type: `${BLUEMOVE}::swap::Pool<${SUI}, ${GOBBLE}>`, token_a: SUI, token_b: GOBBLE,
-    }]);
+    }], 0, 0, undefined, 5000, 75000);
     const row = result.pools[0] as Record<string, unknown>;
     expect(row.reserve_coin_raw).toBe("1453555712197458");
     expect(row.counterpart_reserve).toEqual({ coin_type: SUI, raw: "3237705" });
@@ -62,6 +64,32 @@ describe("liquidity custody reads", () => {
     expect(row.lp_locked_in_pool_raw).toBe("1000");
     expect(row.lp_protocol_fee_in_pool_raw).toBe("68251385489");
     expect(row.publisher_liquidity_raw).toBe("0");
+    expect(scanTokenTopHolders).toHaveBeenCalledWith(expect.any(String), 100, 5000, 75000);
+  });
+
+  it("names a targeted retry with larger LP scan and time budgets when a pool walk stops", async () => {
+    const pool = pad("c4");
+    getObjects.mockResolvedValue({
+      objects: [{
+        objectId: pool, type: `${BLUEMOVE}::swap::Pool<${SUI}, ${GOBBLE}>`,
+        json: { lsp_supply: { value: "100" }, minimum_liq: "0", fee_amount: "0", reserve_x: "1", reserve_y: "1" },
+      }],
+    });
+    scanTokenTopHolders.mockResolvedValue({
+      holders: [], truncated: true, unique_holders: 0, total_scanned: 1000, time_budget_reached: true,
+      coin_walk_truncated: true, coin_objects_scanned: 1000, address_balance_walk_truncated: false, address_balances_scanned: 0,
+    });
+    sampledHolders.mockResolvedValue([]);
+    const result = await analyzeLiquidityCustody(GOBBLE, [{
+      pool_id: pool, protocol: "bluemove", object_type: `${BLUEMOVE}::swap::Pool<${SUI}, ${GOBBLE}>`, token_a: SUI, token_b: GOBBLE,
+    }], 0, 0, undefined, 1000, 35000, { liquidity_venue: "bluemove", liquidity_venue_cursor: "slice-1" });
+    expect(result.pools[0]!.scan).toMatchObject({
+      incomplete: true, limit_reached: true, time_budget_reached: true,
+      next_call: {
+        tool: "analyze_token",
+        args: { query: GOBBLE, include_holders: false, liquidity_pool_offset: 0, liquidity_holder_pool: pool, liquidity_venue: "bluemove", liquidity_venue_cursor: "slice-1", liquidity_max_scan: 2000, liquidity_time_budget_ms: 70000 },
+      },
+    });
   });
 
   it("keeps a wrapped Cetus position apart without nulling the other holders' shares", async () => {

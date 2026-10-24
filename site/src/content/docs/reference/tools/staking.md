@@ -23,6 +23,8 @@ Get directly held StakedSui positions and principal, now or at as_of. Historical
 | `address` | string | yes | Wallet address (0x...) |
 | `as_of` | string | no | ISO 8601 date or checkpoint string; holdings at the end of the last checkpoint at or before it. |
 | `max_transactions` | integer (1 to 10000) | no | Historical replay budget per direction (default 1000); also bounds object-change pages. |
+| `max_positions` | integer (1 to 50000) | no | Directly held staking positions scanned (default 1,000); raise when the current holdings walk stopped at its bound. |
+| `position_cursor` | string | no | Opaque cursor from position_scan_next_call; returns the next block of directly held staking positions. Combine block counts; totals stay null for a partial walk. |
 | `continuation` | string | no | Opaque historical replay state from continue_with; keep address, as_of and network unchanged. |
 | `detail` | `summary` \| `full` | no | summary caps displayed positions; full returns every read position. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
@@ -33,12 +35,13 @@ Get directly held StakedSui positions and principal, now or at as_of. Historical
 - Profile: `market`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-List current Sui validators, or return detailed info for one `address` (credentials, staking stats, network addresses). The default summary shows name, address, stake, commission, voting power and at-risk status within a compact output budget; at-risk validators are always kept. Ranking, active_validator_count and total_stake cover the whole set; validator_count counts the rows shown. `detail: full` returns every full row unless `limit` is set. Omitted rows and fields name a same-network full call without a limit.
+List current Sui validators, or return detailed info for one `address` (credentials, staking stats, network addresses). Ranking and counts cover the full active set when scan.complete is true; a page-budget stop gives scan.next_call to read further. The default summary shows name, address, stake, commission, voting power and at-risk status within a compact output budget; at-risk validators are always kept. `detail: full` returns every full row unless `limit` is set. Omitted rows and fields name a same-network full call without a limit.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | no | If set, return details for this one validator instead of the full list (0x...) |
 | `limit` | integer (1 to 150) | no | When listing, keep at most N validators; summary also keeps at-risk rows beyond N. The summary output budget still applies. |
+| `cursor` | string | no | Opaque cursor from scan.next_call to continue a validator set walk stopped at its page budget. |
 | `sort_by` | `stake` \| `commission` | no | Sort field when listing: stake (default) or commission |
 | `detail` | `summary` \| `full` | no | Listing detail: summary (default) caps compact rows; full returns all fields without a size cap. Ignored for an address lookup. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

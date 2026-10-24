@@ -334,9 +334,11 @@ export async function fetchWindow(address: string, kind: WindowKind, limit: numb
       if (all) tx.eventTypes = all.map((e) => e.type).filter((t): t is string => typeof t === "string");
       else tx.eventsIncomplete = true;
     }
-    txs.unshift(...page.map(({ moreEvents: _, ...tx }): ScreenTx => tx));
     more = res.transactions.pageInfo.hasPreviousPage;
     const cursor = res.transactions.pageInfo.startCursor;
+  // A stale cursor can return the same page indefinitely; do not count it twice.
+  if (more && before !== undefined && cursor === before) break;
+  txs.unshift(...page.map(({ moreEvents: _, ...tx }): ScreenTx => tx));
     if (!cursor) break;
     before = cursor;
   }
@@ -370,10 +372,12 @@ async function bridgeDestinations(digest: string): Promise<{
 }> {
   const res = await gqlQuery<EventsResult>(EVENTS_QUERY, { digest });
   const page = res.transaction?.effects?.events;
-  let events = page?.nodes ?? [];
-  if (page?.pageInfo?.hasNextPage) {
+ if (!page?.nodes) throw new Error(`Events for bridge exit ${digest} were unavailable.`);
+ let events = page.nodes;
+ if (page.pageInfo?.hasNextPage) {
     const all = await fetchEventJson(digest);
-    if (all) events = all.map((e) => ({ contents: { type: e.type ? { repr: e.type } : undefined, json: e.json } }));
+  if (!all) throw new Error(`Events for bridge exit ${digest} were incomplete.`);
+  events = all.map((e) => ({ contents: { type: e.type ? { repr: e.type } : undefined, json: e.json } }));
   }
   const reading = readBridgeEvents(events, getNetwork() === "mainnet");
   return {
@@ -394,6 +398,7 @@ export interface ScreenOptions {
   hopTransactions: number;
   maxExpand: number;
   maxBridgeLookups: number;
+ digestOffset?: number;
 }
 
 /** One exposure in a screen result. The remaining fields depend on the kind of hit. */
@@ -412,21 +417,23 @@ interface PathNode {
 const fmt = (raw: bigint, coinType: string) =>
   `${toHumanAmount(raw, decimalsForCoinType(coinType))} ${displayCoin(coinType).symbol}`;
 
-function summarizeLegs(legs: Leg[]) {
+function summarizeLegs(legs: Leg[], offset = 0) {
   const byCoin = new Map<string, bigint>();
   for (const l of legs) byCoin.set(l.coinType, (byCoin.get(l.coinType) ?? 0n) + l.amount);
   const digests = [...new Set(legs.map((l) => l.digest))];
   const times = legs.map((l) => l.timestamp).filter((t): t is string => !!t).sort();
   return {
     amount: [...byCoin].map(([coin, raw]) => fmt(raw, coin)).join(" + "),
-    digests: digests.slice(0, 5),
-    ...(digests.length > 5 ? { more_digests: digests.length - 5 } : {}),
+  digests: digests.slice(offset, offset + 5),
+  ...(offset ? { digests_before_page: Math.min(offset, digests.length) } : {}),
+  ...(digests.length > offset + 5 ? { more_digests: digests.length - offset - 5 } : {}),
     first_at: times[0] ?? null,
     last_at: times.at(-1) ?? null,
   };
 }
 
 export async function screenAddress(subjectRaw: string, options: ScreenOptions) {
+ const digestOffset = options.digestOffset ?? 0;
   const subject = normalizeSuiAddress(subjectRaw);
   const windows = new Map<string, Promise<TxWindow>>();
   const windowReport: Array<{ address: string; kind: WindowKind; scanned: number; truncated: boolean; incomplete_transactions: string[] }> = [];
@@ -502,7 +509,7 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
                 direction: dir === "out" ? "outgoing" : "incoming",
                 hops: hop,
                 path,
-                legs: pathLegs.map(summarizeLegs),
+        legs: pathLegs.map((legs) => summarizeLegs(legs, digestOffset)),
               });
             }
             continue;
@@ -548,7 +555,7 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
           direction: "outgoing",
           hops: e.hops,
           path: e.path,
-          legs: e.legs.map(summarizeLegs),
+     legs: e.legs.map((legs) => summarizeLegs(legs, digestOffset)),
           evidence: "bridge call or event marker in a transaction the address sent",
         },
         exits: [],
@@ -583,12 +590,16 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
   }
   const viaBridge = new Map<string, Exposure & { digests: string[] }>();
   const hashiReads: Array<{ g: (typeof groupList)[number]; e: (typeof exits)[number]; ids: string[] }> = [];
+ const destinationRead = new Set<string>();
+ const destinationFailed = new Set<string>();
   for (const { g, e } of toRead) {
     // Every beneficiary the transaction's events name is a destination, the
     // carrier's and any bridge in also_exited alike. readBridgeEvents already
     // leaves out a settlement leg's recipient (the CCTP mint to Mayan's
     // contract, the burn that carries an Allbridge transfer).
     const read = await bridgeDestinations(e.tx.digest).catch(() => null);
+  if (read) destinationRead.add(e.tx.digest);
+  else destinationFailed.add(e.tx.digest);
     if (read?.hashiRequestIds.length) hashiReads.push({ g, e, ids: read.hashiRequestIds });
     for (const d of read?.destinations ?? []) {
       g.destinations.set(d.account ?? d.raw ?? d.chain_label, { ...d, tier: "chain-derived" });
@@ -607,7 +618,7 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
           hops: e.hops + 1,
           path: [...e.path, d.account],
           via_bridge: { protocol: d.protocol, tier: "chain-derived" },
-          legs: e.legs.map(summarizeLegs),
+     legs: e.legs.map((legs) => summarizeLegs(legs, digestOffset)),
           digests: [e.tx.digest],
         });
       }
@@ -637,8 +648,9 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
       ...(incomplete.length ? { incomplete_transactions: incomplete } : {}),
       first_at: times[0] ?? null,
       last_at: times.at(-1) ?? null,
-      digests: digests.slice(0, 20),
-      ...(digests.length > 20 ? { more_digests: digests.length - 20 } : {}),
+   digests: digests.slice(digestOffset, digestOffset + 5),
+   ...(digestOffset ? { digests_before_page: Math.min(digestOffset, digests.length) } : {}),
+   ...(digests.length > digestOffset + 5 ? { more_digests: digests.length - digestOffset - 5 } : {}),
       ...(g.destinations.size ? { destinations: [...g.destinations.values()] } : {}),
       ...(g.cancelled.length
         ? {
@@ -649,12 +661,22 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
     };
   });
 
+ const digestPageRemaining = [...exposures, ...viaBridge.values(), ...bridgeExposures].some((e) =>
+  Boolean(e.more_digests) || (Array.isArray(e.legs) && e.legs.some((leg: Record<string, unknown>) => Boolean(leg.more_digests))),
+ );
+ const unreadDestinations = [...new Set(exits.map((e) => e.tx.digest))].filter((digest) => !destinationRead.has(digest)).map((digest) => ({
+  digest,
+  reason: destinationFailed.has(digest) ? "read_failed" : "lookup_budget",
+  next_call: { tool: "resolve_bridge_transfer", args: { digest } },
+ }));
   return {
     exposures: [...exposures, ...viaBridge.values(), ...bridgeExposures].sort((a, b) => a.hops - b.hops),
     windows: windowReport,
     unexpanded_counterparties: unexpanded,
     bridge_exits_seen: exits.length,
-    bridge_exits_with_destination_read: toRead.length,
+  bridge_exits_with_destination_read: destinationRead.size,
+  bridge_destinations_unread: unreadDestinations,
+  digest_page_remaining: digestPageRemaining,
   };
 }
 

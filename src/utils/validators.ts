@@ -59,11 +59,10 @@ export interface ValidatorSet {
   validators: ActiveValidator[];
   /** Total stake from the validator set object, when the query returned it. */
   totalStake: string | null;
-  /**
-   * True when MAX_PAGES was hit with more pages outstanding. Callers that rank
-   * or count must say so rather than present a partial set as the whole one.
-   */
+  /** True if this call did not reach the end of the validator connection. */
   truncated: boolean;
+  /** Cursor for the next segment when a page budget was reached. */
+  nextCursor: string | null;
 }
 
 const QUERY = `
@@ -101,9 +100,9 @@ interface QueryResult {
  * (`identify_address` classifying an address it cannot confirm) should catch,
  * but they must not confuse "the query failed" with "not a validator".
  */
-export async function fetchActiveValidators(): Promise<ValidatorSet> {
+export async function fetchActiveValidators(after: string | null = null): Promise<ValidatorSet> {
   const validators: ActiveValidator[] = [];
-  let cursor: string | null = null;
+  let cursor: string | null = after;
   let epochId: number | null = null;
   let totalStake: string | null = null;
   let truncated = false;
@@ -115,20 +114,21 @@ export async function fetchActiveValidators(): Promise<ValidatorSet> {
     });
 
     const set = data.epoch?.validatorSet;
-    if (!set) break;
+    if (!set) return { epochId, validators, totalStake, truncated: true, nextCursor: null };
     epochId = data.epoch.epochId ?? epochId;
     totalStake = set.contents?.json?.total_stake ?? totalStake;
     validators.push(...(set.activeValidators.nodes ?? []));
 
     if (!set.activeValidators.pageInfo.hasNextPage) {
-      return { epochId, validators, totalStake, truncated: false };
+      return { epochId, validators, totalStake, truncated: false, nextCursor: null };
     }
-    cursor = set.activeValidators.pageInfo.endCursor ?? null;
-    if (!cursor) break;
-    truncated = page === MAX_PAGES - 1;
+    const next = set.activeValidators.pageInfo.endCursor ?? null;
+    if (!next || next === cursor) return { epochId, validators, totalStake, truncated: true, nextCursor: null };
+    cursor = next;
+    truncated = true;
   }
 
-  return { epochId, validators, totalStake, truncated };
+  return { epochId, validators, totalStake, truncated, nextCursor: cursor };
 }
 
 /** Find one validator by its Sui address in a fetched set. */

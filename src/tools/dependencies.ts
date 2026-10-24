@@ -52,7 +52,7 @@ async function readPackage(id: string): Promise<Omit<PackageNode, "package_id"> 
 export function registerDependencyTools(server: McpServer) {
   server.tool(
     "get_package_dependency_graph",
-    "(Developer) Get the dependency graph of a Sui Move package from its linkage table: every package it is linked against, with the exact version linked (`linked_version`), which can be older than the dependency's current version. With depth > 1 each dependency's own linkage is read too, up to depth 3. System packages (0x1, 0x2, 0x3) upgrade in place, so their nodes show the current version while the edge shows the one linked.",
+  "(Developer) Get the dependency graph of a Sui Move package from its linkage table: every package it is linked against, with the exact version linked (`linked_version`), which can be older than the dependency's current version. With depth > 1 each dependency's own linkage is read too, up to depth 3. `complete` says whether the graph ends at that depth; `unexpanded` gives a call for each branch beyond the depth limit or a dependency read to retry. System packages (0x1, 0x2, 0x3) upgrade in place, so their nodes show the current version while the edge shows the one linked.",
     {
       package_id: addressArg().describe("Package ID (0x...)"),
       depth: numArg()
@@ -89,6 +89,15 @@ export function registerDependencyTools(server: McpServer) {
         frontier = next;
       }
 
+   const unexpanded = [...visited.values()]
+    .flatMap((node) => node.dependencies ?? [])
+    .filter((dep) => !visited.has(dep.package_id))
+    .map((dep) => dep.package_id);
+   const remaining = [...new Set([
+    ...unexpanded,
+    ...[...visited.values()].filter((node) => node.error && node.error !== "Not a Move package.").map((node) => node.package_id),
+   ])];
+
       return {
         content: [
           {
@@ -97,6 +106,13 @@ export function registerDependencyTools(server: McpServer) {
               root: package_id,
               depth: maxDepth,
               package_count: visited.size,
+              complete: remaining.length === 0 && [...visited.values()].every((node) => !node.error),
+              ...(remaining.length ? {
+               unexpanded: remaining.map((id) => ({
+                package_id: id,
+                next_call: { tool: "get_package_dependency_graph", args: { package_id: id, depth: maxDepth, network: getNetwork() } },
+               })),
+              } : {}),
               graph: [...visited.values()],
             }),
           },

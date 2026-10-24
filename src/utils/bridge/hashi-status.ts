@@ -48,8 +48,6 @@ export interface Lifecycle {
   more: boolean;
 }
 
-/** Requests whose status one call reads, at most. */
-export const MAX_TRACKED_REQUESTS = 20;
 /** Aliased connections per document: the service answers at most 21 store lookups a request, and each alias pages events too. */
 const ALIASES_PER_REQUEST = 8;
 const REQUEST_TXS = 10;
@@ -164,12 +162,12 @@ async function readLifecycles(ids: string[], first: number): Promise<Map<string,
 }
 
 /**
- * The status of each request, for at most {@link MAX_TRACKED_REQUESTS}
- * of them; the rest are left out of the map. Two reads at most per eight
- * requests: their lifecycles, then the records of those committed.
+ * Read the state of every distinct request. readLifecycles bounds each
+ * GraphQL document independently, so a large transaction cannot silently
+ * leave later withdrawal requests without status.
  */
 export async function readHashiRequestStates(requestIds: string[]): Promise<Map<string, HashiRequestState>> {
-  const ids = [...new Set(requestIds.map((id) => id.toLowerCase()))].slice(0, MAX_TRACKED_REQUESTS);
+ const ids = [...new Set(requestIds.map((id) => id.toLowerCase()))];
   const requests = await readLifecycles(ids, REQUEST_TXS);
   const firstPass = ids.map((id) => hashiRequestState(id, requests.get(id) ?? null, null));
   const records = [...new Set(firstPass.flatMap((s) => (s.status === "committed" && s.withdrawal_txn_id ? [s.withdrawal_txn_id] : [])))];

@@ -24,15 +24,15 @@ describe("capabilityLimitNextCall", () => {
 
 it("continues beyond the maximum version bound without revisiting older versions", () => {
   expect(versionGateNextCall(29)).toEqual({
-    tool: "analyze_package", repeat_with: { max_versions_compared: 60 },
+    tool: "analyze_package", repeat_with: { version_offset: 29 },
   });
-  expect(versionGateNextCall(119, 120)).toEqual({
+  expect(versionGateNextCall(119)).toEqual({
     tool: "analyze_package", repeat_with: { version_offset: 119 },
   });
-  expect(versionGateNextCall(238, 120, 119)).toEqual({
+  expect(versionGateNextCall(238)).toEqual({
     tool: "analyze_package", repeat_with: { version_offset: 238 },
   });
-  expect(versionGateNextCall(undefined, 120, 238)).toBeNull();
+  expect(versionGateNextCall(undefined)).toBeNull();
 });
 
 function mod(partial: Partial<AnalyzedModule> & { name: string }): AnalyzedModule {

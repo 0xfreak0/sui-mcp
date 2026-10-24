@@ -21,7 +21,7 @@ import {
 } from "../utils/move-package.js";
 import { annotateDisassembly } from "../utils/disassembly.js";
 import { analyzeCodeGuards, type CodeLead, type LeadGrade, type UngatedVersionLead } from "../utils/code-guards.js";
-import { scanVersionGates, MAX_VERSIONS_COMPARED, type VersionGateScan } from "../utils/version-gates.js";
+import { scanVersionGates, type VersionGateScan } from "../utils/version-gates.js";
 import { auditPackageCapabilities } from "../utils/capabilities.js";
 import { computeOwnerChanges } from "../utils/object-history.js";
 import { fetchCapHistory } from "./upgrade-history.js";
@@ -424,14 +424,9 @@ export function capabilityLimitNextCall(
  return Object.keys(repeat_with).length ? { tool: "analyze_package", repeat_with } : null;
 }
 
-export function versionGateNextCall(nextOffset: number | undefined, maxVersions = MAX_VERSIONS_COMPARED, versionOffset?: number) {
+export function versionGateNextCall(nextOffset: number | undefined) {
  if (nextOffset === undefined) return null;
- return {
-  tool: "analyze_package",
-  repeat_with: versionOffset !== undefined || maxVersions >= MAX_VERSION_GATE_READS
-   ? { version_offset: nextOffset }
-   : { max_versions_compared: Math.min(MAX_VERSION_GATE_READS, maxVersions * 2) },
- };
+ return { tool: "analyze_package", repeat_with: { version_offset: nextOffset } };
 }
 
 export function registerAnalyzePackageTools(server: McpServer) {
@@ -553,7 +548,7 @@ export function registerAnalyzePackageTools(server: McpServer) {
         ]);
     const auditNextCall = capabilityLimitNextCall(capabilities?.limits_hit,
      { publish_pages, authority_structs, registry_probes, witness_checks });
-    const gateNextCall = versionGateNextCall(versionGates.gates?.next_offset, max_versions_compared, version_offset);
+    const gateNextCall = versionGateNextCall(versionGates.gates?.next_offset);
         const gate = versionGates.gates ? versionGateFinding(versionGates.gates, normalizeSuiAddress(versionId), full) : null;
         if (gate?.finding) findings.push(gate.finding);
         const weakLeads = [...(scan?.scan.weak_leads ?? []), ...(gate?.weak ?? [])];

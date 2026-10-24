@@ -33,7 +33,7 @@ import {
   type FlowTx,
 } from "../utils/address-flows.js";
 import { capPayload, type ListCap } from "../utils/output-cap.js";
-import { readMovedObjects, MAX_OBJECTS_PER_TX, SCAN_OBJECT_BUDGET, valueTransactionObjects } from "../utils/moved-value.js";
+import { readMovedObjects, nextSpecificObjectOffset, MAX_OBJECTS_PER_TX, SCAN_OBJECT_BUDGET, valueTransactionObjects } from "../utils/moved-value.js";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { depositRole, type DepositRoleWindow } from "../utils/deposit-role.js";
 
@@ -348,15 +348,19 @@ export function registerFlowTools(server: McpServer) {
           prefetchCoinScale(coinSet),
           // Specific readers only: an NFT estimate stays out of the totals,
           // and its market reads cost far more per object than the rest.
-          readMovedObjects(objectRead, true).then(async (r) => ({
-            ...(await valueTransactionObjects(
-              // An object whose previous holder went unrecorded is kept until
-              // that holder is read, since it may have left this address.
-              r.txs.map((t) => ({ ...t, moved: t.moved.filter((m) => m.from === subject || m.to === subject || m.prior_version) })),
-              { maxTxs: MAX_OBJECT_TXS, maxObjects: SCAN_OBJECT_BUDGET },
-            )),
+     readMovedObjects(objectRead, true).then(async (r) => {
+      // The summary skips NFT estimates; the deep-dive tool pages all
+      // objects, so resume at the first specific object not yet valued.
+      const eligible = r.txs.map((t) => {
+       const moved = t.moved.filter((m) => m.from === subject || m.to === subject || m.prior_version);
+       return { ...t, moved, nextObjectOffset: moved.length > MAX_OBJECTS_PER_TX ? nextSpecificObjectOffset(t.fullMoved!, moved) : null };
+      });
+      return {
+       ...(await valueTransactionObjects(eligible, { maxTxs: MAX_OBJECT_TXS, maxObjects: SCAN_OBJECT_BUDGET })),
             unreadTxs: r.unread,
-          })),
+       nextObjectOffsets: new Map(eligible.map((t) => [t.digest, t.nextObjectOffset])),
+      };
+     }),
         ]);
     const firstSkippedObject = objectValues.skipped[0];
     const unreadObjectDigests = [...new Set(objectValues.unread.filter((u) => u.reason.startsWith("outside valued-object page ")).map((u) => u.digest))];
@@ -657,7 +661,7 @@ export function registerFlowTools(server: McpServer) {
                 ...(objectValues.unread.length ? { objects_unread: objectValues.unread } : {}),
        ...(unreadObjectDigests.length ? {
         objects_unread_follow_up_calls: unreadObjectDigests.map((digest) => ({
-         tool: "analyze_attack_tx", args: { digest, object_offset: MAX_OBJECTS_PER_TX },
+         tool: "analyze_attack_tx", args: { digest, object_offset: objectValues.nextObjectOffsets.get(digest)! },
         }))
        } : {}),
                 ...(objectValues.unreadTxs.length ? { objects_transactions_unread: objectValues.unreadTxs } : {}),

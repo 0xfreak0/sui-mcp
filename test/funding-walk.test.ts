@@ -219,7 +219,7 @@ describe("find_funding_source stops at a service-scale funder", () => {
     const d = await run("find_funding_source", { address: DISTRIBUTOR, max_hops: 2 });
     expect(d.chain.map((s: { funded_by: string }) => s.funded_by)).toEqual([ANCESTOR, ANCESTOR2]);
     expect(d.chain[0].funder_popularity).toMatchObject({ popular: false, observed_recipients: 0, scan_complete: true });
-  expect(d.continue_with).toEqual({ tool: "find_funding_source", args: { address: ANCESTOR2, max_hops: 2 } });
+  expect(d.continue_with).toEqual({ tool: "find_funding_source", args: { address: ANCESTOR2, max_hops: 2, paid_in: "DyTQ1vSu" } });
   });
 });
 
@@ -243,6 +243,20 @@ describe("find_funding_source stops at an established funder", () => {
     expect(d.origin.address).toBe(HOLDER);
     expect(d.hops).toBe(1);
     expect(JSON.stringify(d.chain)).not.toContain(HOLDER_FUNDER);
+ });
+
+ it("preserves the established-wallet stop across a max-hops continuation", async () => {
+  earliest[RECEIVER] = [fundingTx("LaterPay", HOLDER, RECEIVER, "500000000000000", "2024-06-01T00:00:00.000Z")];
+  earliest[HOLDER] = holderHistory;
+  earliest[HOLDER_FUNDER] = [];
+  const first = await run("find_funding_source", { address: RECEIVER, max_hops: 1 });
+  expect(first.stop_reason).toContain("hit max_hops");
+  expect(first.continue_with.args).toMatchObject({ address: HOLDER, paid_in: "LaterPay" });
+  const resumed = await run(first.continue_with.tool, first.continue_with.args);
+  expect(resumed.hops).toBe(0);
+  expect(resumed.stop_reason).toContain("established wallet");
+  expect(resumed.continue_with).toBeUndefined();
+  expect(JSON.stringify(resumed)).not.toContain(HOLDER_FUNDER);
   });
 
   it("walks on when the payment is among the funder's earliest transactions", async () => {

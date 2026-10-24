@@ -18,6 +18,7 @@ import { ptbDataFromBcs, resolvePtb, type ExecutedObjects } from "../utils/ptb-r
 import { guardiansFlagsForCoin, guardiansFlagsForObjectType, guardiansFlagsForPackage } from "../utils/guardians.js";
 import {
   movedObjectsOf,
+ nextSpecificObjectOffset,
   objectValueByAddress,
   valueMovedObjects,
   valueTransactionObjects,
@@ -216,6 +217,8 @@ const FLAGGED_COMMANDS_READ = 20;
  * and the rest are named.
  */
 const MAX_STATE_READS = 50;
+/** Schema cap for raising all state-read candidate budgets together. */
+export const MAX_STATE_READ_MULTIPLIER = 1000;
 
 /** State reads in flight at once. */
 const STATE_READ_CONCURRENCY = 4;
@@ -415,7 +418,7 @@ export function registerAttackTools(server: McpServer) {
         .string()
         .optional()
         .describe("Profit address; default sender. May switch to largest priced gainer (>= $1) if sender has only a SUI payment/no coin change and no priced object movement, or gives away valued objects without taking value. Unpriced gains outside sender/chosen gainer block it, excluding flagged coins and sender-paid coin types. Reports attacker_defaulted_from_sender; pass an address to override."),
-   state_read_multiplier: numArg().int().min(1).optional().describe("Raise the per-kind state-object and dynamic-field read budgets together (default 1: shared 24, holding/child 48, created/caps 12, price rows 32). Check state_deltas.skipped and raise if needed."),
+   state_read_multiplier: numArg().int().min(1).max(MAX_STATE_READ_MULTIPLIER).optional().describe("Raise the per-kind state-object and dynamic-field read budgets together (default 1, max 1000: shared 24, holding/child 48, created/caps 12, price rows 32). Check state_deltas.skipped and raise if needed."),
    object_offset: numArg().int().min(0).optional().describe("First custody-changing object to value (50 per page); follow object_values_page.next_call. Profit and object USD values on a page are partial until all pages are read."),
       detail: z
         .enum(["summary", "full"])
@@ -891,7 +894,8 @@ export function registerAttackTools(server: McpServer) {
                   ...(stateFindings ?? { jumps: [], drops: [], wrong_source: [] }),
                   objects_read: state.objects.map((o) => ({ object_id: o.objectId, object_type: o.objectType, role: o.role })),
         state_read_multiplier: state_read_multiplier ?? 1,
-        ...(state.capped ? { read_more_with: { tool: "analyze_attack_tx", repeat_with: { state_read_multiplier: (state_read_multiplier ?? 1) * 2 } } } : {}),
+        ...(state.capped && (state_read_multiplier ?? 1) < MAX_STATE_READ_MULTIPLIER ? { read_more_with: { tool: "analyze_attack_tx", repeat_with: { state_read_multiplier: Math.min(MAX_STATE_READ_MULTIPLIER, (state_read_multiplier ?? 1) * 2) } } } : {}),
+        ...(state.capped && (state_read_multiplier ?? 1) === MAX_STATE_READ_MULTIPLIER ? { limit_note: "State candidates remain unread at the maximum state_read_multiplier; inspect state_deltas.skipped by object id and version. State conclusions are incomplete." } : {}),
                   ...(state.skipped.length ? { skipped: state.skipped } : {}),
                   ...(state.unavailable.length ? { unavailable: state.unavailable } : {}),
                   ...(state.layout_unread.length ? { layout_unread: state.layout_unread } : {}),
@@ -1049,7 +1053,7 @@ export function registerAttackTools(server: McpServer) {
         .superRefine(refinePoint)
         .optional()
         .describe("Fixed-time valuation for every coin and object (Unix seconds or ISO 8601). Default: hourly coin quotes; objects at their transaction times. Check usd_basis for coarsening."),
-   state_read_multiplier: numArg().int().min(1).optional().describe("Raise each transaction's state-object and dynamic-field budgets together (default 1). A transaction still cut by those limits is named under state_reads.capped and does not contribute partial pool state."),
+   state_read_multiplier: numArg().int().min(1).max(MAX_STATE_READ_MULTIPLIER).optional().describe("Raise each transaction's state-object and dynamic-field budgets together (default 1, max 1000). A transaction still cut by those limits is named under state_reads.capped and does not contribute partial pool state."),
       max_groups: numArg()
         .int()
         .min(1)
@@ -1129,6 +1133,15 @@ export function registerAttackTools(server: McpServer) {
         for (const loss of stateRead.losses.values()) for (const c of loss.deltas.keys()) coins.add(c);
         for (const g of agg.groups) for (const c of g.pool_deltas.keys()) if (isCoinTypeKey(c)) coins.add(c);
         const successfulTxs = read.txs.filter((t) => t.success);
+    const objectTxs = successfulTxs.map((t) => {
+     const moved = movedObjectsOf(t, true);
+     return {
+      digest: t.digest,
+      checkpoint: t.checkpoint,
+      moved,
+      nextObjectOffset: moved.length > MAX_OBJECTS_PER_TX ? nextSpecificObjectOffset(movedObjectsOf(t), moved) : null,
+     };
+    });
         const atOf = (tx: AttackTx) => tx.timestampMs === null ? null : tx.timestampMs / 1000;
         let perTx = read.txs.map((tx) => ({ tx, aggregate: aggregateIncident([tx], attackerId ?? undefined, stateRead.losses) }));
         const [prices, , txObjects] = await Promise.all([
@@ -1142,7 +1155,7 @@ export function registerAttackTools(server: McpServer) {
           valueTransactionObjects(
             // Specific readers only: NFT estimates stay out of the totals,
             // and their market reads cost far more per object than the rest.
-            successfulTxs.map((t) => ({ digest: t.digest, checkpoint: t.checkpoint, moved: movedObjectsOf(t, true) })),
+      objectTxs,
             { maxTxs: MAX_OBJECT_VALUE_TXS, maxObjects: SCAN_OBJECT_BUDGET },
             // Each object at its own transaction's time unless price_at
             // names one moment: a drainer campaign runs over days, and the
@@ -1545,7 +1558,7 @@ export function registerAttackTools(server: McpServer) {
                 ...(txObjects.unread.length ? { objects_unread: txObjects.unread } : {}),
        ...(objectValuePageDigests.length ? {
         objects_unread_follow_up_calls: objectValuePageDigests.map((digest) => ({
-         tool: "analyze_attack_tx", args: { digest, object_offset: MAX_OBJECTS_PER_TX },
+         tool: "analyze_attack_tx", args: { digest, object_offset: objectTxs.find((t) => t.digest === digest)!.nextObjectOffset! },
         }))
        } : {}),
                 ...(txObjects.skipped.length ? { objects_skipped_transactions: txObjects.skipped } : {}),
@@ -1592,7 +1605,9 @@ export function registerAttackTools(server: McpServer) {
                   ...(stateRead.failed.length ? { failed: stateRead.failed } : {}),
         ...(stateRead.capped.length ? {
          capped: stateRead.capped,
-         read_more_with: { tool: "summarize_incident_losses", repeat_with: { state_read_multiplier: (state_read_multiplier ?? 1) * 2 } },
+         ...((state_read_multiplier ?? 1) < MAX_STATE_READ_MULTIPLIER ? { read_more_with: { tool: "summarize_incident_losses", repeat_with: { state_read_multiplier: Math.min(MAX_STATE_READ_MULTIPLIER, (state_read_multiplier ?? 1) * 2) } } } : {
+          limit_note: "State candidates remain unread at the maximum state_read_multiplier; inspect the affected digests individually. Incident totals remain partial.",
+         }),
         } : {}),
                   note: `Transactions no event decodes into pool amounts have their changed shared objects read at the input and output versions, and are grouped by the holders whose Balance<T> holdings fell (pool_basis "state"). At most ${MAX_STATE_READS} are read per call; the digests in unread were not, and their groups come from events alone. Pass them as digests to read them.`,
                 },

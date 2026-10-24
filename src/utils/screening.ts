@@ -334,9 +334,11 @@ export async function fetchWindow(address: string, kind: WindowKind, limit: numb
       if (all) tx.eventTypes = all.map((e) => e.type).filter((t): t is string => typeof t === "string");
       else tx.eventsIncomplete = true;
     }
-    txs.unshift(...page.map(({ moreEvents: _, ...tx }): ScreenTx => tx));
     more = res.transactions.pageInfo.hasPreviousPage;
     const cursor = res.transactions.pageInfo.startCursor;
+  // A stale cursor can return the same page indefinitely; do not count it twice.
+  if (more && before !== undefined && cursor === before) break;
+  txs.unshift(...page.map(({ moreEvents: _, ...tx }): ScreenTx => tx));
     if (!cursor) break;
     before = cursor;
   }
@@ -646,9 +648,9 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
       ...(incomplete.length ? { incomplete_transactions: incomplete } : {}),
       first_at: times[0] ?? null,
       last_at: times.at(-1) ?? null,
-   digests: digests.slice(digestOffset, digestOffset + 20),
+   digests: digests.slice(digestOffset, digestOffset + 5),
    ...(digestOffset ? { digests_before_page: Math.min(digestOffset, digests.length) } : {}),
-   ...(digests.length > digestOffset + 20 ? { more_digests: digests.length - digestOffset - 20 } : {}),
+   ...(digests.length > digestOffset + 5 ? { more_digests: digests.length - digestOffset - 5 } : {}),
       ...(g.destinations.size ? { destinations: [...g.destinations.values()] } : {}),
       ...(g.cancelled.length
         ? {

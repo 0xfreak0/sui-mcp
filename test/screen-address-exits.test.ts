@@ -8,7 +8,7 @@ vi.mock("../src/utils/price-providers.js", () => ({ pricesForRanking: async () =
 const mockGetCoinInfo = vi.fn();
 vi.mock("../src/clients/grpc.js", () => ({ sui: { stateService: { getCoinInfo: mockGetCoinInfo } }, archive: {} }));
 
-const { screenAddress } = await import("../src/utils/screening.js");
+const { screenAddress, fetchWindow } = await import("../src/utils/screening.js");
 const { registerScreeningTools } = await import("../src/tools/screening.js");
 const handlers = new Map<string, (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>>();
 registerScreeningTools({
@@ -146,7 +146,17 @@ describe("screenAddress bridge exits", () => {
   expect(complete.bridge_destinations_incomplete).toBeUndefined();
  });
 
- it("pages every bridge group's digests rather than losing exits after twenty", async () => {
+ it("stops an empty or stale screening cursor without repeating a transaction", async () => {
+  mockGqlQuery.mockResolvedValue({
+   transactions: { nodes: [cctpBurn(0)], pageInfo: { hasPreviousPage: true, startCursor: "same" } },
+  });
+  const window = await fetchWindow(ATTACKER, "sent", 30);
+  expect(window.txs.map((tx) => tx.digest)).toEqual(["cctpBurn0"]);
+  expect(window.truncated).toBe(true);
+  expect(mockGqlQuery).toHaveBeenCalledTimes(2);
+ });
+
+ it("follows the shared five-digest offset without repeating a bridge exit", async () => {
   mockGqlQuery.mockImplementation(async (query: string) =>
    query.includes("transactions(filter")
     ? { transactions: { nodes: Array.from({ length: 26 }, (_, i) => cctpBurn(i)), pageInfo: { hasPreviousPage: false, startCursor: null } } }
@@ -154,12 +164,13 @@ describe("screenAddress bridge exits", () => {
   );
   const screen = handlers.get("screen_address")!;
   const args = { address: ATTACKER, direction: "out", hops: 1, max_bridge_lookups: 1 };
-  const first = JSON.parse((await screen(args)).content[0].text);
-  const later = JSON.parse((await screen({ ...args, digest_offset: 20 })).content[0].text);
-  expect(first.exposures.find((e: { label: string }) => e.label === "Circle CCTP").digests).toHaveLength(20);
-  expect(first.digest_listing.next_call).toMatchObject({ tool: "screen_address", repeat_with: { digest_offset: 5 } });
-  expect(later.exposures.find((e: { label: string }) => e.label === "Circle CCTP").digests).toEqual(Array.from({ length: 6 }, (_, i) => `cctpBurn${20 + i}`));
-  expect(later.digest_listing).toBeUndefined();
+  const digests: string[] = [];
+  for (let offset = 0; offset <= 25; offset += 5) {
+   const page = JSON.parse((await screen({ ...args, digest_offset: offset })).content[0].text);
+   digests.push(...page.exposures.find((e: { label: string }) => e.label === "Circle CCTP").digests);
+   expect(page.digest_listing?.next_call?.repeat_with?.digest_offset).toBe(offset < 25 ? offset + 5 : undefined);
+  }
+  expect(digests).toEqual(Array.from({ length: 26 }, (_, i) => `cctpBurn${i}`));
  });
 
  it("does not call a failed destination read a cleared bridge", async () => {

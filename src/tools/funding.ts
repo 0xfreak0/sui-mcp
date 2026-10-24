@@ -298,7 +298,7 @@ interface Walk {
 }
 
 /** Walk one address back through funding hops. Shared by both funding tools. */
-async function walkFunding(address: string, maxHops: number, ctx: WalkContext): Promise<Walk> {
+async function walkFunding(address: string, maxHops: number, ctx: WalkContext, priorFundingTx?: string): Promise<Walk> {
   const chain: ChainStep[] = [];
   // Inflows rejected as dust along the way. Reported rather than dropped: an
   // investigator needs to see that a 1-MIST send was skipped, both to trust
@@ -324,11 +324,14 @@ async function walkFunding(address: string, maxHops: number, ctx: WalkContext): 
     // operator's main wallet. Walking on would read its ancestry as the
     // subject's.
     const paid = chain.at(-1);
-    if (paid && txs.length >= EARLIEST_TXS && !txs.some((t) => t.digest === paid.funding_tx)) {
-      stopReason =
-        `reached an established wallet (${current} paid ${paid.address} after its own earliest ${EARLIEST_TXS} transactions, ` +
+    const payment = paid?.funding_tx ?? (i === 0 ? priorFundingTx : undefined);
+    if (payment && txs.length >= EARLIEST_TXS && !txs.some((t) => t.digest === payment)) {
+      stopReason = paid
+        ? `reached an established wallet (${current} paid ${paid.address} after its own earliest ${EARLIEST_TXS} transactions, ` +
         "from a balance it already held, so its funding describes it rather than where that payment came from; " +
-        "run find_funding_source on it to walk its own ancestry)";
+          "run find_funding_source on it to walk its own ancestry)"
+        : `reached an established wallet (the preceding funding payment came after ${current}'s earliest ${EARLIEST_TXS} transactions; ` +
+          "its own ancestry cannot attribute that payment)";
       break;
     }
     if (pricesUnavailable) unpricedHops.push(current);
@@ -633,7 +636,7 @@ export function registerFundingTools(server: McpServer) {
             origin,
             hops: chain.length,
             stop_reason: stopReason,
-      ...(stopReason.startsWith("hit max_hops") ? { continue_with: { tool: "find_funding_source", args: { address: origin, max_hops: maxHops } } } : {}),
+      ...(stopReason.startsWith("hit max_hops") ? { continue_with: { tool: "find_funding_source", args: { address: origin, max_hops: maxHops, paid_in: chain.at(-1)!.funding_tx } } } : {}),
             first_funder: chain[0]?.funded_by ?? null,
             first_hop: chain[0] ?? null,
             ...(dustSkipped.length ? { dust_skipped: dustSkipped } : {}),
@@ -1074,13 +1077,14 @@ export function registerFundingTools(server: McpServer) {
     {
       address: addressArg().describe("Address to attribute (0x...)"),
       max_hops: numArg().int().positive().max(12).optional().describe("Max funding hops to walk back (default 5, max 12)"),
+      paid_in: z.string().min(1).optional().describe("Funding transaction from the preceding hop's continue_with; keeps the established-funder stop when resuming. Omit to investigate this wallet independently."),
       measure_fanout: boolArg()
         .optional()
         .describe(
           "Measure origin fan-out (default true), using get_address_fanout's default window and matching counts/truncation.",
         ),
     },
-    async ({ address, max_hops, measure_fanout }) => {
+    async ({ address, max_hops, measure_fanout, paid_in }) => {
       try {
         const maxHops = Math.min(max_hops ?? 5, 12);
         const ctx: WalkContext = {
@@ -1089,7 +1093,7 @@ export function registerFundingTools(server: McpServer) {
           budget: new Budget(SINGLE_POPULARITY_BUDGET),
         };
         const { chain, origin, stopReason, dustSkipped, sponsoredBy, deadEnd, stoppedAtHub, incompleteReads, unpricedHops, originUnread } =
-          await walkFunding(address, maxHops, ctx);
+          await walkFunding(address, maxHops, ctx, paid_in);
         const originPopularity = chain.at(-1)?.funder_popularity;
 
         // Fan-out on the origin, because the origin is what gets over-read.
@@ -1160,7 +1164,7 @@ export function registerFundingTools(server: McpServer) {
                 origin: labelFor(origin),
                 hops: chain.length,
                 stop_reason: stopReason,
-        ...(stopReason.startsWith("hit max_hops") ? { continue_with: { tool: "find_funding_source", args: { address: origin, max_hops: maxHops } } } : {}),
+        ...(stopReason.startsWith("hit max_hops") ? { continue_with: { tool: "find_funding_source", args: { address: origin, max_hops: maxHops, paid_in: chain.at(-1)!.funding_tx, ...(measure_fanout !== undefined ? { measure_fanout } : {}) } } } : {}),
                 ...(dustSkipped.length ? { dust_skipped: dustSkipped } : {}),
                 ...(sponsoredBy.length
                   ? { sponsored_by: sponsoredBy, sponsored_by_note: sponsoredByNote(sponsoredBy, deadEnd) }

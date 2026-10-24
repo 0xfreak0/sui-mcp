@@ -167,6 +167,14 @@ export function movedObjects(movements: ObjectMovement[], objects: ChangedObject
   }
   return out;
 }
+/** Map a bounded specific-reader scan's next object onto the full tool's object-offset order. */
+export function nextSpecificObjectOffset(full: MovedObject[], specific: MovedObject[]): number {
+ const next = specific[MAX_OBJECTS_PER_TX];
+ if (!next) throw new Error("The specific-reader object page has no continuation.");
+ const index = full.findIndex((m) => m.object_id === next.object_id && m.version === next.version && m.before_version === next.before_version);
+ if (index < 0) throw new Error("The next specific-reader object is missing from the full object page.");
+ return index;
+}
 
 /** Objects valued per transaction; the rest are listed as unread. */
 export const MAX_OBJECTS_PER_TX = 50;
@@ -396,6 +404,8 @@ export interface TransactionObjects {
   digest: string;
   checkpoint: string | null;
   moved: MovedObject[];
+ /** Full object order, populated only when a specific-reader scan has another object page. */
+ fullMoved?: MovedObject[];
  /** Raw object changes, including types no valuer handles. */
  movements?: ObjectMovement[];
 }
@@ -511,13 +521,7 @@ export async function readMovedObjects(digests: string[], specificOnly = false):
     if (!t) continue;
     const changed = t.effects?.changedObjects ?? [];
   const movements = readGrpcObjectChanges(changed);
-    txs.push({
-      digest,
-      checkpoint: t.checkpoint !== undefined ? t.checkpoint.toString() : null,
-   movements,
-      moved: movedObjectsOf({
-    movements,
-        objects: changed.map((o) => ({
+  const objects = changed.map((o) => ({
           objectId: o.objectId ?? "",
           objectType: o.objectType ?? null,
           inputVersion: o.inputState === INPUT_EXISTS && o.inputVersion !== undefined ? o.inputVersion.toString() : null,
@@ -526,8 +530,14 @@ export async function readMovedObjects(digests: string[], specificOnly = false):
             o.inputOwner?.kind === OWNER_ADDRESS && o.outputOwner?.kind === OWNER_ADDRESS && o.inputOwner.address === o.outputOwner.address
               ? (o.inputOwner.address ?? null)
               : null,
-        })),
-      }, specificOnly),
+  }));
+  const moved = movedObjects(movements, objects, specificOnly);
+  txs.push({
+   digest,
+   checkpoint: t.checkpoint !== undefined ? t.checkpoint.toString() : null,
+   movements,
+   moved,
+   ...(specificOnly && moved.length > MAX_OBJECTS_PER_TX ? { fullMoved: movedObjects(movements, objects) } : {}),
     });
   }
   return { txs, unread: digests.filter((d) => !found.has(d)) };

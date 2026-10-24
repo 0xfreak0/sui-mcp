@@ -223,7 +223,7 @@ export function registerClusterTools(server: McpServer) {
 
     const pageArgs = {
      addresses, expand, expand_budget, expand_offset, popularity_limit, reciprocal_budget, reciprocal_offset,
-     min_signal_types, max_cluster_size, query_budget, format,
+     min_signal_types, max_cluster_size, query_budget, format, digest_offset,
     };
     const expansionScan = built.expansion_scan && {
      ...built.expansion_scan,
@@ -304,7 +304,7 @@ export function registerClusterTools(server: McpServer) {
         }
 
     const evidenceArgs = {
-     addresses, expand, expand_budget, popularity_limit, reciprocal_budget,
+     addresses, expand, expand_budget, expand_offset, popularity_limit, reciprocal_budget, reciprocal_offset,
      min_signal_types, max_cluster_size, query_budget,
     };
         return {

@@ -50,6 +50,7 @@ const { registerFlowTools } = await import("../../src/tools/flows.js");
 const { resetWindowPriceCache } = await import("../../src/utils/window-prices.js");
 
 const STAKE_TYPE = "0x0000000000000000000000000000000000000000000000000000000000000003::staking_pool::StakedSui";
+const ART_TYPE = `0x${"a".repeat(64)}::art::Art`;
 registerValuer({
   name: "synthetic_stake",
   value: async () => ({ positions: [], unread: [] }),
@@ -58,6 +59,13 @@ registerValuer({
     positions: [{ protocol: "Sui staking", kind: "staked_sui", object_id: obj.object_id, assets: [], usd_net: 250, method: "synthetic", tier: "price-provider" }],
     unread: [],
   }),
+});
+registerValuer({
+ name: "synthetic_art",
+ fallback: true,
+ value: async () => ({ positions: [], unread: [] }),
+ handles: (type) => type === ART_TYPE,
+ valueObject: async () => ({ positions: [], unread: [] }),
 });
 
 type Handler = (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }>;
@@ -134,6 +142,30 @@ beforeEach(() => {
 });
 
 describe("summarize_address_flows objects", () => {
+ it("maps a specific-reader overflow onto the full transaction's object offset", async () => {
+  const changedObjects = Array.from({ length: 180 }, (_, i) => ({
+   objectId: `0x${(i + 1).toString(16).padStart(64, "0")}`,
+   objectType: i % 3 === 0 ? STAKE_TYPE : ART_TYPE,
+   inputState: 2, outputState: 2, inputVersion: 7n, outputVersion: 8n, idOperation: 0,
+   inputOwner: { kind: 1, address: V }, outputOwner: { kind: 1, address: C },
+  }));
+  batchGetTransactions.mockResolvedValue({
+   response: {
+    transactions: [{
+     result: {
+      oneofKind: "transaction", transaction: {
+       digest: DIGEST, checkpoint: 1000n, effects: { changedObjects },
+      }
+     }
+    }]
+   },
+  });
+  const result = JSON.parse((await handlers.get("summarize_address_flows")!({ address: V })).content[0].text);
+  expect(result.objects_unread_follow_up_calls).toEqual([
+   { tool: "analyze_attack_tx", args: { digest: DIGEST, object_offset: 150 } },
+  ]);
+  expect(result.totals_usd.objects_partial).toBe(true);
+ });
   it("counts a valued object sent out in the totals and with its recipient", async () => {
     const d = JSON.parse((await handlers.get("summarize_address_flows")!({ address: V })).content[0].text);
 

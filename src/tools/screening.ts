@@ -103,7 +103,7 @@ export function registerScreeningTools(server: McpServer) {
     .max(300)
     .optional()
     .describe("Exit transactions whose on-chain destinations are read (default 10, max 300). Unread exits leave bridge screening incomplete."),
-   digest_offset: numArg().int().min(0).optional().describe("First digest shown for each exposure or path leg (default 0; five per leg, 20 per bridge group). Follow digest_listing.next_call."),
+   digest_offset: numArg().int().min(0).optional().describe("First digest shown for each exposure or path leg (five per page); follow digest_listing.next_call."),
     },
   async ({ address, hops, direction, max_transactions, max_expand, max_bridge_lookups, digest_offset }) => {
       let account;

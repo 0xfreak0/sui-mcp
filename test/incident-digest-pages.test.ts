@@ -4,6 +4,21 @@ const { gqlQuery } = vi.hoisted(() => ({ gqlQuery: vi.fn() }));
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery }));
 
 const { digestsSentBy } = await import("../src/utils/attack-read.js");
+const { registerAttackTools, MAX_STATE_READ_MULTIPLIER } = await import("../src/tools/attack.js");
+
+it("bounds state-read budget arguments in both attack tools", () => {
+  const schemas = new Map<string, Record<string, { safeParse(value: unknown): { success: boolean } }>>();
+  registerAttackTools({
+    tool: (name: string, _description: string, schema: Record<string, { safeParse(value: unknown): { success: boolean } }>) => {
+      schemas.set(name, schema);
+    }
+  } as never);
+  for (const name of ["analyze_attack_tx", "summarize_incident_losses"]) {
+    const arg = schemas.get(name)!.state_read_multiplier;
+    expect(arg.safeParse(MAX_STATE_READ_MULTIPLIER).success).toBe(true);
+    expect(arg.safeParse(MAX_STATE_READ_MULTIPLIER + 1).success).toBe(false);
+  }
+});
 
 describe("incident sender transaction pages", () => {
   it("continues from the last complete page without repeating or losing a digest", async () => {

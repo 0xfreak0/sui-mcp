@@ -18,7 +18,10 @@ vi.mock("../src/utils/kiosk.js", () => ({
 
 const { registerObjectHistoryTools } = await import("../src/tools/object-history.js");
 
-type Args = { object_id: string; limit?: number; order?: "oldest" | "newest"; cursor?: string };
+type Args = {
+ object_id: string; limit?: number; order?: "oldest" | "newest"; cursor?: string;
+ owner_change_cursor?: string; transition_reads?: number; transition_time_ms?: number
+};
 let handler: (args: Args) => Promise<{ content: { text: string }[] }>;
 registerObjectHistoryTools({
   tool: (_n: string, _d: string, _s: unknown, h: typeof handler) => {
@@ -288,10 +291,13 @@ describe("trace_object_history — a busy object beyond the page limit", () => {
 
     const r = await run({ object_id: "0xflipper", limit: 1 });
     expect(r.owner_change_note).toMatch(/did not finish/);
+  expect(r.owner_change_cursor).toEqual(expect.any(String));
   expect(r.owner_change_next_call).toEqual({
    tool: "trace_object_history",
-   repeat_with: { transition_reads: 160, transition_time_ms: 40_000 },
+   repeat_with: { owner_change_cursor: r.owner_change_cursor, transition_reads: 160, transition_time_ms: 40_000 },
   });
+  expect(r.owner_change_stop_reason).toBe("reads");
+  expect(r.owner_change_count_partial).toBe(true);
     type Range = { from_checkpoint: number; to_checkpoint: number; owner_before: { address: string }; owner_after: { address: string } };
     const ranges: Range[] = r.owner_change_unpinned;
     expect(ranges.length).toBeGreaterThan(0);
@@ -346,6 +352,130 @@ describe("trace_object_history — a busy object beyond the page limit", () => {
       ["0xa", "0xb"],
       ["0xb", "0xc"],
     ]);
+ });
+ it("continues only unresolved newest-first ranges, without repeating versions or transitions", async () => {
+  const owners = ["0xa", "0xb", "0xc", "0xd"];
+  let historyReads = 0;
+  mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown>) => {
+   if (query.includes("last: $last")) {
+    historyReads++;
+    return {
+     current: version("6", "0xd", 170),
+     objectVersions: {
+      pageInfo: { hasNextPage: true, endCursor: "c" },
+      nodes: [version("4", "0xd", 150), version("5", "0xd", 160), version("6", "0xd", 170)]
+     },
+     genesis: { nodes: [version("1", "0xa", 10)] },
+    };
+   }
+   if (query.includes("atCheckpoint") && query.includes("previousTransaction")) {
+    const cp = vars.cp as number;
+    return {
+     object: {
+      version: cp, previousTransaction: {
+       digest: `tx-at-${cp}`, effects: { timestamp: "2026-01-15T00:00:00Z" },
+      }
+     }
+    };
+   }
+   if (query.includes("atCheckpoint")) {
+    const cp = vars.cp as number;
+    return {
+     object: {
+      owner: {
+       __typename: "AddressOwner", address: {
+        address: owners[cp < 40 ? 0 : cp < 80 ? 1 : cp < 120 ? 2 : 3],
+       }
+      }
+     }
+    };
+   }
+   throw new Error(`unexpected query: ${query.slice(0, 60)}`);
+  });
+  getTransaction.mockResolvedValue(effectsWith("0xtransitions", 2));
+  const args: Args = { object_id: "0xtransitions", order: "newest", limit: 2 };
+  const baseline = await run({ ...args, transition_reads: 500 });
+  expect(baseline.owner_changes.map((c: { tx: string }) => c.tx)).toEqual(["tx-at-120", "tx-at-80", "tx-at-40"]);
+  let page = await run({ ...args, transition_reads: 1 });
+  const firstNext = page.next_call;
+  const combined = [...page.owner_changes];
+  let pages = 0;
+  while (page.owner_change_next_call && pages++ < 50) {
+   const continuation = page.owner_change_next_call.repeat_with;
+   page = await run({ ...args, ...continuation, transition_reads: 3 });
+   expect(page.owner_change_segment).toBe("continuation");
+   expect(page.history).toEqual([]);
+   expect(page.version_count_shown).toBe(0);
+   expect(page.next_call).toBeUndefined();
+   expect(page.owner_change_count).toBe(page.owner_changes.length);
+   combined.push(...page.owner_changes);
+  }
+  expect(pages).toBeGreaterThan(1);
+  expect(pages).toBeLessThan(50);
+  expect(page.owner_change_next_call).toBeUndefined();
+  expect(page.owner_change_count_partial).toBe(true);
+  expect(page.owner_change_search_complete).toBe(true);
+  expect(historyReads).toBe(2);
+  expect(firstNext).toEqual(baseline.next_call);
+  expect(combined).toEqual(baseline.owner_changes);
+  expect(new Set(combined.map((c: { tx: string }) => c.tx)).size).toBe(combined.length);
+ });
+
+ it("offers a time-budget continuation even at both hard maxima, and rejects invalid cursors without reads", async () => {
+  let historyReads = 0;
+  mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown>) => {
+   if (query.includes("objectVersions(address: $id, first: $first)")) {
+    historyReads++;
+    return {
+     current: version("9", "0xb", 1000),
+     objectVersions: { pageInfo: { hasNextPage: true, endCursor: "c" }, nodes: [version("1", "0xa", 10)] }
+    };
+   }
+   if (query.includes("atCheckpoint") && query.includes("previousTransaction")) {
+    return { object: { version: 500, previousTransaction: { digest: "tx-at-500", effects: { timestamp: "2026-01-15T00:00:00Z" } } } };
+   }
+   if (query.includes("atCheckpoint")) {
+    return { object: { owner: { __typename: "AddressOwner", address: { address: (vars.cp as number) < 500 ? "0xa" : "0xb" } } } };
+   }
+   throw new Error(`unexpected query: ${query.slice(0, 60)}`);
+  });
+  getTransaction.mockResolvedValue(effectsWith("0xmax", 2));
+  const args: Args = { object_id: "0xmax", limit: 1, transition_reads: 500, transition_time_ms: 120_000 };
+  let nowCalls = 0;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => nowCalls++ < 2 ? 0 : 120_001);
+  const first = await run(args);
+  clock.mockRestore();
+  expect(first.owner_change_stop_reason).toBe("time");
+  expect(first.owner_change_count_partial).toBe(true);
+  expect(first.owner_change_next_call.repeat_with).toEqual({
+   owner_change_cursor: first.owner_change_cursor, transition_reads: 500, transition_time_ms: 120_000,
+  });
+  const remaining = await run({ ...args, ...first.owner_change_next_call.repeat_with });
+  expect(remaining.owner_change_segment).toBe("continuation");
+  expect(remaining.history).toEqual([]);
+  expect(remaining.owner_change_count).toBe(1);
+  expect(remaining.owner_changes[0].tx).toBe("tx-at-500");
+  expect(remaining.owner_change_next_call).toBeUndefined();
+  expect(historyReads).toBe(1);
+
+  const queries = mockGqlQuery.mock.calls.length;
+  for (const owner_change_cursor of [
+   "garbage!",
+   Buffer.from("{broken").toString("base64url"),
+   first.owner_change_cursor + "A".repeat(512_001),
+   Buffer.from(JSON.stringify({
+    v: 1, id: "0xmax", order: "oldest", cursor: null, limit: 1,
+    ranges: [[11, { kind: "address", address: "0xa" }, 10, { kind: "address", address: "0xb" }]], held: [],
+   })).toString("base64url"),
+  ]) {
+   const error = await handler({ ...args, owner_change_cursor });
+   expect((error as { isError?: boolean }).isError).toBe(true);
+  }
+  const mismatch = await handler({ ...args, object_id: "0xother", owner_change_cursor: first.owner_change_cursor });
+  expect((mismatch as { isError?: boolean }).isError).toBe(true);
+  const wrongOrder = await handler({ ...args, order: "newest", owner_change_cursor: first.owner_change_cursor });
+  expect((wrongOrder as { isError?: boolean }).isError).toBe(true);
+  expect(mockGqlQuery.mock.calls.length).toBe(queries);
   });
 });
 

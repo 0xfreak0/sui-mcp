@@ -11,6 +11,7 @@ import {
   computeOwnerChanges,
   findOwnerTransitionsFromEnd,
   ownerDesc,
+ ownerKey,
   type CheckpointState,
   type OwnerChange,
   type OwnerDesc,
@@ -191,6 +192,59 @@ const TRANSITION_BUDGET = 80;
 const TRANSITION_TIME_BUDGET_MS = 20_000;
 const MAX_TRANSITION_READS = 500;
 const MAX_TRANSITION_TIME_MS = 120_000;
+type TransitionRange = { lo: CheckpointState; hi: CheckpointState };
+type LocatedChange = { checkpoint: number; change: OwnerChange };
+const MAX_OWNER_CURSOR_BYTES = 512_000;
+const checkpointSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const ownerSchema = z.discriminatedUnion("kind", [
+ z.object({ kind: z.literal("address"), address: z.string().min(1).max(66) }).strict(),
+ z.object({ kind: z.literal("consensus"), address: z.string().min(1).max(66) }).strict(),
+ z.object({ kind: z.literal("object"), address: z.string().min(1).max(66) }).strict(),
+ z.object({ kind: z.literal("shared") }).strict(),
+ z.object({ kind: z.literal("immutable") }).strict(),
+ z.object({ kind: z.literal("unknown") }).strict(),
+]);
+const ownerCursorSchema = z.object({
+ v: z.literal(1),
+ id: z.string(),
+ order: z.enum(["oldest", "newest"]),
+ cursor: z.string().nullable(),
+ limit: z.number().int().min(1).max(50),
+ ranges: z.array(z.tuple([checkpointSchema, ownerSchema, checkpointSchema, ownerSchema])).min(1).max(10_000),
+ held: z.array(z.tuple([checkpointSchema, ownerSchema, ownerSchema, z.string(), z.string().nullable(), z.string().nullable()])).max(10_000),
+}).strict();
+
+function encodeOwnerCursor(id: string, order: "oldest" | "newest", cursor: string | undefined, limit: number, ranges: TransitionRange[], held: LocatedChange[]): string {
+ return Buffer.from(JSON.stringify({
+  v: 1, id, order, cursor: cursor ?? null, limit,
+  ranges: ranges.map(({ lo, hi }) => [lo.checkpoint, lo.owner, hi.checkpoint, hi.owner]),
+  held: held.map(({ checkpoint, change }) => [checkpoint, change.from, change.to, change.at_version, change.tx, change.timestamp]),
+ })).toString("base64url");
+}
+
+function decodeOwnerCursor(value: string, id: string, order: "oldest" | "newest", cursor: string | undefined, limit: number): { ranges: TransitionRange[]; held: LocatedChange[] } | null {
+ if (value.length > MAX_OWNER_CURSOR_BYTES || !/^[A-Za-z0-9_-]+$/.test(value)) return null;
+ try {
+  const parsed = ownerCursorSchema.safeParse(JSON.parse(Buffer.from(value, "base64url").toString("utf8")));
+  if (!parsed.success) return null;
+  const data = parsed.data;
+  if (data.id !== id || data.order !== order || data.cursor !== (cursor ?? null) || data.limit !== limit) return null;
+  const ranges = data.ranges.map(([from, before, to, after]) => ({
+   lo: { checkpoint: from, owner: before }, hi: { checkpoint: to, owner: after },
+  }));
+  if (ranges.some((r, i) => r.lo.checkpoint >= r.hi.checkpoint ||
+   ownerKey(r.lo.owner) === ownerKey(r.hi.owner) ||
+   (i > 0 && ranges[i - 1].hi.checkpoint > r.lo.checkpoint))) return null;
+  const held = data.held.map(([checkpoint, from, to, at_version, tx, timestamp]) => ({
+   checkpoint, change: { from, to, at_version, tx, timestamp },
+  }));
+  if (held.some((c, i) => (i > 0 && held[i - 1].checkpoint >= c.checkpoint) ||
+   ranges.some((r) => r.lo.checkpoint < c.checkpoint && c.checkpoint <= r.hi.checkpoint))) return null;
+  return { ranges, held };
+ } catch {
+  return null;
+ }
+}
 
 /** Convert bisection's `{checkpoint, owner}` transitions into the same
  *  `OwnerChange` shape `computeOwnerChanges` produces, by reading the exact
@@ -200,30 +254,94 @@ async function enrichTransitions(
   objectId: string,
   startOwner: OwnerDesc,
   points: { checkpoint: number; owner: OwnerDesc }[],
-): Promise<OwnerChange[]> {
-  const out: OwnerChange[] = [];
+ unresolved: TransitionRange[],
+): Promise<LocatedChange[]> {
+ const out: LocatedChange[] = [];
   let from = startOwner;
+ let unresolvedIndex = 0;
   for (const p of points) {
+  while (unresolvedIndex < unresolved.length && unresolved[unresolvedIndex].hi.checkpoint < p.checkpoint) {
+   from = unresolved[unresolvedIndex++].hi.owner;
+  }
     const r = await gqlQuery<{ object: VersionNodeGql | null }>(TX_AT_CHECKPOINT_QUERY, {
       id: objectId,
       cp: p.checkpoint,
     });
     out.push({
+   checkpoint: p.checkpoint, change: {
       from,
       to: p.owner,
       at_version: r.object?.version?.toString() ?? "",
       tx: r.object?.previousTransaction?.digest ?? null,
       timestamp: r.object?.previousTransaction?.effects?.timestamp ?? null,
+   }
     });
     from = p.owner;
   }
   return out;
 }
 
+async function searchTransitionRanges(
+ objectId: string,
+ ranges: TransitionRange[],
+ reads: number,
+ timeMs: number,
+): Promise<{ changes: LocatedChange[]; unresolved: TransitionRange[]; stopReason: "reads" | "time" | null }> {
+ const budget: TransitionBudget = { remaining: reads, deadlineMs: Date.now() + timeMs };
+ const changes: LocatedChange[] = [];
+ const unresolved: TransitionRange[] = [];
+ for (const range of ranges) {
+  const search = await findOwnerTransitionsFromEnd(range.lo, range.hi, async (cp) => {
+   const r = await gqlQuery<{ object: { owner?: OwnerGql } | null }>(OWNER_AT_CHECKPOINT_QUERY, { id: objectId, cp });
+   return ownerDesc(r.object?.owner);
+  }, budget);
+  // Each unresolved range keeps its own starting owner. Previous ranges may
+  // have been settled on an earlier call, so their owners are not a baseline.
+  changes.push(...await enrichTransitions(objectId, range.lo.owner, search.transitions, search.unresolved));
+  unresolved.push(...search.unresolved);
+ }
+ return {
+  changes,
+  unresolved,
+  stopReason: unresolved.length ? budget.remaining <= 0 ? "reads" : "time" : null,
+ };
+}
+
+/** Hold changes across an unresolved range until they can be emitted in order. */
+function orderSearchChanges(changes: LocatedChange[], unresolved: TransitionRange[], order: "oldest" | "newest") {
+ const ordered = [...changes].sort((a, b) => a.checkpoint - b.checkpoint);
+ if (unresolved.length === 0) return { shown: ordered.map((c) => c.change), held: [] as LocatedChange[] };
+ const boundary = order === "newest"
+  ? Math.max(...unresolved.map((r) => r.hi.checkpoint))
+  : Math.min(...unresolved.map((r) => r.lo.checkpoint));
+ const canShow = (c: LocatedChange) => order === "newest" ? c.checkpoint > boundary : c.checkpoint <= boundary;
+ return { shown: ordered.filter(canShow).map((c) => c.change), held: ordered.filter((c) => !canShow(c)) };
+}
+
+function ownerSearchContinuation(
+ objectId: string, order: "oldest" | "newest", cursor: string | undefined, limit: number,
+ ranges: TransitionRange[], held: LocatedChange[], reads: number, timeMs: number,
+) {
+ if (ranges.length === 0) return {};
+ const token = encodeOwnerCursor(objectId, order, cursor, limit, ranges, held);
+ if (token.length > MAX_OWNER_CURSOR_BYTES) throw new Error("Owner-change cursor exceeds its size limit.");
+ return {
+  owner_change_cursor: token,
+  owner_change_next_call: {
+   tool: "trace_object_history",
+   repeat_with: {
+    owner_change_cursor: token,
+    transition_reads: Math.min(MAX_TRANSITION_READS, reads * 2),
+    transition_time_ms: Math.min(MAX_TRANSITION_TIME_MS, timeMs * 2),
+   },
+  },
+ };
+}
+
 export function registerObjectHistoryTools(server: McpServer) {
   server.tool(
     "trace_object_history",
-    "(Incident investigation) Trace an object's versions, producing transactions, times and ownership transitions, including transfers, sharing, freezing and party transfers. Use this for a pool, vault or capability's creator and past holders. Deleted or wrapped objects have current:null and an end transaction. Party ownership names its single owner; kiosk ownership and kiosk_cap_holder describe today's custody only, never a historical controller. Beyond the shown page, owner_change_count is always a lower bound: checkpoint search can miss an ownership round trip within a probed span. owner_change_note and more_versions_note explain the limit; owner_change_unpinned lists budget-stopped checkpoint ranges and their endpoint owners, each containing an unpinned change. Versions default to oldest first from the earliest retained version; newest starts at the current version and pages back. Pass next_cursor as cursor with the same order, or follow next_call. Changes compare each listed version to its predecessor regardless of page order.",
+  "(Incident investigation) Trace an object's versions, producing transactions, times and ownership transitions, including transfers, sharing, freezing and party transfers. Use this for a pool, vault or capability's creator and past holders. Deleted or wrapped objects have current:null and an end transaction. Party ownership names its single owner; kiosk ownership and kiosk_cap_holder describe today's custody only, never a historical controller. Beyond the shown page, owner_change_count is a lower bound: checkpoint search can miss an ownership round trip within a probed span. owner_change_note and more_versions_note explain the limit; owner_change_unpinned lists budget-stopped checkpoint ranges and their endpoint owners. Follow owner_change_next_call to search only unresolved ranges; continuation owner_changes and owner_change_count contain only newly found transitions, not the history page again. Versions default to oldest first from the earliest retained version; newest starts at the current version and pages back. Pass next_cursor as cursor with the same order, or follow next_call. Changes compare each listed version to its predecessor regardless of page order.",
     {
       object_id: addressArg().describe("Object ID (0x...)"),
       limit: numArg().int().positive().max(50).optional().describe("Versions per page (default 25). Newest-first pages and pages after a cursor list at most 49."),
@@ -235,12 +353,14 @@ export function registerObjectHistoryTools(server: McpServer) {
         .string()
         .optional()
         .describe("`next_cursor` from the previous page. Continues in the same direction; pass the same `order`."),
+   owner_change_cursor: z.string().max(MAX_OWNER_CURSOR_BYTES).optional()
+    .describe("Opaque owner_change_cursor returned with owner_change_next_call. Continue only the unresolved owner-change ranges, without listing the history page again."),
    transition_reads: numArg().int().min(1).max(MAX_TRANSITION_READS).optional()
     .describe("Checkpoint probes for owner-change search (default 80, max 500). Raise when owner_change_unpinned lists unresolved ranges."),
    transition_time_ms: numArg().int().min(1_000).max(MAX_TRANSITION_TIME_MS).optional()
     .describe("Wall-clock budget for owner-change search in milliseconds (default 20000, max 120000). Raise on a slow endpoint."),
     },
-  async ({ object_id, limit, order, cursor, transition_reads, transition_time_ms }) => {
+  async ({ object_id, limit, order, cursor, owner_change_cursor, transition_reads, transition_time_ms }) => {
       try {
         const limitRows = limit ?? 25;
         const newest = order === "newest";
@@ -252,6 +372,53 @@ export function registerObjectHistoryTools(server: McpServer) {
         const n = readsContext ? Math.min(limitRows, GQL_PAGE_MAX - 1) : limitRows;
         if (cursor !== undefined && !/^\d+$/.test(cursor)) {
           return errorResult(`cursor must be the next_cursor of a previous page, a version number; got ${JSON.stringify(cursor)}.`);
+    }
+    const effectiveOrder = newest ? "newest" : "oldest";
+    const reads = transition_reads ?? TRANSITION_BUDGET;
+    const timeMs = transition_time_ms ?? TRANSITION_TIME_BUDGET_MS;
+    if (owner_change_cursor !== undefined) {
+     const pending = decodeOwnerCursor(owner_change_cursor, object_id, effectiveOrder, cursor, limitRows);
+     if (!pending) return errorResult("Invalid owner_change_cursor for this object, order, version cursor or page limit.");
+     const search = await searchTransitionRanges(object_id, pending.ranges, reads, timeMs);
+     const ordered = orderSearchChanges([...pending.held, ...search.changes], search.unresolved, effectiveOrder);
+     const changes = newest ? [...ordered.shown].reverse() : ordered.shown;
+     const nameMap = await batchResolveNames([...new Set(changes.flatMap((c) => [c.from, c.to])
+      .flatMap((o) => "address" in o ? [o.address] : []))]);
+     const describe = (o: OwnerDesc) => {
+      if (o.kind === "address" || o.kind === "consensus") {
+       const label = getLabel(o.address);
+       return {
+        kind: o.kind, address: o.address, ...(nameMap.get(o.address) ? { name: nameMap.get(o.address) } : {}),
+        ...(label ? { label: label.label, category: label.category } : {})
+       };
+      }
+      return o;
+     };
+     return {
+      content: [{
+       type: "text" as const, text: JSON.stringify({
+        object_id, order: effectiveOrder, owner_change_segment: "continuation",
+        history: [], version_count_shown: 0,
+        owner_changes: changes.map((c) => ({
+         from: describe(c.from), to: describe(c.to), at_version: c.at_version, tx: c.tx, timestamp: c.timestamp,
+        })),
+        owner_change_count: changes.length,
+        owner_change_count_partial: true,
+        owner_change_search_complete: search.unresolved.length === 0,
+        owner_change_note: search.unresolved.length
+         ? `This continuation found ${changes.length} transition(s); ${search.unresolved.length} checkpoint range(s) remain unresolved (${search.stopReason} budget). Counts cover this segment only, not the object's full life. A reversed transfer inside a probed span may be invisible.`
+         : `This continuation resolved the remaining checkpoint ranges and found ${changes.length} transition(s). Counts cover this segment only, not the object's full life; a reversed transfer inside a probed span may be invisible.`,
+        ...(search.unresolved.length ? {
+         owner_change_stop_reason: search.stopReason,
+         owner_change_unpinned: search.unresolved.map((u) => ({
+          from_checkpoint: u.lo.checkpoint, to_checkpoint: u.hi.checkpoint,
+          owner_before: describe(u.lo.owner), owner_after: describe(u.hi.owner),
+         }))
+        } : {}),
+        ...ownerSearchContinuation(object_id, effectiveOrder, cursor, limitRows, search.unresolved, ordered.held, reads, timeMs),
+       })
+      }]
+     };
         }
         const data =
           cursor === undefined && !newest
@@ -351,31 +518,18 @@ export function registerObjectHistoryTools(server: McpServer) {
         let ownerChanges = pageChanges;
         const ownerChangesComplete = !moreOlder && !moreNewer && (createdConfirmed || history.length === 0);
         const searchRan = span !== null;
-        let searchTruncated = false;
         let searchFound = 0;
-        let unresolved: { lo: CheckpointState; hi: CheckpointState }[] = [];
+    let searchStopReason: "reads" | "time" | null = null;
+    let unresolved: TransitionRange[] = [];
+    let held: LocatedChange[] = [];
         if (span) {
-          const budget: TransitionBudget = {
-      remaining: transition_reads ?? TRANSITION_BUDGET,
-      deadlineMs: Date.now() + (transition_time_ms ?? TRANSITION_TIME_BUDGET_MS),
-          };
-          const search = await findOwnerTransitionsFromEnd(
-            span.lo,
-            span.hi,
-            async (cp) => {
-              const r = await gqlQuery<{ object: { owner?: OwnerGql } | null }>(OWNER_AT_CHECKPOINT_QUERY, {
-                id: object_id,
-                cp,
-              });
-              return ownerDesc(r.object?.owner);
-            },
-            budget,
-          );
-          searchTruncated = search.truncated;
+     const search = await searchTransitionRanges(object_id, [span], reads, timeMs);
           unresolved = search.unresolved;
-          const bisected = await enrichTransitions(object_id, span.lo.owner, search.transitions);
-          ownerChanges = newest ? [...bisected, ...pageChanges] : [...pageChanges, ...bisected];
-          searchFound = bisected.length;
+     searchStopReason = search.stopReason;
+     const ordered = orderSearchChanges(search.changes, unresolved, effectiveOrder);
+     held = ordered.held;
+     ownerChanges = newest ? [...ordered.shown, ...pageChanges] : [...pageChanges, ...ordered.shown];
+     searchFound = ordered.shown.length;
         }
         // Newest first lists both lists from the latest version back; each
         // change still reads from the owner before `at_version` to the owner at it.
@@ -571,26 +725,18 @@ export function registerObjectHistoryTools(server: McpServer) {
                       },
                     }
                   : {}),
-        ...(searchTruncated && ((transition_reads ?? TRANSITION_BUDGET) < MAX_TRANSITION_READS ||
-         (transition_time_ms ?? TRANSITION_TIME_BUDGET_MS) < MAX_TRANSITION_TIME_MS)
-         ? {
-          owner_change_next_call: {
-           tool: "trace_object_history",
-           repeat_with: {
-            transition_reads: Math.min(MAX_TRANSITION_READS, (transition_reads ?? TRANSITION_BUDGET) * 2),
-            transition_time_ms: Math.min(MAX_TRANSITION_TIME_MS, (transition_time_ms ?? TRANSITION_TIME_BUDGET_MS) * 2),
-           },
-          },
-         }
-         : {}),
+        ...ownerSearchContinuation(object_id, effectiveOrder, cursor, limitRows, unresolved, held, reads, timeMs),
+        ...(searchStopReason ? { owner_change_stop_reason: searchStopReason } : {}),
+        owner_change_count_partial: !ownerChangesComplete || unresolved.length > 0,
+        owner_change_count_basis: ownerChangesComplete ? "complete displayed history" : "this response only; checkpoint search can miss reversed transfers",
                 owner_change_count: ownerChanges.length,
                 ...(!ownerChangesComplete
                   ? {
                       owner_change_note: !(moreOlder || moreNewer)
                         ? "Counts transitions among the versions shown only. An earlier transfer outside this window would not appear."
                         : searchRan
-                          ? searchTruncated
-                            ? `The checkpoint search that extends this list ${pastPage} did not finish (its query budget or time budget ran out)${searchFound > 0 ? ` after finding ${searchFound} transition(s), listed in owner_changes after the page's own` : ""}. owner_change_unpinned lists the checkpoint ranges it stopped inside: each holds at least one more owner change, from the owner at its start to the owner at its end, not pinned to a transaction. A transition elsewhere may be missing too, as may any reversed transfer the search's design cannot see (see more_versions_note).`
+            ? unresolved.length > 0
+             ? `The checkpoint search that extends this list ${pastPage} did not finish (${searchStopReason} budget reached)${searchFound > 0 ? ` after finding ${searchFound} transition(s), listed in owner_changes after the page's own` : ""}. owner_change_unpinned lists the checkpoint ranges it stopped inside: each holds at least one more owner change, from the owner at its start to the owner at its end, not pinned to a transaction. A transition elsewhere may be missing too, as may any reversed transfer the search's design cannot see (see more_versions_note).`
                             : searchFound > 0
                               ? `The checkpoint search that extends this list ${pastPage} finished and found ${searchFound} transition(s) there, listed in owner_changes after the page's own. It can only find a checkpoint where the owner disagrees with the one before it, so a reversed transfer (out to another owner and back to this one) inside one probed span would not appear (see more_versions_note).`
                               : `The checkpoint search that extends this list ${pastPage} finished without finding further disagreement, but it can only find a checkpoint where the owner disagrees with the one before it: a reversed transfer (out to another owner and back to this one) inside one probed span would not appear (see more_versions_note).`

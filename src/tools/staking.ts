@@ -215,12 +215,15 @@ export function registerStakingTools(server: McpServer) {
         .describe("Historical replay budget per direction (default 1000); also bounds object-change pages."),
       max_positions: numArg().int().min(1).max(50_000).optional()
         .describe("Directly held staking positions scanned (default 1,000); raise when the current holdings walk stopped at its bound."),
+      position_cursor: z.string().min(1).optional()
+        .describe("Opaque cursor from position_scan_next_call; returns the next block of directly held staking positions. Combine block counts; totals stay null for a partial walk."),
       continuation: z.string().min(1).max(8192).optional()
         .describe("Opaque historical replay state from continue_with; keep address, as_of and network unchanged."),
       detail: z.enum(["summary", "full"]).optional().describe("summary caps displayed positions; full returns every read position."),
     },
-    async ({ address, as_of, max_transactions, max_positions, detail, continuation }) => {
+    async ({ address, as_of, max_transactions, max_positions, position_cursor, detail, continuation }) => {
       if (continuation && as_of === undefined) throw new Error("A staking continuation requires its original as_of.");
+      if (position_cursor && as_of !== undefined) throw new Error("position_cursor is only for current staking holdings.");
       if (as_of !== undefined) {
         const historical = await historicalStaking(address, as_of, max_transactions, continuation);
         const fullArgs = { address, as_of, max_transactions, network: getNetwork(), detail: "full" };
@@ -231,7 +234,7 @@ export function registerStakingTools(server: McpServer) {
           { positions: { budget: 6000 } }, { full: detail === "full", next_call: { tool: "get_staking_summary", args: fullArgs } });
         return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
       }
-      const { objects, complete } = await listOwnedWithJson(address, STAKED_SUI_TYPE, max_positions ?? MAX_STAKE_POSITIONS);
+      const { objects, complete, nextCursor } = await listOwnedWithJson(address, STAKED_SUI_TYPE, max_positions ?? MAX_STAKE_POSITIONS, position_cursor);
 
       let totalStakedMist = 0n;
       const positions = objects.map((o) => {
@@ -246,29 +249,41 @@ export function registerStakingTools(server: McpServer) {
         };
       });
       // A position whose principal could not be read makes the sum short.
-      const summed = complete && positions.every((p) => p.principal_mist !== null);
+      const summed = complete && !position_cursor && positions.every((p) => p.principal_mist !== null);
 
       const result = {
         address,
         total_staked_mist: summed ? totalStakedMist.toString() : null,
         ...(summed ? {} : {
-          total_unavailable: complete
+          total_unavailable: position_cursor
+            ? "This block starts after earlier staking positions; no wallet-wide principal total is given. Combine the blocks after every position is read."
+            : complete
             ? "A position's principal could not be read, so no total is given."
             : `The holdings walk stopped after ${positions.length} positions; no total is given.`,
         }),
         position_count: positions.length,
         complete: summed,
-        ...(!complete && objects.length >= (max_positions ?? MAX_STAKE_POSITIONS) && (max_positions ?? MAX_STAKE_POSITIONS) < 50_000
-          ? { position_scan_next_call: { tool: "get_staking_summary", args: { address, max_positions: Math.min(50_000, (max_positions ?? MAX_STAKE_POSITIONS) * 2), detail } } }
+        ...(position_cursor ? { position_count_note: "Count covers this block only; add earlier blocks to count all positions." } : {}),
+        ...(!complete && nextCursor
+          ? {
+            position_scan_next_call: {
+              tool: "get_staking_summary",
+              args: {
+                address, detail, ...(position_cursor || (max_positions ?? MAX_STAKE_POSITIONS) >= 50_000
+                  ? { max_positions: max_positions ?? MAX_STAKE_POSITIONS, position_cursor: nextCursor }
+                  : { max_positions: Math.min(50_000, (max_positions ?? MAX_STAKE_POSITIONS) * 2) })
+              },
+            }
+          }
           : {}),
         positions,
         rewards_included: false,
         scope: "Directly held StakedSui principal only; excludes wrapped/object-owned stakes, FungibleStakedSui and liquid-staking tokens.",
       };
-      const args = { address, network: getNetwork(), detail: "full", max_positions };
+      const args = { address, network: getNetwork(), detail: "full", max_positions, ...(position_cursor ? { position_cursor } : {}) };
       const { payload } = capPayload("get_staking_summary", args, result,
         { positions: { budget: 6000 } }, { full: detail === "full", next_call: { tool: "get_staking_summary", args } });
-      payload.truncated = !complete || !!payload.omitted;
+      payload.truncated = !summed || !!payload.omitted;
       return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
     }
   );

@@ -233,8 +233,10 @@ export function registerObjectTools(server: McpServer) {
         "list_owned_objects",
         { owner, object_type, limit, cursor },
         {
-          count: objects.length, objects, has_next_page: res.hasNextPage, next_cursor: res.cursor,
-          ...(res.hasNextPage && res.cursor ? { next_call: { tool: "list_owned_objects", args: { owner, object_type, limit, cursor: res.cursor, detail } } } : {})
+     count: objects.length, objects, has_next_page: res.hasNextPage, next_cursor: res.cursor === cursor ? null : res.cursor,
+     ...(res.hasNextPage && (!res.cursor || res.cursor === cursor)
+      ? { page_note: "The object list has more rows but no advancing cursor; this page cannot be continued." } : {}),
+     ...(res.hasNextPage && res.cursor && res.cursor !== cursor ? { next_call: { tool: "list_owned_objects", args: { owner, object_type, limit, cursor: res.cursor, detail } } } : {})
         },
         { objects: { budget: 30_000, keepOrder: true } },
         { full: detail === "full", next_call: { tool: "list_owned_objects", repeat_with: { detail: "full" } } },
@@ -269,8 +271,10 @@ export function registerObjectTools(server: McpServer) {
             text: JSON.stringify({
               dynamic_fields: fields,
               has_next_page: res.hasNextPage,
-              next_cursor: res.cursor,
-              ...(res.hasNextPage && res.cursor
+       next_cursor: res.cursor === cursor ? null : res.cursor,
+       ...(res.hasNextPage && (!res.cursor || res.cursor === cursor)
+        ? { page_note: "The dynamic field list has more rows but no advancing cursor; this page cannot be continued." } : {}),
+       ...(res.hasNextPage && res.cursor && res.cursor !== cursor
                 ? { next_call: { tool: "list_dynamic_fields", args: { parent_id, limit, cursor: res.cursor } } }
                 : {}),
             }),

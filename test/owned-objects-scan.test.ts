@@ -21,6 +21,19 @@ describe("owned object scan bounds", () => {
     expect(full).toMatchObject({ complete: true, objects: [row(0), row(1), row(2)] });
   });
 
+  it("resumes a capped JSON walk at its last page without repeating rows", async () => {
+    listOwnedObjects.mockImplementation(async ({ limit, cursor }: { limit: number; cursor: string | null }) => {
+      const start = Number(cursor ?? "0");
+      const objects = Array.from({ length: Math.min(limit, 3 - start) }, (_, i) => row(start + i));
+      return { objects, hasNextPage: start + objects.length < 3, cursor: String(start + objects.length) };
+    });
+    const first = await listOwnedWithJson("0x1", null, 2);
+    expect(first).toEqual({ objects: [row(0), row(1)], complete: false, nextCursor: "2" });
+    const second = await listOwnedWithJson("0x1", null, 2, first.nextCursor);
+    expect(second).toMatchObject({ objects: [row(2)], complete: true });
+    expect([...first.objects, ...second.objects]).toEqual([row(0), row(1), row(2)]);
+  });
+
   it("does not re-read a page whose cursor has not advanced", async () => {
     listOwnedObjects.mockResolvedValue({ objects: [row(0)], hasNextPage: true, cursor: "same" });
     const result = await listOwnedWithJson("0x1", null, 20);

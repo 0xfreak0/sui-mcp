@@ -24,9 +24,10 @@ export async function listOwnedWithJson(
   owner: string,
   type: string | null,
   max: number,
-): Promise<{ objects: OwnedObjectJson[]; complete: boolean }> {
+ startCursor?: string,
+): Promise<{ objects: OwnedObjectJson[]; complete: boolean; nextCursor?: string }> {
   const objects: OwnedObjectJson[] = [];
-  let cursor: string | null = null;
+ let cursor: string | null = startCursor ?? null;
   for (;;) {
     const page: SuiClientTypes.ListOwnedObjectsResponse<{ json: true }> = await sui.listOwnedObjects({
       owner,
@@ -41,7 +42,9 @@ export async function listOwnedWithJson(
     if (!page.hasNextPage) return { objects, complete: true };
     // More claimed with no cursor to reach it, or the budget spent: either
     // way the set is not whole.
-    if (!page.cursor || page.cursor === cursor || objects.length >= max) return { objects, complete: false };
+  if (!page.cursor || page.cursor === cursor || objects.length >= max) return {
+   objects, complete: false, ...(page.cursor && page.cursor !== cursor ? { nextCursor: page.cursor } : {}),
+  };
     cursor = page.cursor;
   }
 }

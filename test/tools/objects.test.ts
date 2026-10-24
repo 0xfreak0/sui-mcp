@@ -251,6 +251,18 @@ describe("list_owned_objects", () => {
     expect(data.objects[0].owner).toBe("address:0xowner");
     expect(data.next_cursor).toBe("next_page_cursor");
   });
+ it("does not offer a looping continuation for a stale owner cursor", async () => {
+  mockSui.listOwnedObjects.mockResolvedValue({
+   objects: [{ objectId: "0xobj", version: "1", type: "0x2::coin::Coin<0x2::sui::SUI>", digest: "d", owner: { $kind: "AddressOwner", AddressOwner: "0xowner" } }],
+   cursor: "same", hasNextPage: true,
+  });
+  const data = JSON.parse((await tools.get("list_owned_objects")!({ owner: "0xowner", cursor: "same" })).content[0].text);
+  expect(data.has_next_page).toBe(true);
+  expect(data.page_note).toContain("no advancing cursor");
+  expect(data.next_cursor).toBeNull();
+  expect(data.next_call).toBeUndefined();
+ });
+
 });
 
 describe("list_dynamic_fields", () => {
@@ -273,4 +285,15 @@ describe("list_dynamic_fields", () => {
     expect(data.dynamic_fields[0].field_id).toBe("0xf1");
     expect(data.has_next_page).toBe(false);
   });
+ it("does not offer a looping continuation for a stale field cursor", async () => {
+  mockSui.listDynamicFields.mockResolvedValue({
+   dynamicFields: [{ fieldId: "0xf1", type: "0x2::object::ID", valueType: "0x2::sui::SUI" }],
+   cursor: "same", hasNextPage: true,
+});
+  const data = JSON.parse((await tools.get("list_dynamic_fields")!({ parent_id: "0xparent", cursor: "same" })).content[0].text);
+  expect(data.has_next_page).toBe(true);
+  expect(data.page_note).toContain("no advancing cursor");
+  expect(data.next_cursor).toBeNull();
+  expect(data.next_call).toBeUndefined();
+ });
 });

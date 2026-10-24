@@ -425,6 +425,28 @@ describe("get_staking_summary", () => {
     expect(resumed.total_staked_mist).toBe("7000000000");
   });
 
+  it("keeps cursor continuation counts and totals partial even on its final block", async () => {
+    mockSui.listOwnedObjects
+      .mockResolvedValueOnce({
+        objects: [stakedSui("0xs2", "0xp", "2000000000", "1")], hasNextPage: true, cursor: "c2",
+      })
+      .mockResolvedValueOnce({
+        objects: [stakedSui("0xs3", "0xp", "4000000000", "1")], hasNextPage: false, cursor: null,
+      });
+    const handler = tools.get("get_staking_summary")!;
+    const first = JSON.parse((await handler({ address: "0xwallet", max_positions: 1, position_cursor: "c1", detail: "full" })).content[0].text);
+    expect(mockSui.listOwnedObjects.mock.calls[0][0].cursor).toBe("c1");
+    expect(first.position_scan_next_call.args).toMatchObject({ address: "0xwallet", max_positions: 1, position_cursor: "c2", detail: "full" });
+    expect(first.total_staked_mist).toBeNull();
+    const second = JSON.parse((await handler(first.position_scan_next_call.args)).content[0].text);
+    expect(second.positions.map((p: { object_id: string }) => p.object_id)).toEqual(["0xs3"]);
+    expect(second.position_count_note).toContain("block only");
+    expect(second.total_staked_mist).toBeNull();
+    expect(second.complete).toBe(false);
+    expect(second.truncated).toBe(true);
+    expect(second.position_scan_next_call).toBeUndefined();
+  });
+
   it("gives no total when the walk could not reach the end", async () => {
     mockSui.listOwnedObjects.mockResolvedValueOnce({
       objects: [stakedSui("0xs1", "0xp", "1000000000", "1")],

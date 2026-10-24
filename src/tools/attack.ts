@@ -1133,15 +1133,7 @@ export function registerAttackTools(server: McpServer) {
         for (const loss of stateRead.losses.values()) for (const c of loss.deltas.keys()) coins.add(c);
         for (const g of agg.groups) for (const c of g.pool_deltas.keys()) if (isCoinTypeKey(c)) coins.add(c);
         const successfulTxs = read.txs.filter((t) => t.success);
-    const objectTxs = successfulTxs.map((t) => {
-     const moved = movedObjectsOf(t, true);
-     return {
-      digest: t.digest,
-      checkpoint: t.checkpoint,
-      moved,
-      nextObjectOffset: moved.length > MAX_OBJECTS_PER_TX ? nextSpecificObjectOffset(movedObjectsOf(t), moved) : null,
-     };
-    });
+    const objectTxs = successfulTxs.map((t) => ({ digest: t.digest, checkpoint: t.checkpoint, moved: movedObjectsOf(t, true) }));
         const atOf = (tx: AttackTx) => tx.timestampMs === null ? null : tx.timestampMs / 1000;
         let perTx = read.txs.map((tx) => ({ tx, aggregate: aggregateIncident([tx], attackerId ?? undefined, stateRead.losses) }));
         const [prices, , txObjects] = await Promise.all([
@@ -1558,7 +1550,13 @@ export function registerAttackTools(server: McpServer) {
                 ...(txObjects.unread.length ? { objects_unread: txObjects.unread } : {}),
        ...(objectValuePageDigests.length ? {
         objects_unread_follow_up_calls: objectValuePageDigests.map((digest) => ({
-         tool: "analyze_attack_tx", args: { digest, object_offset: objectTxs.find((t) => t.digest === digest)!.nextObjectOffset! },
+         tool: "analyze_attack_tx", args: {
+          digest,
+          object_offset: nextSpecificObjectOffset(
+           movedObjectsOf(successfulTxs.find((t) => t.digest === digest)!),
+           objectTxs.find((t) => t.digest === digest)!.moved,
+          ),
+         },
         }))
        } : {}),
                 ...(txObjects.skipped.length ? { objects_skipped_transactions: txObjects.skipped } : {}),

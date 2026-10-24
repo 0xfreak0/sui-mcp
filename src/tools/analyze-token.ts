@@ -143,12 +143,13 @@ export function registerAnalyzeTokenTools(server: McpServer) {
    liquidity_pool_offset: numArg().int().min(0).optional().describe("Start at this discovered pool after ranking by its current SUI or USDC reserve (default 0)."),
    liquidity_holder_pool: addressArg().optional().describe("For a holder continuation, restrict the page to this discovered pool ID."),
       liquidity_offset: numArg().int().min(0).optional().describe("Start at this holder index within liquidity_holder_pool (default 0)."),
+   liquidity_flagged_done: boolArg().optional().describe("Holder-page continuation marker; keep the value from omitted.next_call to avoid repeating flagged holders."),
       liquidity_max_scan: numArg().int().min(1).max(100_000).optional().describe("Max LP coins or position objects scanned per pool (default 1000, max 100000); follow liquidity_custody.pools[].scan.next_call after a bound."),
       liquidity_time_budget_ms: numArg().int().min(1_000).max(600_000).optional().describe("Wall-clock budget for pool position scans in milliseconds (default 35000, max 600000)."),
       liquidity_venue: z.string().optional().describe("Search one venue; use pool_discovery.venues[].next_call to continue a bounded venue search."),
       liquidity_venue_cursor: z.string().optional().describe("Opaque per-venue cursor; resumes discovery over both SUI and USDC pairs."),
     },
-    async ({ query, include_holders, include_liquidity, liquidity_pool_offset, liquidity_holder_pool, liquidity_offset, holder_max_scan, holder_time_budget_ms, liquidity_max_scan, liquidity_time_budget_ms, liquidity_venue, liquidity_venue_cursor }) => {
+  async ({ query, include_holders, include_liquidity, liquidity_pool_offset, liquidity_holder_pool, liquidity_offset, liquidity_flagged_done, holder_max_scan, holder_time_budget_ms, liquidity_max_scan, liquidity_time_budget_ms, liquidity_venue, liquidity_venue_cursor }) => {
    if (liquidity_offset && !liquidity_holder_pool) return errorResult("liquidity_offset requires liquidity_holder_pool to identify which pool's holders to page.");
       if (liquidity_venue_cursor && !liquidity_venue) return errorResult("liquidity_venue_cursor requires liquidity_venue.");
       const wantHolders = include_holders !== false;
@@ -456,7 +457,9 @@ export function registerAnalyzeTokenTools(server: McpServer) {
      };
             }),
             pairs_searched: discovery.pairs_searched, pools_found: discovery.pools.length,
-            ...(discovery.venues.some((venue) => venue.status !== "complete")
+      ...(liquidity_venue_cursor
+       ? { pools_found_note: "Only pools found in this continuation slice; combine its pages with earlier slices. Follow the venue's next_call while it remains incomplete." }
+       : discovery.venues.some((venue) => venue.status !== "complete")
               ? { pools_found_note: "Lower bound for this search slice; follow each incomplete venue's next_call to inspect later pools." }
               : {}),
             scope: "Only the pairs in pairs_searched on the venues listed were searched. A venue continuation reports only its own search slice. Pools against other coins and on other venues are not included, and a venue whose status is not complete may hold more pools. DeepBook order books have no LP holders and are not inspected for custody.",
@@ -469,6 +472,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
               ...(liquidity_venue_cursor ? { liquidity_venue_cursor } : {}),
               ...(liquidity_max_scan ? { liquidity_max_scan } : {}),
               ...(liquidity_time_budget_ms ? { liquidity_time_budget_ms } : {}),
+       ...(liquidity_flagged_done ? { liquidity_flagged_done } : {}),
             },
           );
     } catch (err) {

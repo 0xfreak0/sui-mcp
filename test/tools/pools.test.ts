@@ -176,7 +176,8 @@ describe("find_pools", () => {
     expect(resumed.venues[0].status).toBe("complete");
     expect(resumed.venues[0].next_call).toBeUndefined();
     expect(resumed.total).toBe(1);
-    expect(resumed.total_is_lower_bound).toBeUndefined();
+    expect(resumed.total_is_lower_bound).toBe(true);
+    expect(resumed.total_note).toContain("earlier slices");
     expect(reads.filter((r) => r.type === reverse)).toHaveLength(1);
     expect(reads.filter((r) => r.type === forward).map((r) => r.after)).toEqual([
       null, ...Array.from({ length: 20 }, (_, i) => String(i + 1)),
@@ -184,6 +185,57 @@ describe("find_pools", () => {
     expect([...initial.pools, ...resumed.pools].map((p: { pool_id: string }) => p.pool_id)).toEqual([
       ...Array.from({ length: 20 }, (_, i) => `0xforward${i}`), "0xreverse", "0xforward20",
     ]);
+  });
+
+  it("continues failed selectors from their last successful page and retries a failed first page", async () => {
+    const bluefin = "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267::pool::Pool";
+    const forward = `${bluefin}<${SUI}, ${USDC}>`;
+    const reverse = `${bluefin}<${USDC}, ${SUI}>`;
+    const reads: Array<{ type: string; after: string | null }> = [];
+    let failedForward = false;
+    let failedReverse = false;
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { type: string; after: string | null }) => {
+      reads.push(vars);
+      if (vars.type === reverse) {
+        if (!failedReverse) {
+          failedReverse = true;
+          throw new Error("Temporary reverse read failure");
+        }
+        return page([node("0xreverse", reverse)]);
+      }
+      if (vars.after === "p2") {
+        if (!failedForward) {
+          failedForward = true;
+          throw new Error("Temporary forward read failure");
+        }
+        return page([node("0xlast", forward)]);
+      }
+      return page([node("0xfirst", forward)], "p2");
+    });
+    const initial = JSON.parse((await tools.get("find_pools")!({ token_a: SUI, token_b: USDC, protocol: "bluefin" })).content[0].text);
+    expect(initial.venues[0].status).toBe("failed");
+    expect(initial.pools.map((p: { pool_id: string }) => p.pool_id)).toEqual(["0xfirst"]);
+    const next = initial.venues[0].next_call;
+    expect(next.args.venue_cursor).toEqual(expect.any(String));
+    const resumed = JSON.parse((await tools.get("find_pools")!(next.args)).content[0].text);
+    expect(resumed.venues[0].status).toBe("complete");
+    expect([...initial.pools, ...resumed.pools].map((p: { pool_id: string }) => p.pool_id)).toEqual(["0xfirst", "0xlast", "0xreverse"]);
+    expect(reads).toEqual([
+      { type: forward, after: null }, { type: reverse, after: null },
+      { type: forward, after: "p2" }, { type: forward, after: "p2" },
+      { type: reverse, after: null },
+    ]);
+  });
+
+  it("stops on an unchanged end cursor rather than exposing a looping continuation", async () => {
+    const bluefin = "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267::pool::Pool";
+    const forward = `${bluefin}<${SUI}, ${USDC}>`;
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { type: string; after: string | null }) =>
+      vars.type === forward ? page([node("0xfirst", forward)], "same") : page([]));
+    const data = JSON.parse((await tools.get("find_pools")!({ token_a: SUI, token_b: USDC, protocol: "bluefin" })).content[0].text);
+    expect(data.venues[0].status).toBe("incomplete");
+    expect(data.venues[0].next_call).toBeUndefined();
+    expect(mockGqlQuery).toHaveBeenCalledTimes(3);
   });
 
   it("stops a coin's pool discovery at its time budget and marks the venue incomplete", async () => {

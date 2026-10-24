@@ -191,6 +191,42 @@ describe("get_wallet_overview positions", () => {
     expect(next.holdings_truncated).toBe(true);
     expect(next.holdings_next_call).toBeUndefined();
   });
+  it("resumes after successful balance pages when the following page fails", async () => {
+    const reads: Array<string | undefined> = [];
+    let failed = false;
+    const node = (i: number) => {
+      const coin = `0x${i.toString(16).padStart(64, "0")}::coin::COIN`;
+      return { coinType: { repr: coin }, totalBalance: "1000000000", coinBalance: "1000000000", addressBalance: "0" };
+    };
+    mockGqlQuery.mockImplementation(async (_q: string, v: { balanceAfter?: string; after?: string }) => {
+      const after = v.after ?? v.balanceAfter;
+      if (_q.includes("balances(first:")) reads.push(after);
+      if (after === "c2" && !failed) {
+        failed = true;
+        throw new Error("Temporary balance read failure");
+      }
+      const index = after ? Number(after.slice(1)) + 1 : 1;
+      const balances = {
+        nodes: [node(index)],
+        pageInfo: { hasNextPage: index < 3, endCursor: index < 3 ? `c${index}` : null },
+      };
+      return v.after ? { address: { balances } } : {
+        address: { defaultNameRecord: null, balances },
+        transactions: { nodes: [] },
+      };
+    });
+    const first = JSON.parse((await tools.get("get_wallet_overview")!({ address: W, include_prices: false })).content[0].text);
+    expect(first.holdings_count).toBe(2);
+    expect(first.holdings_next_call.args.balance_cursor).toBe("c2");
+    const second = JSON.parse((await tools.get("get_wallet_overview")!(first.holdings_next_call.args)).content[0].text);
+    expect(second.holdings_count).toBe(1);
+    expect(second.holdings_next_call).toBeUndefined();
+    expect(reads).toEqual([undefined, "c1", "c2", "c2"]);
+    expect([...first.holdings, ...second.holdings].map((h: { coin_type: string }) => h.coin_type)).toEqual([
+      node(1).coinType.repr, node(2).coinType.repr, node(3).coinType.repr,
+    ]);
+  });
+
   it("offers a raised valuation scan call without discarding the balance block", async () => {
     bounded = true;
     const first = await overview(false);

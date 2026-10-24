@@ -183,6 +183,13 @@ describe("analyze_token pool discovery continuation", () => {
     });
     await tools.get("analyze_token")!(first.pool_discovery.venues[0].next_call.args);
     expect(mockDiscoverCoinPools).toHaveBeenLastCalledWith(KONG_SUI, "cetus", "both-pairs-cursor");
+    mockDiscoverCoinPools.mockResolvedValue({
+      pools: [],
+      pairs_searched: [],
+      venues: [{ venue: "cetus", status: "complete", searched: 1, pages: 1 }],
+    });
+    const resumed = JSON.parse((await tools.get("analyze_token")!(first.pool_discovery.venues[0].next_call.args)).content[0].text);
+    expect(resumed.pool_discovery.pools_found_note).toContain("earlier slices");
   });
 });
 

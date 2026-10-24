@@ -90,13 +90,44 @@ describe("liquidity custody", () => {
     expect([...first.holders, ...second.holders]).toEqual(all);
   });
 
+  it("does not repeat flagged holders placed beyond the first omitted wallet", () => {
+    const wallets = Array.from({ length: 130 }, (_, id) => ({ address: `0xw${id}`, kind: "wallet" as const, amount_raw: "1" }));
+    const flagged = { address: "0xpool", kind: "object" as const, amount_raw: "1" };
+    const holders = [...wallets.slice(0, 120), flagged, ...wallets.slice(120)];
+    const first = capLiquidityHolders(holders, 0, "0x2::sui::SUI", 0, "0xabc", 100_000);
+    expect(first.holders).toContainEqual(flagged);
+    const next = first.omitted?.next_call;
+    expect(next && "args" in next ? next.args.liquidity_flagged_done : null).toBe(true);
+    const second = capLiquidityHolders(holders, nextOffset(first), "0x2::sui::SUI", 0, "0xabc", 100_000, { liquidity_flagged_done: true });
+    expect([...first.holders, ...second.holders].map((h) => h.address)).toEqual([
+      ...wallets.slice(0, 100).map((h) => h.address), flagged.address, ...wallets.slice(100).map((h) => h.address),
+    ]);
+    expect([...first.holders, ...second.holders].filter((h) => h.address === flagged.address)).toHaveLength(1);
+    expect(second.omitted).toBeUndefined();
+  });
+
+  it("advances from offset zero when mandatory holders consume the whole first-page budget", () => {
+    const holders = [
+      { address: "0xwallet", kind: "wallet" as const, amount_raw: "1" },
+      ...Array.from({ length: 120 }, (_, i) => ({ address: `0xo${i}`, kind: "object" as const, amount_raw: "1" })),
+    ];
+    const first = capLiquidityHolders(holders, 0, "0x2::sui::SUI", 0, "0xabc", 100);
+    expect(first.holders.map((h) => h.address)).toEqual(holders.slice(1).map((h) => h.address));
+    expect(nextOffset(first)).toBe(0);
+    const next = capLiquidityHolders(holders, 0, "0x2::sui::SUI", 0, "0xabc", 100, { liquidity_flagged_done: true });
+    expect(next.holders).toEqual([holders[0]]);
+    expect(next.omitted).toBeUndefined();
+  });
+
   // Event shapes read off mainnet: Turbos BurnEvent in 8c1NTV8RxFZBJkhqGXiRevuiNQUJYoVSEHAks1EFkkhe,
   // FlowX v2 pair::LiquidityRemoved and Cetus pool::RemoveLiquidityEvent.
   const turbosPool = "0x198af6ff81028c6577e94465d534c4e2cfcbbab06a95724ece7011c55a9d1f5a";
-  const turbosBurn = (pool: string, delta: string) => ({ contents: {
+  const turbosBurn = (pool: string, delta: string) => ({
+    contents: {
     type: { repr: "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::BurnEvent" },
     json: { pool, owner: "0x11dd706586a987b8af3191da762c421f1ce45437057018a0c248dffb1cf65ce8", amount_a: "2965163159", amount_b: "0", liquidity_delta: delta },
-  } });
+    }
+  });
 
   it("reads a removal from every searched venue's own event, not only Remove*Liquidity names", () => {
     const pool = { pool_id: turbosPool, token_a: null, token_b: null };

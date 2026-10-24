@@ -266,7 +266,7 @@ export function registerPoolTools(server: McpServer) {
         return errorResult(`Unsupported protocol: ${protocolFilter}. Supported: ${POOL_PROTOCOLS.join(", ")}.`);
       }
       if (venue_cursor && !wanted) return errorResult("venue_cursor requires the protocol in the venue's next_call.");
-      let resume: Array<[number, string]> | undefined;
+   let resume: Array<[number, string | null]> | undefined;
       if (venue_cursor) {
         try {
           resume = parseVenueCursor(venue_cursor);
@@ -315,7 +315,12 @@ export function registerPoolTools(server: McpServer) {
             venues,
       pairs_searched: result.pairs_searched,
       total: result.pools.length,
-            ...(incomplete ? { total_is_lower_bound: true, total_note: "Lower bound: one or more venue searches did not finish. On a venue continuation, total counts only pools found in that call." } : {}),
+      ...(incomplete || venue_cursor ? {
+       total_is_lower_bound: true,
+       total_note: venue_cursor
+        ? "This continuation counts only pools found in this search slice, not those in earlier slices or other venues. Combine its pages with the preceding results."
+        : "Lower bound: one or more venue searches did not finish. Follow each venue's next_call to read later pools.",
+      } : {}),
       ...payload,
       offset: start,
             ...(incomplete
@@ -342,14 +347,15 @@ const POOL_PROTOCOLS = [
 type PoolProtocol = (typeof POOL_PROTOCOLS)[number];
 
 /** Only opaque cursors this server emitted may select a later slice of a venue. */
-function parseVenueCursor(cursor: string): Array<[number, string]> {
+function parseVenueCursor(cursor: string): Array<[number, string | null]> {
   const parsed: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
   if (!Array.isArray(parsed) || !parsed.length || parsed.length > 100 ||
     parsed.some((entry) => !Array.isArray(entry) || entry.length !== 2 ||
-      !Number.isSafeInteger(entry[0]) || entry[0] < 0 || typeof entry[1] !== "string" || !entry[1])) {
+   !Number.isSafeInteger(entry[0]) || entry[0] < 0 ||
+   (entry[1] !== null && (typeof entry[1] !== "string" || !entry[1])))) {
     throw new Error("Invalid venue_cursor");
   }
-  const resume = parsed as Array<[number, string]>;
+ const resume = parsed as Array<[number, string | null]>;
   if (new Set(resume.map(([index]) => index)).size !== resume.length) throw new Error("Duplicate venue selector");
   return resume;
 }
@@ -471,12 +477,13 @@ async function readPoolPages(type: string, withJson: boolean, deadline?: number,
     );
    if (!data.objects?.pageInfo || !Array.isArray(data.objects.nodes)) throw new Error("Pool list response was incomplete");
   } catch (err) {
-   return { nodes: out, pages: page + 1, complete: false, error: describeError(err, getNetwork()) };
+   return { nodes: out, pages: page + 1, complete: false, cursor: after ?? undefined, error: describeError(err, getNetwork()) };
   }
     out.push(...data.objects.nodes);
   if (!data.objects.pageInfo.hasNextPage) return { nodes: out, pages: page + 1, complete: true };
-    after = data.objects.pageInfo.endCursor;
-  if (!after) return { nodes: out, pages: page + 1, complete: false, error: "Pool list has more rows but no continuation cursor" };
+  const nextCursor = data.objects.pageInfo.endCursor;
+  if (!nextCursor || nextCursor === after) return { nodes: out, pages: page + 1, complete: false, error: "Pool list has more rows but no advancing continuation cursor" };
+  after = nextCursor;
   }
   return { nodes: out, pages: MAX_POOL_PAGES, complete: false, cursor: after ?? undefined, error: `Stopped after ${MAX_POOL_PAGES} pages (${out.length} objects); more pools remain` };
 }
@@ -572,7 +579,7 @@ async function flowxPairs(pairs: Array<[string, string]>): Promise<{ pools: Pool
  return { pools, status };
 }
 
-async function searchVenue(protocol: PoolProtocol, pairs: Array<[string, string]>, deadline?: number, resume?: Array<[number, string]>): Promise<{ pools: PoolCandidate[]; status: PoolVenueStatus }> {
+async function searchVenue(protocol: PoolProtocol, pairs: Array<[string, string]>, deadline?: number, resume?: Array<[number, string | null]>): Promise<{ pools: PoolCandidate[]; status: PoolVenueStatus }> {
  if (protocol === "flowx_v2") return flowxPairs(pairs);
  const status: PoolVenueStatus = { venue: protocol, status: "complete", searched: 0, pages: 0 };
  if (protocol === "turbos") status.pages = 1; // PoolConfig fee-tier read.
@@ -602,12 +609,12 @@ async function searchVenue(protocol: PoolProtocol, pairs: Array<[string, string]
     type, base, index, read: await readPoolPages(type, protocol === "aftermath", deadline, after),
   })));
   status.searched = requested.length;
-  const pending: Array<[number, string]> = [];
+ const pending: Array<[number, string | null]> = [];
   for (const { type, base, index, read } of reads) {
   status.pages += read.pages;
   if (!read.complete) {
-      if (read.cursor) pending.push([index, read.cursor]);
-   const capped = read.error?.startsWith("Stopped ") || read.error?.includes("no continuation cursor");
+   if (read.cursor || !read.error?.startsWith("Pool list has more rows")) pending.push([index, read.cursor ?? null]);
+   const capped = read.error?.startsWith("Stopped ") || read.error?.includes("no advancing continuation cursor");
    if (!capped || status.status !== "failed") status.status = capped ? "incomplete" : "failed";
    status.error = [status.error, `${type}: ${read.error}`].filter(Boolean).join("; ");
   }
@@ -635,11 +642,11 @@ async function searchVenue(protocol: PoolProtocol, pairs: Array<[string, string]
    }
   }
  }
-  if (pending.length && status.status !== "failed") status.next_cursor = Buffer.from(JSON.stringify(pending)).toString("base64url");
+ if (pending.length) status.next_cursor = Buffer.from(JSON.stringify(pending)).toString("base64url");
  return { pools, status };
 }
 
-async function searchPoolPairs(pairs: Array<[string, string]>, protocols: PoolProtocol[], deadline?: number, resume?: Array<[number, string]>): Promise<PoolDiscovery> {
+async function searchPoolPairs(pairs: Array<[string, string]>, protocols: PoolProtocol[], deadline?: number, resume?: Array<[number, string | null]>): Promise<PoolDiscovery> {
  const unique = new Map<string, [string, string]>();
  for (const [a, b] of pairs) unique.set(a < b ? `${a}|${b}` : `${b}|${a}`, [a, b]);
  const distinct = [...unique.values()];

@@ -220,7 +220,7 @@ export function registerWorkflowTools(server: McpServer) {
         holdings_truncated: Boolean(balance_cursor) || hasNextPage,
         ...(balance_cursor ? { holdings_page_from: balance_cursor } : {}),
         ...(balancesUnread
-          ? { holdings_next_call: { tool: "get_wallet_overview", args: { address, include_prices, include_nfts, detail, ...operatedArgs, ...(owned_max_scan ? { owned_max_scan } : {}), ...(balance_cursor ? { balance_cursor } : {}) } } }
+     ? { holdings_next_call: { tool: "get_wallet_overview", args: { address, include_prices, include_nfts, detail, ...operatedArgs, ...(owned_max_scan ? { owned_max_scan } : {}), balance_cursor: balancesCursor } } }
           : hasNextPage && pageInfo.endCursor && pageInfo.endCursor !== balancesCursor
             ? { holdings_next_call: { tool: "get_wallet_overview", args: { address, include_prices, include_nfts, detail, ...operatedArgs, ...(owned_max_scan ? { owned_max_scan } : {}), balance_cursor: pageInfo.endCursor } } }
             : {}),

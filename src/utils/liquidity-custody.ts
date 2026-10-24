@@ -54,11 +54,15 @@ export function capLiquidityHolders<T extends LiquidityDisplayRow>(
   holders: T[], offset: number, coinType: string, poolOffset: number, poolId: string, budget = LIQUIDITY_HOLDER_BUDGET,
   continuationArgs: Record<string, unknown> = {},
 ) {
-  const page = holders.slice(offset);
-  const indices = new Map(page.map((row, index) => [row, offset + index]));
+ // Non-wallet rows are mandatory on the first page, even when they sort
+ // beyond its ordinary prefix. They were already shown on later pages.
+ const flaggedDone = continuationArgs.liquidity_flagged_done === true;
+ const page = holders.slice(offset).filter((row) => !flaggedDone || row.kind === "wallet");
+ const pageIndices = new Map(page.map((row, index) => [row, index]));
   const nextCall = (nextOffset: number): NextCall => ({
     tool: "analyze_token", args: {
       query: coinType, include_holders: false, liquidity_pool_offset: poolOffset, liquidity_holder_pool: poolId, liquidity_offset: nextOffset, ...continuationArgs,
+   liquidity_flagged_done: true,
     }
   });
   const { payload } = capPayload(
@@ -70,11 +74,11 @@ export function capLiquidityHolders<T extends LiquidityDisplayRow>(
         budget, limit: LIQUIDITY_HOLDER_DISPLAY_LIMIT, keepOrder: true,
         keep: (row: T) => row.kind !== "wallet",
         brief: (row: T) => ({ address: row.address, kind: row.kind, amount_raw: row.amount_raw }),
-        covers: (row: T) => [indices.get(row)!],
+    covers: (row: T) => [pageIndices.get(row)!],
         next_call: nextCall(offset + 1),
       } satisfies ListCap<T>
     },
-    { full: false, stored: { holders }, next_call: nextCall(offset + 1) }
+  { full: false, stored: { holders: page }, next_call: nextCall(offset + 1) }
   );
   const omitted = payload.omitted as {
     next_call: NextCall;
@@ -82,10 +86,11 @@ export function capLiquidityHolders<T extends LiquidityDisplayRow>(
   } | undefined;
   const shown = payload.holders as T[];
   if (omitted) {
-    const next = nextCall(offset + omitted.lists.holders.from);
+  const from = holders.indexOf(page[omitted.lists.holders.from]!);
+  const next = nextCall(from);
     omitted.next_call = next;
     omitted.lists.holders.next_call = next;
-    omitted.lists.holders.from += offset;
+  omitted.lists.holders.from = from;
   }
   return { holders: shown, ...(omitted ? { truncated: true, omitted } : {}) };
 }
@@ -522,6 +527,8 @@ function reserveOf(pool: PoolCandidate, state: { type: string; json: Record<stri
 
 /** Chain-derived, current holdings only. Never treat missing positions as a claim about past liquidity. */
 export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandidate[], holderOffset = 0, poolOffset = 0, holderPool?: string, scanLimit = LIQUIDITY_POSITION_SCAN_LIMIT, timeBudgetMs = LIQUIDITY_TIME_BUDGET_MS, continuationArgs: Record<string, unknown> = {}) {
+ const discoveryArgs = { ...continuationArgs };
+ delete discoveryArgs.liquidity_flagged_done;
   coinType = normalizeStructTag(coinType);
   const deadline = Date.now() + timeBudgetMs;
   const publisher = await resolvePublisher(coinType.split("::")[0]!);
@@ -632,7 +639,7 @@ export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandi
           next_call: {
             tool: "analyze_token", args: {
               query: coinType, include_holders: false, liquidity_pool_offset: poolOffset, liquidity_holder_pool: pool.pool_id,
-              ...continuationArgs,
+       ...discoveryArgs,
               liquidity_max_scan: Math.min(100_000, Math.max(scanLimit + 1, scanLimit * 2)),
               liquidity_time_budget_ms: Math.min(600_000, Math.max(timeBudgetMs + 1_000, timeBudgetMs * 2)),
             }
@@ -669,7 +676,7 @@ export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandi
     ...(poolOffset + LIQUIDITY_POOL_LIMIT < candidates.length ? {
       next_call: {
         tool: "analyze_token", args: {
-          query: coinType, include_holders: false, liquidity_pool_offset: poolOffset + LIQUIDITY_POOL_LIMIT, ...continuationArgs,
+     query: coinType, include_holders: false, liquidity_pool_offset: poolOffset + LIQUIDITY_POOL_LIMIT, ...discoveryArgs,
         }
       }
     } : {}),

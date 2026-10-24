@@ -3,23 +3,26 @@ import {
   analyzePackageModules,
   capabilityLimitNextCall,
   versionGateNextCall,
+  registerAnalyzePackageTools,
   bytecodeFindings,
   type AnalyzedModule,
 } from "../../src/tools/analyze-package.js";
 
 describe("capabilityLimitNextCall", () => {
-  it("raises only the limits that cut the audit and stops at the schema maximum", () => {
-    expect(capabilityLimitNextCall({ authority_structs: 4, witness_checks: 2 }, {})).toEqual({
+  it("continues with the opaque audit cursor even when every configured cap is at its maximum", () => {
+    expect(capabilityLimitNextCall("stage-offset")).toEqual({
       tool: "analyze_package",
-      repeat_with: { authority_structs: 24, witness_checks: 24 },
+      repeat_with: { capability_cursor: "stage-offset" },
     });
-    expect(capabilityLimitNextCall({ registry_probes: 3, publish_pages: 1 },
-      { registry_probes: 350, publish_pages: 12 })).toEqual({
-        tool: "analyze_package",
-        repeat_with: { registry_probes: 400, publish_pages: 20 },
+    expect(capabilityLimitNextCall(undefined)).toBeNull();
       });
-    expect(capabilityLimitNextCall({ authority_structs: 1 }, { authority_structs: 48 })).toBeNull();
   });
+it("advertises the capability cursor in analyze_package's input schema", () => {
+  let schema: Record<string, { safeParse(value: unknown): { success: boolean } }> | undefined;
+  registerAnalyzePackageTools({
+    tool: (_name: string, _description: string, input: typeof schema) => { schema = input; },
+  } as unknown as Parameters<typeof registerAnalyzePackageTools>[0]);
+  expect(schema?.capability_cursor.safeParse("opaque-cursor").success).toBe(true);
 });
 
 it("continues beyond the maximum version bound without revisiting older versions", () => {

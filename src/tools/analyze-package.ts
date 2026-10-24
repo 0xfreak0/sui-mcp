@@ -406,22 +406,10 @@ function publicApi(mod: AnalyzedModule): string[] {
     });
 }
 
-const AUDIT_LIMITS = { publish_pages: [6, 20], authority_structs: [12, 48], registry_probes: [200, 400], witness_checks: [12, 48] } as const;
 const MAX_VERSION_GATE_READS = 120;
 
-export function capabilityLimitNextCall(
- hit: { publish_pages?: number; authority_structs?: number; registry_probes?: number; witness_checks?: number } | undefined,
- current: { publish_pages?: number; authority_structs?: number; registry_probes?: number; witness_checks?: number },
-) {
- if (!hit) return null;
- const repeat_with: Record<string, number> = {};
- for (const name of Object.keys(AUDIT_LIMITS) as Array<keyof typeof AUDIT_LIMITS>) {
-  if (!hit[name]) continue;
-  const [initial, maximum] = AUDIT_LIMITS[name];
-  const value = current[name] ?? initial;
-  if (value < maximum) repeat_with[name] = Math.min(maximum, value * 2);
- }
- return Object.keys(repeat_with).length ? { tool: "analyze_package", repeat_with } : null;
+export function capabilityLimitNextCall(cursor: string | undefined) {
+ return cursor ? { tool: "analyze_package", repeat_with: { capability_cursor: cursor } } : null;
 }
 
 export function versionGateNextCall(nextOffset: number | undefined) {
@@ -444,13 +432,15 @@ export function registerAnalyzePackageTools(server: McpServer) {
         .optional()
         .describe("Audit who holds the package's UpgradeCap/TreasuryCap/admin caps (default: true)"),
    publish_pages: numArg().int().min(1).max(20).optional()
-    .describe("Publish transaction object-change pages to inspect (default 6, max 20). Raise when capabilities.limits_hit.publish_pages is set."),
+    .describe("Publish transaction object-change pages per segment (default 6, max 20). Follow capabilities.next_call for more."),
    authority_structs: numArg().int().min(1).max(48).optional()
-    .describe("Authority-named types to scan (default 12, max 48). Raise when capabilities.limits_hit.authority_structs is set."),
+    .describe("Authority-named types per segment (default 12, max 48). Follow capabilities.next_call for more."),
    registry_probes: numArg().int().min(1).max(400).optional()
-    .describe("Key structs to check for a registered coin (default 200, max 400). Raise when capabilities.limits_hit.registry_probes is set."),
+    .describe("Key structs checked for registered coins per segment (default 200, max 400). Follow capabilities.next_call for more."),
    witness_checks: numArg().int().min(1).max(48).optional()
-    .describe("Unregistered witness types to check for a coin (default 12, max 48). Raise when capabilities.limits_hit.witness_checks is set."),
+    .describe("Unregistered witness types checked per segment (default 12, max 48). Follow capabilities.next_call for more."),
+   capability_cursor: z.string().optional()
+    .describe("Opaque continuation from capabilities.next_call; resumes the next unscanned page, type or probe without repeating earlier reads."),
    max_versions_compared: numArg().int().min(2).max(MAX_VERSION_GATE_READS).optional()
     .describe("Package versions compared in one segment, including the newest (default 30, max 120); follow bytecode_scan.version_gates.next_call for more."),
    version_offset: numArg().int().min(0).optional()
@@ -467,7 +457,7 @@ export function registerAnalyzePackageTools(server: McpServer) {
         .describe("Only these modules' full signatures and struct shapes; others omitted. Omit for all modules at the chosen detail."),
     },
   async ({ package_id, include_disassembly, audit_capabilities, detail, modules: wantedModules,
-   publish_pages, authority_structs, registry_probes, witness_checks, max_versions_compared, version_offset }) => {
+   publish_pages, authority_structs, registry_probes, witness_checks, max_versions_compared, version_offset, capability_cursor }) => {
       try {
         const packageId = await resolvePackageId(package_id);
         const { response: res } = await sui.movePackageService.getPackage({
@@ -536,7 +526,7 @@ export function registerAnalyzePackageTools(server: McpServer) {
         // read alongside it, for checks older versions lack.
         const [capabilities, versionGates] = await Promise.all([
      audit_capabilities === false ? undefined : auditPackageCapabilities(packageId, rootPublisher.publisher, modules,
-      { publish_pages, authority_structs, registry_probes, witness_checks }),
+      { publish_pages, authority_structs, registry_probes, witness_checks }, capability_cursor),
      scanVersionGates(versionId, bytecode.texts ? { package_id: versionId, disassembly: bytecode.texts } : undefined,
       max_versions_compared, version_offset).then(
             (gates) => ({ gates, unavailable: null }),
@@ -546,8 +536,7 @@ export function registerAnalyzePackageTools(server: McpServer) {
        },
           ),
         ]);
-    const auditNextCall = capabilityLimitNextCall(capabilities?.limits_hit,
-     { publish_pages, authority_structs, registry_probes, witness_checks });
+    const auditNextCall = capabilityLimitNextCall(capabilities?.next_cursor);
     const gateNextCall = versionGateNextCall(versionGates.gates?.next_offset);
         const gate = versionGates.gates ? versionGateFinding(versionGates.gates, normalizeSuiAddress(versionId), full) : null;
         if (gate?.finding) findings.push(gate.finding);
@@ -632,6 +621,8 @@ export function registerAnalyzePackageTools(server: McpServer) {
             ? {
        capabilities: {
         ...capabilities,
+        // The opaque state can exceed the text-field limit; next_call keeps its argument intact.
+        next_cursor: undefined,
         capabilities: full ? capabilities.capabilities : groupCapabilities(capabilities.capabilities),
         ...(auditNextCall ? { next_call: auditNextCall } : {}),
        },
@@ -654,7 +645,7 @@ export function registerAnalyzePackageTools(server: McpServer) {
           "analyze_package",
      {
       package_id, include_disassembly, audit_capabilities, modules: wantedModules,
-      publish_pages, authority_structs, registry_probes, witness_checks, max_versions_compared, version_offset
+      publish_pages, authority_structs, registry_probes, witness_checks, capability_cursor, max_versions_compared, version_offset
      },
           payload,
           {

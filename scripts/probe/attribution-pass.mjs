@@ -228,8 +228,16 @@ try {
   console.log("\nscreen_address on the attacker");
   const screen = await call("screen_address", { address: NEMO, hops: 1 });
   const cctp = (screen.exposures ?? []).find((e) => e.category === "bridge" && /CCTP/.test(e.label ?? ""));
-  const cctpSenders = await Promise.all((cctp?.digests ?? []).map(rawSender));
-  ck("eight CCTP exits, each signed by the attacker", cctp?.exit_count === 8 && cctpSenders.length === 8 && cctpSenders.every((s) => s === NEMO), short(cctp?.exit_count));
+  const cctpDigests = [...(cctp?.digests ?? [])];
+  let digestPage = screen.digest_listing?.next_call;
+  while (digestPage) {
+    const next = await call(digestPage.tool, { address: NEMO, hops: 1, ...digestPage.repeat_with });
+    const nextCctp = (next.exposures ?? []).find((e) => e.category === "bridge" && /CCTP/.test(e.label ?? "") && e.path?.join() === cctp?.path?.join());
+    cctpDigests.push(...(nextCctp?.digests ?? []));
+    digestPage = next.digest_listing?.next_call;
+  }
+  const cctpSenders = await Promise.all(cctpDigests.map(rawSender));
+  ck("eight CCTP exits, each signed by the attacker", cctp?.exit_count === 8 && cctpSenders.length === 8 && new Set(cctpDigests).size === 8 && cctpSenders.every((s) => s === NEMO), `${cctp?.exit_count} exits, ${cctpSenders.length} digests`);
   ck("the subject's own label is malicious and cited", screen.subject?.label?.category === "malicious" && /^https:/.test(screen.subject?.label?.source_url ?? ""));
 
   // ---- build_wallet_edges -------------------------------------------------

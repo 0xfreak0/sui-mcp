@@ -61,6 +61,45 @@ network, in the same order, without a limit. `detail: "full"` has no size cap;
 an explicit `limit` still applies. An `address` lookup always returns the
 single validator's details.
 
+## Bounded scan continuations
+
+`list_owned_objects` and `list_dynamic_fields` return `next_call` only when
+their cursor advances. If the provider says more rows exist but returns the
+same cursor, the response identifies those rows as unreachable; repeating
+that cursor cannot retrieve them.
+
+`find_funding_source` includes `paid_in` only on a continuation to preserve
+the established-funder stop at the previous hop. Omit it when investigating
+an address on its own. `screen_address` pages bridge digests five per call.
+For `summarize_address_flows` and `analyze_attack_tx`, an object follow-up
+offset indexes the deep-dive tool's full object list, including objects
+excluded from the summary's valuation. `analyze_attack_tx` accepts
+`state_read_multiplier` up to 1000; a scan still capped there reports
+incomplete state.
+
+`resolve_protocol_packages` uses `version_offset` to page the combined
+lineage newest first, eight versions by default. Its activity result covers
+only the versions probed in that segment. `analyze_package` uses a zero-based
+older-version `version_offset`; `bytecode_scan.version_gates.next_call`
+advances it by the `max_versions_compared` segment size. Findings cover that
+segment's older versions, with the newest version repeated as the comparison
+reference. `capabilities.next_call` carries `capability_cursor` through
+publish pages, authority structs, registry probes and witness checks.
+Capability rows cover the current segment; mint-authority conclusions require
+the last segment.
+
+`trace_object_history` returns `owner_change_next_call` with
+`owner_change_cursor` for unresolved checkpoint ranges and their owners at
+both ends. The resumed search examines only those ranges. `analyze_multisig`
+allows 20 history reads per call and provides a continuation: an empty page
+whose cursor advanced is not the end. `decompile_module` returns an error
+when a module cannot be read, rather than presenting missing source.
+`get_package_dependency_graph` lists failed dependencies under `unexpanded`.
+
+The DeepBook fills indexer has no cursor, so `deepbook_trades` cannot exhaust
+all fills at one timestamp. `get_nft_sales` can still exceed its maximum
+`max_pages` within a busy `hours` window; narrow the window to read more.
+
 ## Scan-limited transaction pages
 
 `query_transactions` fills a page to `limit` across several reads when the

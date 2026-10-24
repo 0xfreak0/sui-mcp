@@ -137,8 +137,10 @@ across Cetus, DeepBook v2/v3, Turbos, BlueMove v1, Bluefin, Momentum, FlowX
 CLMM/v2, Magma, Aftermath AMM and Kriya v2. `protocol` narrows the search
 to one venue. The `venues` statuses report complete, capped and failed
 searches separately; an empty pool list covers only the searched pair and
-venues. `total` counts every pool found; the list pages at about 30k
-characters, and `omitted.next_call` repeats the call with the next `offset`.
+venues. `total` counts the pools found in this call; on a resumed venue
+slice it is a lower bound for that slice, not a cumulative count. A capped or
+failed venue provides a retryable per-venue `next_call` with `venue_cursor`.
+The displayed list pages separately through `omitted.next_call` and `offset`.
 
 ```json
 {"token_a":"SUI","token_b":"USDC","protocol":"cetus"}
@@ -156,6 +158,9 @@ their current SUI or USDC reserve in USD (`counterpart_reserve_usd`).
 other pairs and other venues. Each pool gives `reserve_coin_raw` and
 `counterpart_reserve`; a drained pool can hold a large reserve of the queried
 coin and almost none of the other.
+`analyze_token` uses the same per-slice lower-bound rule when pool discovery
+continues. A failed venue remains retryable rather than counting as an empty
+venue.
 
 - **Fungible LP coins** (BlueMove, FlowX v2, Aftermath, Kriya's LP token): the
   scan reads LP coin and address-balance holders, up to 1,000 objects and 100
@@ -217,4 +222,5 @@ LP may no longer appear among live holders. Use `trace_object_history` on the
 position or `get_balance(at_checkpoint)` on the LP coin holder to check the
 incident time. `liquidity_custody.next_call` pages further pools. Each pool's
 `omitted.next_call` binds `liquidity_holder_pool` to that pool and advances
-its `liquidity_offset`, so pagination never skips another pool's holders.
+its `liquidity_offset`; `liquidity_flagged_done` records flagged holders already
+shown so later pages do not repeat them.

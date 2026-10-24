@@ -28,11 +28,13 @@ Scan a Move package's API, struct shapes and heuristic risks: freeze/denylist, m
 | `package_id` | string | yes | Package ID (0x...) or MVR name (@org/app) |
 | `include_disassembly` | boolean | no | Include GraphQL disassembly for each module (default: false) |
 | `audit_capabilities` | boolean | no | Audit who holds the package's UpgradeCap/TreasuryCap/admin caps (default: true) |
-| `publish_pages` | integer (1 to 20) | no | Publish transaction object-change pages to inspect (default 6, max 20). Raise when capabilities.limits_hit.publish_pages is set. |
-| `authority_structs` | integer (1 to 48) | no | Authority-named types to scan (default 12, max 48). Raise when capabilities.limits_hit.authority_structs is set. |
-| `registry_probes` | integer (1 to 400) | no | Key structs to check for a registered coin (default 200, max 400). Raise when capabilities.limits_hit.registry_probes is set. |
-| `witness_checks` | integer (1 to 48) | no | Unregistered witness types to check for a coin (default 12, max 48). Raise when capabilities.limits_hit.witness_checks is set. |
-| `max_versions_compared` | integer (2 to 120) | no | Older package versions compared with the newest (default 30, max 120); bytecode_scan.version_gates.next_call raises this when versions remain. |
+| `publish_pages` | integer (1 to 20) | no | Publish transaction object-change pages per segment (default 6, max 20). Follow capabilities.next_call for more. |
+| `authority_structs` | integer (1 to 48) | no | Authority-named types per segment (default 12, max 48). Follow capabilities.next_call for more. |
+| `registry_probes` | integer (1 to 400) | no | Key structs checked for registered coins per segment (default 200, max 400). Follow capabilities.next_call for more. |
+| `witness_checks` | integer (1 to 48) | no | Unregistered witness types checked per segment (default 12, max 48). Follow capabilities.next_call for more. |
+| `capability_cursor` | string | no | Opaque continuation from capabilities.next_call; resumes the next unscanned page, type or probe without repeating earlier reads. |
+| `max_versions_compared` | integer (2 to 120) | no | Package versions compared in one segment, including the newest (default 30, max 120); follow bytecode_scan.version_gates.next_call for more. |
+| `version_offset` | integer (at least 0) | no | First older lineage version in this segment (default 0); use the version-gates next_call when the 120-version limit is reached. |
 | `detail` | `summary` \| `full` | no | 'summary' (default): module counts/public and entry names, caps grouped by type with all holders, first leads. 'full': all signatures, struct shapes, individual caps and leads, including weak. |
 | `modules` | array of string | no | Only these modules' full signatures and struct shapes; others omitted. Omit for all modules at the chosen detail. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
@@ -122,7 +124,7 @@ Scan a Move package's API, struct shapes and heuristic risks: freeze/denylist, m
 - Profile: `developer`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Developer) Get the dependency graph of a Sui Move package from its linkage table: every package it is linked against, with the exact version linked (`linked_version`), which can be older than the dependency's current version. With depth > 1 each dependency's own linkage is read too, up to depth 3. `complete` says whether the graph ends at that depth; `unexpanded` gives a call for each branch that continues further. System packages (0x1, 0x2, 0x3) upgrade in place, so their nodes show the current version while the edge shows the one linked.
+(Developer) Get the dependency graph of a Sui Move package from its linkage table: every package it is linked against, with the exact version linked (`linked_version`), which can be older than the dependency's current version. With depth > 1 each dependency's own linkage is read too, up to depth 3. `complete` says whether the graph ends at that depth; `unexpanded` gives a call for each branch beyond the depth limit or a dependency read to retry. System packages (0x1, 0x2, 0x3) upgrade in place, so their nodes show the current version while the edge shows the one linked.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

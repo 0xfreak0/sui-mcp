@@ -31,6 +31,7 @@ sidebar:
 | `liquidity_pool_offset` | integer (at least 0) | no | Start at this discovered pool after ranking by its current SUI or USDC reserve (default 0). |
 | `liquidity_holder_pool` | string | no | For a holder continuation, restrict the page to this discovered pool ID. |
 | `liquidity_offset` | integer (at least 0) | no | Start at this holder index within liquidity_holder_pool (default 0). |
+| `liquidity_flagged_done` | boolean | no | Holder-page continuation marker; keep the value from omitted.next_call to avoid repeating flagged holders. |
 | `liquidity_max_scan` | integer (1 to 100000) | no | Max LP coins or position objects scanned per pool (default 1000, max 100000); follow liquidity_custody.pools[].scan.next_call after a bound. |
 | `liquidity_time_budget_ms` | integer (1000 to 600000) | no | Wall-clock budget for pool position scans in milliseconds (default 35000, max 600000). |
 | `liquidity_venue` | string | no | Search one venue; use pool_discovery.venues[].next_call to continue a bounded venue search. |

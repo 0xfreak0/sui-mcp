@@ -80,7 +80,7 @@ sidebar:
 |---|---|---|---|
 | `digest` | string | yes | Transaction digest (Base58) |
 | `attacker` | string | no | Profit address; default sender. May switch to largest priced gainer (>= $1) if sender has only a SUI payment/no coin change and no priced object movement, or gives away valued objects without taking value. Unpriced gains outside sender/chosen gainer block it, excluding flagged coins and sender-paid coin types. Reports attacker_defaulted_from_sender; pass an address to override. |
-| `state_read_multiplier` | integer (at least 1) | no | Raise the per-kind state-object and dynamic-field read budgets together (default 1: shared 24, holding/child 48, created/caps 12, price rows 32). Check state_deltas.skipped and raise if needed. |
+| `state_read_multiplier` | integer (1 to 1000) | no | Raise the per-kind state-object and dynamic-field read budgets together (default 1, max 1000: shared 24, holding/child 48, created/caps 12, price rows 32). Check state_deltas.skipped and raise if needed. |
 | `object_offset` | integer (at least 0) | no | First custody-changing object to value (50 per page); follow object_values_page.next_call. Profit and object USD values on a page are partial until all pages are read. |
 | `detail` | `summary` \| `full` | no | 'summary' (default): ~40k chars across lists; keeps anomaly/flash-linked pools, holders and addresses, sender and profit address. Totals/anomalies cover all rows; omitted counts the rest. 'full': all rows. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
@@ -244,6 +244,7 @@ sidebar:
 |---|---|---|---|
 | `address` | string | yes | Address to attribute (0x...) |
 | `max_hops` | integer (at most 12, greater than 0) | no | Max funding hops to walk back (default 5, max 12) |
+| `paid_in` | string | no | Funding transaction from the preceding hop's continue_with; keeps the established-funder stop when resuming. Omit to investigate this wallet independently. |
 | `measure_fanout` | boolean | no | Measure origin fan-out (default true), using get_address_fanout's default window and matching counts/truncation. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
@@ -434,7 +435,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `max_transactions` | integer (10 to 300) | no | Recent subject transactions per direction (default/max 300); expanded counterparties get 50. |
 | `max_expand` | integer (1 to 20) | no | Counterparties expanded per hop, highest value first (default 8). |
 | `max_bridge_lookups` | integer (1 to 300) | no | Exit transactions whose on-chain destinations are read (default 10, max 300). Unread exits leave bridge screening incomplete. |
-| `digest_offset` | integer (at least 0) | no | First digest shown for each exposure or path leg (default 0; five per leg, 20 per bridge group). Follow digest_listing.next_call. |
+| `digest_offset` | integer (at least 0) | no | First digest shown for each exposure or path leg (five per page); follow digest_listing.next_call. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## summarize_address_flows
@@ -478,7 +479,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `transaction_cursor` | string | no | Opaque cursor from next_call in sender mode; reads the next oldest-first transaction slice in the same window. |
 | `attacker` | string | no | Gain address; defaults to sender or each transaction's sender. If every successful sender only paid gas, uses the largest priced gainer above the gas-only threshold across those transactions, reported in attacker_defaulted_from_sender. An unpriced gain by another non-sender blocks that default. Pass attacker to override. |
 | `price_at` | number \| string | no | Fixed-time valuation for every coin and object (Unix seconds or ISO 8601). Default: hourly coin quotes; objects at their transaction times. Check usd_basis for coarsening. |
-| `state_read_multiplier` | integer (at least 1) | no | Raise each transaction's state-object and dynamic-field budgets together (default 1). A transaction still cut by those limits is named under state_reads.capped and does not contribute partial pool state. |
+| `state_read_multiplier` | integer (1 to 1000) | no | Raise each transaction's state-object and dynamic-field budgets together (default 1, max 1000). A transaction still cut by those limits is named under state_reads.capped and does not contribute partial pool state. |
 | `max_groups` | integer (at least 1) | no | List only the largest N groups; the totals still cover all of them and the omission is reported. |
 | `group_offset` | integer (at least 0) | no | First group to return with detail: 'full' when an oversized view is paged. |
 | `coverage_offset` | integer (at least 0) | no | First historical pricing coverage row for an oversized detail: 'full' view; follow omitted.next_call to page. |
@@ -536,7 +537,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Trace an object's versions, producing transactions, times and ownership transitions, including transfers, sharing, freezing and party transfers. Use this for a pool, vault or capability's creator and past holders. Deleted or wrapped objects have current:null and an end transaction. Party ownership names its single owner; kiosk ownership and kiosk_cap_holder describe today's custody only, never a historical controller. Beyond the shown page, owner_change_count is always a lower bound: checkpoint search can miss an ownership round trip within a probed span. owner_change_note and more_versions_note explain the limit; owner_change_unpinned lists budget-stopped checkpoint ranges and their endpoint owners, each containing an unpinned change. Versions default to oldest first from the earliest retained version; newest starts at the current version and pages back. Pass next_cursor as cursor with the same order, or follow next_call. Changes compare each listed version to its predecessor regardless of page order.
+(Incident investigation) Trace an object's versions, producing transactions, times and ownership transitions, including transfers, sharing, freezing and party transfers. Use this for a pool, vault or capability's creator and past holders. Deleted or wrapped objects have current:null and an end transaction. Party ownership names its single owner; kiosk ownership and kiosk_cap_holder describe today's custody only, never a historical controller. Beyond the shown page, owner_change_count is a lower bound: checkpoint search can miss an ownership round trip within a probed span. owner_change_note and more_versions_note explain the limit; owner_change_unpinned lists budget-stopped checkpoint ranges and their endpoint owners. Follow owner_change_next_call to search only unresolved ranges; continuation owner_changes and owner_change_count contain only newly found transitions, not the history page again. Versions default to oldest first from the earliest retained version; newest starts at the current version and pages back. Pass next_cursor as cursor with the same order, or follow next_call. Changes compare each listed version to its predecessor regardless of page order.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -544,6 +545,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `limit` | integer (at most 50, greater than 0) | no | Versions per page (default 25). Newest-first pages and pages after a cursor list at most 49. |
 | `order` | `oldest` \| `newest` | no | 'oldest' (default) pages forward from the first retained version; 'newest' pages back from the current version. |
 | `cursor` | string | no | `next_cursor` from the previous page. Continues in the same direction; pass the same `order`. |
+| `owner_change_cursor` | string | no | Opaque owner_change_cursor returned with owner_change_next_call. Continue only the unresolved owner-change ranges, without listing the history page again. |
 | `transition_reads` | integer (1 to 500) | no | Checkpoint probes for owner-change search (default 80, max 500). Raise when owner_change_unpinned lists unresolved ranges. |
 | `transition_time_ms` | integer (1000 to 120000) | no | Wall-clock budget for owner-change search in milliseconds (default 20000, max 120000). Raise on a slow endpoint. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

@@ -24,6 +24,7 @@ Get directly held StakedSui positions and principal, now or at as_of. Historical
 | `as_of` | string | no | ISO 8601 date or checkpoint string; holdings at the end of the last checkpoint at or before it. |
 | `max_transactions` | integer (1 to 10000) | no | Historical replay budget per direction (default 1000); also bounds object-change pages. |
 | `max_positions` | integer (1 to 50000) | no | Directly held staking positions scanned (default 1,000); raise when the current holdings walk stopped at its bound. |
+| `position_cursor` | string | no | Opaque cursor from position_scan_next_call; returns the next block of directly held staking positions. Combine block counts; totals stay null for a partial walk. |
 | `continuation` | string | no | Opaque historical replay state from continue_with; keep address, as_of and network unchanged. |
 | `detail` | `summary` \| `full` | no | summary caps displayed positions; full returns every read position. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

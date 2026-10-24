@@ -96,4 +96,17 @@ describe("analyze_multisig", () => {
     expect(result.next_call).toBeUndefined();
     expect(mockGqlQuery).toHaveBeenCalledTimes(1);
   });
+
+  it("bounds advancing empty pages and resumes after the last read", async () => {
+    let pages = 0;
+    mockGqlQuery.mockImplementation(async () => ({
+      transactions: { pageInfo: { hasPreviousPage: true, startCursor: `older-${++pages}` }, nodes: [] },
+    }));
+    const first = JSON.parse((await analyze({ address: fixtures.ed25519.address, max_transactions: 1 })).content[0].text);
+    expect(first).toMatchObject({
+      transactions_examined: 0, scan_stop: "read_budget", scan_reads: 20,
+      next_call: { tool: "analyze_multisig", repeat_with: { cursor: "older-20" } },
+});
+    expect(mockGqlQuery).toHaveBeenCalledTimes(20);
+  });
 });

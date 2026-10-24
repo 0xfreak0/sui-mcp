@@ -27,6 +27,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /** GraphQL page cap. */
 const PAGE = 50;
+/** Short/empty filtered pages can advance without counting a transaction. */
+const MAX_SCAN_READS = 20;
 
 /** Aliased queries per request — the service's store-backed limit. */
 const ALIAS_BATCH = 20;
@@ -99,6 +101,7 @@ export function registerMultisigTools(server: McpServer) {
       let committee = null;
    let before: string | null = cursor ?? null;
       let scanned = 0;
+   let reads = 0;
       let complete = false;
    let stalled = false;
       // The address's own signature in a scheme other than multisig. One is
@@ -112,7 +115,8 @@ export function registerMultisigTools(server: McpServer) {
         // Bounded by transactions SCANNED, not by multisig observations: a
         // non-multisig sender never adds an observation, and a loop waiting
         // for one paged through the address's entire history.
-        scan: while (scanned < limit) {
+    scan: while (scanned < limit && reads < MAX_SCAN_READS) {
+     reads++;
           const r: SentNewestPageResult = await gqlQuery<SentNewestPageResult>(SENT_NEWEST_PAGE, {
             a: address,
             last: Math.min(PAGE, limit - scanned),
@@ -186,11 +190,13 @@ export function registerMultisigTools(server: McpServer) {
    const nextCall = !complete && !stalled && before
     ? { tool: "analyze_multisig", repeat_with: { cursor: before } }
     : null;
+   const scanStop = complete ? null : stalled ? "cursor_unavailable" : reads >= MAX_SCAN_READS ? "read_budget" : "max_transactions";
    if (!committee && !ownScheme && (!complete || !!cursor)) {
     return {
      content: [{
       type: "text" as const, text: JSON.stringify({
        address, committee: null, transactions_examined: scanned, history_complete: false,
+       ...(scanStop ? { scan_stop: scanStop, scan_reads: reads } : {}),
        ...(nextCall ? { next_call: nextCall } : {}),
        note: nextCall
         ? "No self-signed multisig transaction appeared in this segment. Authentication remains unknown; follow next_call to examine older sent transactions."
@@ -254,6 +260,7 @@ export function registerMultisigTools(server: McpServer) {
               // The count is what a dormancy claim rests on. Said next to the
               // claim, not only in the metadata.
        history_complete: complete && !cursor,
+       ...(scanStop ? { scan_stop: scanStop, scan_reads: reads } : {}),
        ...((cursor || !complete) ? {
         history_scope: "Signer frequencies cover this segment only; previous segments are not combined.",
        } : {}),

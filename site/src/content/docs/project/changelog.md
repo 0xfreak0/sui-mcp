@@ -5,9 +5,15 @@ description: Every sui-mcp release, newest first, with a summary and links to it
 sidebar:
   order: 3
 ---
-The current release is 1.27.0. Each release below links to its full entry in [CHANGELOG.md](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md), which lists what was added, changed and fixed, and to its GitHub release.
+The current release is 1.28.0. Each release below links to its full entry in [CHANGELOG.md](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md), which lists what was added, changed and fixed, and to its GitHub release.
 
 Published versions are on npm as [`sui-analytics-mcp`](https://www.npmjs.com/package/sui-analytics-mcp). To check that an installed tarball was built by the project's CI, see [Verifying a release](/concepts/security/#verifying-a-release).
+
+## 1.28.0 (2026-10-25)
+
+Every capped result can be continued: a tool that stops at a page, scan, read or time limit says so and returns the call that resumes it. `query_events` reads one object's events, `get_transaction_history` takes a time window, and `list_objects_by_type` scans objects of a type across owners. Flow graphs follow valued object handovers, `find_pools` and `analyze_token` report pool liquidity custody, and clustering reports many-to-one consolidation. Swap labels read the pools' own events, launchpad trades name their coins, and Hashi is named as a Bitcoin bridge. Chain and provider text in tool results is marked as untrusted data.
+
+[Full entry](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md#1280-2026-10-25) · [GitHub release](https://github.com/0xfreak0/sui-mcp/releases/tag/v1.28.0)
 
 ## 1.27.0 (2026-10-06)
 

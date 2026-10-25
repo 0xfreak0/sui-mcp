@@ -310,6 +310,9 @@ async function searchTransitionRanges(
 /** Hold changes across an unresolved range until they can be emitted in order. */
 function orderSearchChanges(changes: LocatedChange[], unresolved: TransitionRange[], order: "oldest" | "newest") {
  const ordered = [...changes].sort((a, b) => a.checkpoint - b.checkpoint);
+ // A pinned transition remains valid even if an earlier range is unresolved.
+ // Show it in the default oldest-first call rather than withholding evidence.
+ if (order === "oldest") return { shown: ordered.map((c) => c.change), held: [] as LocatedChange[] };
  if (unresolved.length === 0) return { shown: ordered.map((c) => c.change), held: [] as LocatedChange[] };
  const boundary = order === "newest"
   ? Math.max(...unresolved.map((r) => r.hi.checkpoint))

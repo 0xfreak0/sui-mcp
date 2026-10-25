@@ -267,6 +267,34 @@ describe("trace_object_history — a busy object beyond the page limit", () => {
     expect(r.owner_change_note).toMatch(/reversed transfer/);
   });
 
+  it("shows a pinned handover on the default page even if an earlier range needs a continuation", async () => {
+    mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown>) => {
+      if (query.includes("objectVersions(address: $id, first: $first)")) {
+        return {
+          current: version("9", "0xc", 900),
+          objectVersions: { pageInfo: { hasNextPage: true, endCursor: "c1" }, nodes: [version("1", "0xa", 10)] },
+        };
+      }
+      if (query.includes("atCheckpoint") && query.includes("previousTransaction")) {
+        return { object: { version: vars.cp, previousTransaction: { digest: `handover-${vars.cp}`, effects: { timestamp: "2026-01-15T00:00:00Z" } } } };
+      }
+      if (query.includes("atCheckpoint")) {
+        const cp = vars.cp as number;
+        return { object: { owner: { __typename: "AddressOwner", address: { address: cp < 300 ? "0xa" : cp < 600 ? "0xb" : "0xc" } } } };
+      }
+      throw new Error(`unexpected query: ${query.slice(0, 60)}`);
+    });
+    getTransaction.mockResolvedValue(effectsWith("0xpartial", 2));
+
+    const first = await run({ object_id: "0xpartial", limit: 1, transition_reads: 18 });
+    expect(first.owner_changes.map((c: { tx: string }) => c.tx)).toEqual(["handover-600"]);
+    expect(first.owner_change_unpinned).toHaveLength(1);
+    expect(first.owner_change_note).toMatch(/after finding 1 transition/);
+    const next = await run({ object_id: "0xpartial", limit: 1, owner_change_cursor: first.owner_change_cursor });
+    expect(next.owner_changes.map((c: { tx: string }) => c.tx)).toEqual(["handover-300"]);
+    expect(next.owner_change_next_call).toBeUndefined();
+  });
+
   it("says a search that ran out of budget stopped, and lists every range it stopped inside with the owners at its ends", async () => {
     mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown>) => {
       if (query.includes("objectVersions(address: $id, first: $first)")) {

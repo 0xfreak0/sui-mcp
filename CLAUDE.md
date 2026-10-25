@@ -91,12 +91,12 @@ is a `host:port` target for `GrpcTransport`, not an `https://` URL like the othe
 endpoints. That inconsistency is load-bearing: a gRPC-Web client aimed at
 `https://archive.mainnet.sui.io` gets a 404. Don't "fix" it.
 
-The public GraphQL service sometimes answers a list query with the GraphQL
-error "Failed to list transactions" or "Failed to list events" on an HTTP
-200; the same query succeeds on retry. `gqlQuery` retries those exact
-messages twice with backoff
-(`TRANSIENT_GRAPHQL_ERRORS`); every other GraphQL error is an answer about
-the query and is not retried.
+The public GraphQL service sometimes answers a query with a service failure
+on HTTP 200: "Failed to list transactions", "Failed to list events", or
+"Failed to fetch checkpoint contents" (including batched checkpoint aliases).
+The same query succeeds on retry. `gqlQuery` retries those exact messages
+twice with backoff (`TRANSIENT_GRAPHQL_ERRORS`); every other GraphQL error
+is an answer about the query and is not retried.
 
 Do not hand-roll the fallback. Use `withArchiveFallback(call, isEmpty)` from
 `src/utils/archive-fallback.ts`.

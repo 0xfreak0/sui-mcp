@@ -1034,10 +1034,15 @@ describe("find_funding_sources caps its listing without losing a linked subject"
     expect(listed.length + d.omitted.lists.results.count).toBe(addresses.length);
     expect(d.address_count).toBe(addresses.length);
     expect(d.omitted.next_call).toEqual({ tool: "find_funding_sources", repeat_with: { detail: "full" } });
+    const resumed = d.results.find((r: { address: string }) => r.address === PAYER);
+    expect(resumed.continue_with).toMatchObject({ tool: "find_funding_source", args: { max_hops: 1 } });
+    expect(resumed.stop_reason).toBeUndefined();
+    expect(d.results_note).toContain("continue_with stopped at max_hops");
 
     const full = await run("find_funding_sources", { addresses, measure_fanout: false, depth: "first_hop", detail: "full" });
     expect(full.results).toHaveLength(addresses.length);
     expect(full.truncated).toBeUndefined();
     expect(full.results.find((r: { address: string }) => r.address === PAYER).chain[0].funded_by).toBe(PAYER_FUNDER);
+    expect(full.results.find((r: { address: string }) => r.address === PAYER).stop_reason).toContain("hit max_hops");
   });
 });

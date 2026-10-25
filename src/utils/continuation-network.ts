@@ -58,6 +58,7 @@ const CALL_PATHS = [
  "explored.largest_pruned_page.next_call",
  "objects_page.next_call",
  "state_deltas.read_more_with",
+ "follow_up_calls.next_call",
  "state_reads.follow_up_calls.*",
  "objects_follow_up_calls.*",
  "state_reads.read_more_with",

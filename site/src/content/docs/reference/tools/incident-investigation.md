@@ -467,7 +467,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-(Incident investigation) Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. Reports attacker net per coin and pool reserve changes, with USD. Reserves use decoded events or, if none yields amounts, drained-object Balance&lt;T> holdings at input/output versions. Address-only onward coin transfers are transfers_out, not take. Unpriced legs make USD totals partial, not a lower bound. Summary keeps the largest rows fitting about 40k characters. Oversized full views page groups through omitted.next_call, without requiring a store; stored-result pages are optional extras. No API key; transaction reads use archive fallback.
+(Incident investigation) Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. Reports attacker net per coin and pool reserve changes, with USD. Reserves use decoded events or, if none yields amounts, drained-object Balance&lt;T> holdings at input/output versions. Address-only onward coin transfers are transfers_out, not take. Unpriced legs make USD totals partial, not a lower bound. Summary keeps the largest rows fitting about 40k characters; follow_up_calls.next_call opens complete object-valuation and state-read follow-ups in detail: 'full'. Oversized full views page groups through omitted.next_call, without requiring a store; stored-result pages are optional extras. No API key; transaction reads use archive fallback.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

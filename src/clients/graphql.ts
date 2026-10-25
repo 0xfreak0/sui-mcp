@@ -270,6 +270,7 @@ export function getGraphqlClient(network: SuiNetwork = getNetwork()): GraphQLCli
 const TRANSIENT_GRAPHQL_ERRORS: ReadonlySet<string> = new Set([
   "Failed to list transactions",
   "Failed to list events",
+  "Failed to fetch checkpoint contents",
 ]);
 
 /** Retries of a query the service failed transiently, after the transport's own. */

@@ -134,7 +134,7 @@ describe("gqlQuery errors", () => {
     );
   });
 
-  it.each(["Failed to list transactions", "Failed to list events"])("retries the service's transient failure %s and returns the answer that follows", async (message) => {
+  it.each(["Failed to list transactions", "Failed to list events", "Failed to fetch checkpoint contents"])("retries the service's transient failure %s and returns the answer that follows", async (message) => {
     const failed = () =>
       new Response(JSON.stringify({ data: null, errors: [{ message }] }), {
         status: 200,
@@ -143,6 +143,17 @@ describe("gqlQuery errors", () => {
     const fetch = vi.fn().mockResolvedValueOnce(failed()).mockResolvedValueOnce(ok({ n: 1 }));
     vi.stubGlobal("fetch", fetch);
     await expect(gqlQuery("query { transactions { nodes { digest } } }")).resolves.toEqual({ n: 1 });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a failed batch of checkpoint contents without dropping successful aliases", async () => {
+    const errors = Array.from({ length: 8 }, () => ({ message: "Failed to fetch checkpoint contents" }));
+    const first = new Response(JSON.stringify({ data: null, errors }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+    const fetch = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(ok({ c0: { sequenceNumber: 42 } }));
+    vi.stubGlobal("fetch", fetch);
+    await expect(gqlQuery("query { c0:checkpoint(sequenceNumber:42){sequenceNumber} }")).resolves.toEqual({ c0: { sequenceNumber: 42 } });
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 

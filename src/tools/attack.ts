@@ -1015,7 +1015,7 @@ export function registerAttackTools(server: McpServer) {
 
   server.tool(
     "summarize_incident_losses",
-    "(Incident investigation) Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. Reports attacker net per coin and pool reserve changes, with USD. Reserves use decoded events or, if none yields amounts, drained-object Balance<T> holdings at input/output versions. Address-only onward coin transfers are transfers_out, not take. Unpriced legs make USD totals partial, not a lower bound. Summary keeps the largest rows fitting about 40k characters. Oversized full views page groups through omitted.next_call, without requiring a store; stored-result pages are optional extras. No API key; transaction reads use archive fallback.",
+    "(Incident investigation) Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. Reports attacker net per coin and pool reserve changes, with USD. Reserves use decoded events or, if none yields amounts, drained-object Balance<T> holdings at input/output versions. Address-only onward coin transfers are transfers_out, not take. Unpriced legs make USD totals partial, not a lower bound. Summary keeps the largest rows fitting about 40k characters; follow_up_calls.next_call opens complete object-valuation and state-read follow-ups in detail: 'full'. Oversized full views page groups through omitted.next_call, without requiring a store; stored-result pages are optional extras. No API key; transaction reads use archive fallback.",
     {
       digests: z
         .array(z.string())
@@ -1640,12 +1640,26 @@ export function registerAttackTools(server: McpServer) {
         if (coverage && coverage_offset !== undefined && coverage_offset >= coverage.total) {
           return errorResult("coverage_offset is past the historical pricing coverage.");
         }
+        const followUpCounts = {
+          ...(payload.objects_follow_up_calls?.length ? { object_values: payload.objects_follow_up_calls.length } : {}),
+          ...(payload.state_reads?.follow_up_calls?.length ? { state_reads: payload.state_reads.follow_up_calls.length } : {}),
+        };
         const visible = detail === "full"
           ? { ...payload, group_offset: offset, groups: groups.slice(offset), ...(coverage ? { usd_basis: coverage.basis } : {}) }
      : {
-      ...payload, groups: shownGroups, ...(groups.some((g) => g.transactions.length > GROUP_DIGESTS) ? {
+      ...payload,
+      objects_follow_up_calls: undefined,
+      ...(payload.state_reads ? { state_reads: { ...payload.state_reads, follow_up_calls: undefined } } : {}),
+      ...(Object.keys(followUpCounts).length ? {
+       follow_up_calls: {
+        ...followUpCounts,
+        next_call: { tool: "summarize_incident_losses", repeat_with: { detail: "full" } },
+       },
+      } : {}),
+      groups: shownGroups,
+      ...(groups.some((g) => g.transactions.length > GROUP_DIGESTS) ? {
        group_digest_listing: { digests_per_group: GROUP_DIGESTS, next_call: { tool: "summarize_incident_losses", repeat_with: { detail: "full" } } },
-      } : {})
+      } : {}),
      };
         const { payload: capped } = capPayload(
           "summarize_incident_losses",

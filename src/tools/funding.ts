@@ -1016,9 +1016,9 @@ export function registerFundingTools(server: McpServer) {
         const fullPayload = { ...base, results: results.map(({ first_hop, ...r }) => r) };
         if (full) return { content: [{ type: "text" as const, text: JSON.stringify(fullPayload) }] };
         const summaryRows = results.map(({ chain, first_hop, ...r }) => {
-          const { dust_skipped, ...rest } = r as typeof r & { dust_skipped?: unknown[] };
+          const { dust_skipped, stop_reason, ...rest } = r as typeof r & { dust_skipped?: unknown[] };
           const hop = first_hop ? (({ hop: _h, address: _a, funded_by: _f, ...h }) => h)(first_hop) : null;
-          return { ...rest, ...(dust_skipped?.length ? { dust_skipped_count: dust_skipped.length } : {}), first_hop: hop };
+          return { ...rest, ...(stop_reason.startsWith("hit max_hops") ? {} : { stop_reason }), ...(dust_skipped?.length ? { dust_skipped_count: dust_skipped.length } : {}), first_hop: hop };
         });
         const linked = new Set<string>([
           ...shared.flatMap(([, addrs]) => addrs),
@@ -1037,7 +1037,7 @@ export function registerFundingTools(server: McpServer) {
             ...base,
             results: summaryRows,
             results_note:
-              "Each result lists its origin, first funder and first hop (whose subject, funder and hop number are the result's own), and counts the dust inflows its walk skipped. detail: 'full' returns every hop of each chain and every dust row.",
+              "Each result lists its origin, first funder and first hop (whose subject, funder and hop number are the result's own), and counts the dust inflows its walk skipped. A result with continue_with stopped at max_hops; detail: 'full' includes its stop_reason, every hop and every dust row.",
           },
           {
             results: {

@@ -18,7 +18,7 @@ import { errorResult } from "../utils/errors.js";
 import { readLaunchEvents, readLaunchPoolBuys, readLaunchPool, readLaunchHistory, readEarlyLaunchHistory, readLaunchOrigin, probeLaunchPayers, matchBuy, type LaunchTx, type LaunchScan } from "../utils/launch-read.js";
 import { sumRaw, decimalAmount, isSuiPumpReferralFee, tradeLegs, ownerForwards, accountBuyer, type BuyerAccount, type LaunchBuy, type LaunchPool } from "../utils/launch-accounting.js";
 import { fetchEventJson } from "../utils/event-json.js";
-import { scoreLaunch, type LaunchBuyer, type LaunchDestination, type LaunchFunding, type LaunchPayment, type LaunchTransfer } from "../utils/launch-scoring.js";
+import { scoreLaunch, type LaunchBuyer, type LaunchDestination, type LaunchFirstFunding, type LaunchFunding, type LaunchMemberPathEdge, type LaunchPayment, type LaunchTransfer } from "../utils/launch-scoring.js";
 import { netGas, type GqlGasSummary } from "../utils/trace-read.js";
 import { buyerReceivedLaunchCoin, creatorPaid, launchAccountingComplete, launchTopup, launchTotalsPartial, uniqueCreatorPayments, SUI_LAUNCH_TYPE } from "../utils/launch-evidence.js";
 import { DEFAULT_NETWORK, getNetwork } from "../config.js";
@@ -31,13 +31,32 @@ const DESTINATION_MIN_SUI = 100n * MIST;
 const DESTINATION_MIN_TOKENS = 1_000_000n;
 const FUNDING_RECIPIENTS = `query($digest:String!){transaction(digest:$digest){effects{balanceChanges(first:50){nodes{coinType{repr} amount owner{address}}pageInfo{hasNextPage}}}}}`;
 const AFFILIATION_QUERY = `query($creator:SuiAddress!,$destination:SuiAddress!,$afterCp:UInt53!,$beforeCp:UInt53!,$after:String){transactions(filter:{sentAddress:$creator,affectedAddress:$destination,afterCheckpoint:$afterCp,beforeCheckpoint:$beforeCp},first:50,after:$after){nodes{digest sender{address} gasInput{gasSponsor{address}} effects{timestamp gasEffects{gasSummary{computationCost storageCost storageRebate}} ${BALANCE_CHANGES_SELECTION} ${EVENTS_SELECTION}}}pageInfo{hasNextPage endCursor}}}`;
+const PRIOR_AFFILIATION_QUERY = `query($creator:SuiAddress!,$destination:SuiAddress!,$afterCp:UInt53!,$beforeCp:UInt53!,$before:String){transactions(filter:{sentAddress:$creator,affectedAddress:$destination,afterCheckpoint:$afterCp,beforeCheckpoint:$beforeCp},last:50,before:$before){nodes{digest sender{address} gasInput{gasSponsor{address}} effects{timestamp gasEffects{gasSummary{computationCost storageCost storageRebate}} ${BALANCE_CHANGES_SELECTION} ${EVENTS_SELECTION}}}pageInfo{hasPreviousPage startCursor}}}`;
 const KIND_QUERY = `query($id:SuiAddress!){object(address:$id){__typename asMovePackage{address} asMoveObject{contents{type{repr}}}}}`;
 const DATA_PAGES = 20;
 
 interface RecipientRead { transaction: { effects: { balanceChanges: { nodes: Array<{ coinType?: { repr: string }; amount: string; owner?: { address: string } }>; pageInfo: { hasNextPage: boolean } } } } | null }
-interface AffiliationRead { transactions: { nodes: Array<{ digest: string; sender?: { address: string }; gasInput?: { gasSponsor?: { address: string } }; effects: { timestamp: string; gasEffects?: { gasSummary?: GqlGasSummary | null } | null; balanceChanges: GqlConnection<GqlBalanceChangeNode>; events?: GqlConnection<GqlEventNode> } }>; pageInfo: { hasNextPage: boolean; endCursor: string | null } } }
+interface AffiliationRead { transactions: { nodes: Array<{ digest: string; sender?: { address: string }; gasInput?: { gasSponsor?: { address: string } }; effects: { timestamp: string; gasEffects?: { gasSummary?: GqlGasSummary | null } | null; balanceChanges: GqlConnection<GqlBalanceChangeNode>; events?: GqlConnection<GqlEventNode> } }>; pageInfo: { hasNextPage?: boolean; endCursor?: string | null; hasPreviousPage?: boolean; startCursor?: string | null } } }
 interface KindRead { object: { __typename: string; asMovePackage?: unknown; asMoveObject?: unknown } | null }
 interface BuyerLedger { address: string; first_buy_at: string; buys: LaunchBuy[]; first_funding_ever: FirstFunderLookup | null; launch_funding: LaunchFunding[]; launch_topup_present: boolean; transfers: LaunchTransfer[]; payments: LaunchPayment[]; referrals: string[]; history: LaunchTx[]; complete: boolean; buyer_ownership_unverified: string[]; history_reads: number; history_next_cursor: string | null }
+
+/** A first funder is evidence for scoring only if the funder is measured narrow. */
+async function classifyFirstFunding(read: FirstFunderLookup | null, budget: Budget, cache: Map<string, LaunchFirstFunding["status"]>): Promise<LaunchFirstFunding> {
+ if (!read) return { funder: null, digest: null, status: "unmeasured" };
+ if (!read.funder) return { funder: null, digest: null, status: read.originUnread.length || read.pricesUnavailable ? "unmeasured" : "no_qualifying_inflow" };
+ const funder = read.funder;
+ let status = cache.get(funder);
+ if (!status) {
+  const label = getLabel(funder);
+  if (label?.category === "cex" || label?.category === "bridge" || label?.category === "protocol") status = "hub";
+  else {
+   const measured = await probeRecipients(funder, DEFAULT_POPULARITY_LIMIT, budget).catch(() => null);
+   status = measured?.popular ? "hub" : measured?.unmeasured || !measured ? "unmeasured" : measured.complete ? "narrow" : "provisional";
+  }
+  cache.set(funder, status);
+ }
+ return { funder, digest: read.digest, status: read.pricesUnavailable || read.originUnread.length ? "unmeasured" : status };
+}
 
 function namedKind(result: KindRead | null): LaunchDestination["kind"] {
  if (!result) return "other";
@@ -54,7 +73,7 @@ async function paymentCount(digest: string, cache: Map<string, number | null>): 
   cache.set(digest, count); return count;
  } catch { cache.set(digest, null); return null; }
 }
-async function creatorPayments(creator: string, destination: string, fromCheckpoint: number, toCheckpoint: number, coin: string, maxPages: number): Promise<{ payments: LaunchPayment[]; complete: boolean; reads: number; canAdvance: boolean }> {
+async function creatorPayments(creator: string, destination: string, fromCheckpoint: number, toCheckpoint: number, coin: string, maxPages: number, prior = false): Promise<{ payments: LaunchPayment[]; complete: boolean; reads: number; canAdvance: boolean }> {
  const payments: LaunchPayment[] = [];
  let cursor: string | undefined;
  let complete = false;
@@ -62,7 +81,8 @@ async function creatorPayments(creator: string, destination: string, fromCheckpo
  let reads = 0;
  let stalled = false;
  for (; reads < maxPages; reads++) {
-  const page = (await gqlQuery<AffiliationRead>(AFFILIATION_QUERY, { creator, destination, afterCp: fromCheckpoint, beforeCp: toCheckpoint, after: cursor })).transactions;
+  const page = (await gqlQuery<AffiliationRead>(prior ? PRIOR_AFFILIATION_QUERY : AFFILIATION_QUERY,
+   { creator, destination, afterCp: fromCheckpoint, beforeCp: toCheckpoint, [prior ? "before" : "after"]: cursor })).transactions;
   const changes = await completeTxConnections(page.nodes.map(node => ({ digest: node.digest, balanceChanges: node.effects.balanceChanges })));
   const events = await Promise.all(page.nodes.map(async node => node.effects.events?.pageInfo?.hasNextPage
    ? await fetchEventJson(node.digest)
@@ -80,11 +100,12 @@ async function creatorPayments(creator: string, destination: string, fromCheckpo
     if (paid > 0n) payments.push({ to: destination, asset, amount: paid, digest: node.digest, timestamp: node.effects.timestamp, referral: isSuiPumpReferralFee(decoded, destination) });
    }
   }
-  if (!page.pageInfo.hasNextPage) { complete = true; break; }
-  if (!page.pageInfo.endCursor || page.pageInfo.endCursor === cursor) { stalled = true; break; }
-  cursor = page.pageInfo.endCursor;
+  if (!(prior ? page.pageInfo.hasPreviousPage : page.pageInfo.hasNextPage)) { complete = true; break; }
+  const next = prior ? page.pageInfo.startCursor : page.pageInfo.endCursor;
+  if (!next || next === cursor) { stalled = true; break; }
+  cursor = next;
  }
- return { payments, complete: complete && balancesComplete, reads: reads + 1, canAdvance: !stalled && !complete && balancesComplete && !!cursor && reads >= maxPages };
+ return { payments, complete: complete && balancesComplete, reads: Math.min(maxPages, reads + 1), canAdvance: !stalled && !complete && balancesComplete && !!cursor && reads >= maxPages };
 }
 
 function amountOf(tx: Pick<LaunchTx, "changes">, owner: string, coin: string): bigint {
@@ -92,12 +113,12 @@ function amountOf(tx: Pick<LaunchTx, "changes">, owner: string, coin: string): b
 }
 
 export function registerLaunchTools(server: McpServer) {
- server.tool("analyze_launch", "(Incident investigation) Discover SuiPump buy-event signers from the coin type alone, including graduated-pool trades, and account for their launch funding, initial and later buys, sales and forwards. Buyers are ranked by initial tokens and percentage of supply, each with status and reconciliation. Scores each pair, including the creator, with evidence tiers; a shared likely deposit qualifies by itself only with a complete scan and at most 50 distinct depositors. A signer whose purchase did not credit its own token balance is unverified and not scored. Event amounts exclude gas; gas-inclusive debits are separate. A partial scan reports coverage, with next_call only when its read bound can advance. Full results page parent buyer/cluster/destination records and child evidence via path and offset arguments. No account-holder or misconduct verdict. Start with the exact coin type; creation_tx optionally cross-checks it.", {
+ server.tool("analyze_launch", "(Incident investigation) Discover SuiPump buyers from the exact coin type, including trades after graduation. Report every early buyer's status, event-first trades, gross proceeds, funding and reconciliation. Pairwise evidence distinguishes a direct creator payment, a creator-linked private collection wallet and buyer-only paths; shared narrow first funders score only when measured, never via a popular service. A bounded pre-launch creator payment to a likely deposit scores a separate, weaker observation, not shared ownership or exchange funding. Every historical destination payment carries its date; an incomplete scan reports coverage and a continuation where its bound can advance. detail: 'full' returns records inline when they fit, otherwise pages the selected list by offset. No account-holder or misconduct verdict.", {
   coin_type: coinTypeArg().describe("Exact SuiPump coin type, not a symbol"),
   creation_tx: z.string().optional().describe("Optional creation digest to cross-check discovery from coin type"),
   window_minutes: numArg().int().min(1).max(1440).optional().describe("Minutes from creation for initial buyer discovery (default 10)"),
   sell_window_days: numArg().int().min(1).max(30).optional().describe("Days from creation to trace every buyer's sales and forwards (default 7)"),
-  max_pages: numArg().int().min(1).max(1000).optional().describe("Discovery, buyer, destination and creator-payment page budget (default 20); coverage.next_call raises it only when an unfinished bound can advance"),
+  max_pages: numArg().int().min(1).max(1000).optional().describe("Discovery, buyer, pre-launch creator-payment and first-funder page budget (default 20); coverage.next_call raises a bound only when it can advance"),
   detail: z.enum(["summary", "full"]).optional().describe("Full returns all data if small, otherwise lists consecutive pages by path and offset"),
   list_path: z.string().optional().describe("Full-view list path from the catalog (including parent lists and the catalog itself), for example discovered_buyers.0.sales"),
   offset: numArg().int().min(0).optional().describe("Index of the first row in the selected list (default 0)"),
@@ -143,6 +164,9 @@ export function registerLaunchTools(server: McpServer) {
    const recipientCounts = new Map<string, number | null>();
    const popularity = new Map<string, LaunchFunding["sourceStatus"]>();
    const budget = new Budget(250);
+   const firstFundingBudget = new Budget(Math.min(1000, pages * 10));
+   const firstFunderPopularityBudget = new Budget(Math.min(1000, pages * 10));
+   const firstFunderStatuses = new Map<string, LaunchFirstFunding["status"]>();
    const ledgers: BuyerLedger[] = [];
    const tokenStates = new Map<string, Record<string, unknown> | null>();
    const suiPriceByHour = new Map<number, number | null>();
@@ -181,9 +205,14 @@ export function registerLaunchTools(server: McpServer) {
       transfers.push({ destination: forward.destination, asset: forward.coin_type === SUI ? "sui" : "token", amount: forward.amount, digest: tx.digest, qualifies: floor ?? "unpriced" });
      }
     }
-    const firstFunding = await firstFunderOf(buyer, budget);
+    const firstFunding = await firstFunderOf(buyer, firstFundingBudget);
     ledgers.push({ address: buyer, first_buy_at: first, buys: buyerEvents, first_funding_ever: firstFunding, launch_funding: funding, launch_topup_present: funding.length > 0, transfers, payments, referrals, history: history.rows, complete: history.complete && buyerEvents.length === initialEvents.length && buyerOwnershipUnverified.length === 0, buyer_ownership_unverified: buyerOwnershipUnverified, history_reads: history.reads, history_next_cursor: history.next_cursor });
    }
+   const creatorFirstFundingRead = await firstFunderOf(origin.creator, firstFundingBudget);
+   const creatorFirstFunding = await classifyFirstFunding(creatorFirstFundingRead, firstFunderPopularityBudget, firstFunderStatuses);
+   const buyerFirstFunding = new Map<string, LaunchFirstFunding>();
+   for (const ledger of ledgers) buyerFirstFunding.set(ledger.address,
+    await classifyFirstFunding(ledger.first_funding_ever, firstFunderPopularityBudget, firstFunderStatuses));
    // The creator is a subject too: a payment between it and a buyer is direct.
    const direct = await findSubjectPayments([...grouped.keys(), origin.creator], { window: { afterCheckpoint: directAfter, beforeCheckpoint: directBefore }, maxPairPages: pages });
    const eventByDigest = new Map<string, { type: string; data: Record<string, unknown> }[] | null>(
@@ -217,7 +246,7 @@ export function registerLaunchTools(server: McpServer) {
    const creatorRecipientComplete = creatorRecipientReads.every(read => read.complete);
    const outgoing = new Map<string, LaunchTransfer[]>();
    for (const ledger of ledgers) for (const transfer of ledger.transfers) { const old = outgoing.get(transfer.destination) ?? []; old.push(transfer); outgoing.set(transfer.destination, old); }
-   const destinations: Array<LaunchDestination & { deposit_verdict: string; sweeps: Array<{ digest: string }>; sweep_to: string | null; classification_complete: boolean; classification_can_advance: boolean; creator_payments: LaunchPayment[]; creator_payment_complete: boolean; creator_payment_can_advance: boolean; inflow_payers: number | null }> = [];
+   const destinations: Array<LaunchDestination & { deposit_verdict: string; sweeps: Array<{ digest: string }>; sweep_to: string | null; classification_complete: boolean; classification_can_advance: boolean; creator_payments: LaunchPayment[]; creator_payment_complete: boolean; creator_payment_can_advance: boolean; creator_prior_payments: LaunchPayment[]; creator_prior_complete: boolean; creator_prior_can_advance: boolean; creator_prior_reads: number; inflow_payers: number | null }> = [];
    const inflowBudget = new Budget(200);
    for (const [dest, flows] of outgoing) {
     const tokens = sumRaw(flows.filter(x => x.asset === "token").map(x => x.amount));
@@ -226,10 +255,11 @@ export function registerLaunchTools(server: McpServer) {
     const buyersAtDestination = new Set(ledgers.filter(l => l.transfers.some(x => x.destination === dest)).map(l => l.address)).size;
     if (sui < DESTINATION_MIN_SUI && tokens < tokenThreshold && buyersAtDestination < 2) continue;
     const depositPages = Math.ceil(pages / DATA_PAGES);
-    const [kindRead, classification, creatorPay] = await Promise.all([
+    const [kindRead, classification, creatorPay, creatorPrior] = await Promise.all([
      gqlQuery<KindRead>(KIND_QUERY, { id: dest }).catch(() => null),
      sui >= DESTINATION_MIN_SUI ? classifyDepositAddress(dest, { from: origin.created_at, to: sellingTo, last: 50 * depositPages, maxBalanceTransactions: 100 * depositPages, maxBalanceReads: 20 * depositPages }).catch(() => null) : Promise.resolve(null),
-     buyersAtDestination >= 2 && dest !== origin.creator ? creatorPayments(origin.creator, dest, origin.created_checkpoint - 1, affiliationEnd, coin, pages).catch(() => ({ payments: [], complete: false, reads: 0, canAdvance: false })) : Promise.resolve({ payments: [], complete: true, reads: 0, canAdvance: false }),
+     buyersAtDestination >= 2 && dest !== origin.creator ? creatorPayments(origin.creator, dest, origin.created_checkpoint - 1, affiliationEnd, coin, pages).catch(() => ({ payments: [] as LaunchPayment[], complete: false, reads: 0, canAdvance: false })) : Promise.resolve({ payments: [], complete: true, reads: 0, canAdvance: false }),
+     dest !== origin.creator ? creatorPayments(origin.creator, dest, 0, origin.created_checkpoint, coin, pages, true).catch(() => ({ payments: [] as LaunchPayment[], complete: false, reads: 0, canAdvance: false })) : Promise.resolve({ payments: [], complete: true, reads: 0, canAdvance: false }),
     ]);
     const label = getLabel(dest);
     const kind = namedKind(kindRead);
@@ -255,11 +285,42 @@ export function registerLaunchTools(server: McpServer) {
      deposit_verdict: classification?.verdict ?? "unknown", sweeps: classification?.sweeps ?? [], sweep_to: classification?.hot_wallet ?? null,
      classification_complete: classificationComplete, classification_can_advance: classificationCanAdvance,
      creator_payments: creatorPay.payments, creator_payment_complete: creatorPay.complete, creator_payment_can_advance: creatorPay.canAdvance,
+     creator_prior_payments: creatorPrior.payments, creator_prior_complete: creatorPrior.complete,
+     creator_prior_can_advance: creatorPrior.canAdvance, creator_prior_reads: creatorPrior.reads,
     });
    }
-   const scores = scoreLaunch({ creator: { address: origin.creator, payments: uniqueCreatorPayments([...destinations.map(d => d.creator_payments), creatorDirect]) }, buyers: ledgers.map(l => ({ address: l.address, funding: l.buyer_ownership_unverified.length ? [] : l.launch_funding, transfers: l.buyer_ownership_unverified.length ? [] : l.transfers, payments: l.buyer_ownership_unverified.length ? [] : l.payments, referrals: l.buyer_ownership_unverified.length ? [] : l.referrals, suinsNames: [] } satisfies LaunchBuyer)), destinations, totalSupplyRaw: origin.token.total_supply_raw ? BigInt(origin.token.total_supply_raw) : 0n });
+   const scores = scoreLaunch({
+    creator: {
+     address: origin.creator, firstFunding: creatorFirstFunding,
+     payments: uniqueCreatorPayments([...destinations.map(d => d.creator_payments), creatorDirect]),
+     priorPayments: uniqueCreatorPayments(destinations.map(d => d.creator_prior_payments)),
+    },
+    buyers: ledgers.map(l => ({
+     address: l.address, funding: l.buyer_ownership_unverified.length ? [] : l.launch_funding,
+     transfers: l.buyer_ownership_unverified.length ? [] : l.transfers,
+     payments: l.buyer_ownership_unverified.length ? [] : l.payments,
+     referrals: l.buyer_ownership_unverified.length ? [] : l.referrals, suinsNames: [],
+     firstFunding: l.buyer_ownership_unverified.length ? undefined : buyerFirstFunding.get(l.address),
+    } satisfies LaunchBuyer)), destinations, totalSupplyRaw: origin.token.total_supply_raw ? BigInt(origin.token.total_supply_raw) : 0n
+   });
+   const scoredDestinations = new Map(scores.destinations.map(destination => [destination.address, destination]));
    const status = new Map(scores.buyers.map(b => [b.address, b]));
+   // Each pair's full evidence is in clusters[].edges; repeating it at every
+   // member along a path can dwarf the entire transaction/accounting result.
+   const compactPath = (path: LaunchMemberPathEdge[]) => path.map(edge => ({
+    from: edge.from, to: edge.to, score: edge.score,
+    edge_types: edge.signals.map(signal => signal.type),
+   }));
    const coreAddresses = new Set(scores.buyers.filter(b => b.status === "core").map(b => b.address));
+   const funderRoots = new Map<string, { address: string; first_funding_ever: FirstFunderLookup | null; funder_status: LaunchFirstFunding["status"] }>();
+   const groupedAddresses = new Set(scores.clusters.flatMap(cluster => cluster.members));
+   for (const address of groupedAddresses) {
+    const first = address === origin.creator ? creatorFirstFunding : buyerFirstFunding.get(address);
+    if (!first?.funder || funderRoots.has(first.funder)) continue;
+    const read = await firstFunderOf(first.funder, firstFundingBudget);
+    const status = await classifyFirstFunding(read, firstFunderPopularityBudget, firstFunderStatuses);
+    funderRoots.set(first.funder, { address: first.funder, first_funding_ever: read, funder_status: status.status });
+   }
    const fundingBounds = await resolveWindow(fundingFrom, sellingTo);
    const earlyBefore = fundingBounds.after?.checkpoint;
    if (earlyBefore == null) throw new Error("A closed early-history boundary is required to establish opening balances.");
@@ -288,7 +349,14 @@ export function registerLaunchTools(server: McpServer) {
     return {
      raw: a, row: {
      address: l.address, status: status.get(l.address)?.status ?? "unclustered",
-     cluster_id: status.get(l.address)?.clusterId ?? null, first_buy_at: l.first_buy_at,
+      cluster_id: status.get(l.address)?.clusterId ?? null,
+      creator_relation: status.get(l.address)?.creator_relation
+       ? {
+        status: status.get(l.address)!.creator_relation!.status,
+        path: compactPath(status.get(l.address)!.creator_relation!.path),
+       }
+       : null,
+      first_buy_at: l.first_buy_at,
       initial_supply_pct: supplyRaw > 0n ? Number(a.initialTokens * 100_000_000n / supplyRaw) / 1_000_000 : null,
       initial_buys: { sui: decimalAmount(a.initialSui, 9), tokens: decimalAmount(a.initialTokens, scale) },
       gross_buys: { sui: decimalAmount(a.grossSui, 9), tokens: decimalAmount(a.grossTokens, scale) },
@@ -310,6 +378,8 @@ export function registerLaunchTools(server: McpServer) {
      forwarded: l.transfers.map(t => ({ destination: t.destination, asset: t.asset, amount: decimalAmount(t.amount, t.asset === "sui" ? 9 : scale), digest: t.digest })),
      launch_funding: l.launch_funding.map(f => ({ source: f.source, amount_sui: decimalAmount(f.amountMist, 9), digest: f.digest, timestamp: new Date(f.at).toISOString(), source_status: f.sourceStatus, transaction_recipient_count: f.transactionRecipientCount ?? null, transaction_strength: f.transactionStrength ?? null })),
      launch_topup_present: l.launch_topup_present, first_funding_ever: l.first_funding_ever,
+      first_funder_status: buyerFirstFunding.get(l.address)?.status ?? "unmeasured",
+      first_funder_root: l.first_funding_ever?.funder ? funderRoots.get(l.first_funding_ever.funder) ?? null : null,
      coverage: {
        complete: launchAccountingComplete(l.complete, !coreAddresses.has(l.address) || earlier?.complete === true, a.unread_pool_events),
       transactions: l.history.length, reads: l.history_reads, next_cursor: l.history_next_cursor,
@@ -346,18 +416,27 @@ export function registerLaunchTools(server: McpServer) {
     };
    };
    const totals = {
-    discovered: sumBuyers(ledgerRows), core: sumBuyers(ledgerRows.filter(r => r.row.status === "core")),
-    basis: "discovered sums every buyer found in the launch window; core sums only buyers in a core cluster. initial_buys are launch-window curve buys before the buyer's first sale, by event; gross_buys add every later buy of the coin in the sell window, curve or pool, by event, including buys after a sale that may recycle its proceeds. Proceeds are event amounts; buy_sui_debit_incl_gas is the launch-window buy transactions' debit, gas and any fee legs included.",
+    discovered: sumBuyers(ledgerRows),
+    core: sumBuyers(ledgerRows.filter(r => r.row.status === "core")),
+    core_creator_linked: sumBuyers(ledgerRows.filter(r => r.row.status === "core" && r.row.creator_relation?.status !== "buyer_link_only")),
+    core_buyer_link_only: sumBuyers(ledgerRows.filter(r => r.row.status === "core" && r.row.creator_relation?.status === "buyer_link_only")),
+    basis: "discovered sums every buyer found in the launch window; core sums only buyers in a core cluster; core_creator_linked counts qualified direct creator or creator-linked private-destination edges, while core_buyer_link_only is connected through buyers without its own creator edge. Initial buys are event amounts before the first sale; gross buys include later purchases that may reuse proceeds. Proceeds are gross event amounts, not profit; buy_sui_debit_incl_gas includes launch-window buy gas and fee legs.",
    };
+   const firstFundingComplete = !firstFundingBudget.truncated && !firstFunderPopularityBudget.truncated
+    && creatorFirstFunding.status !== "unmeasured"
+    && [...buyerFirstFunding.values()].every(read => read.status !== "unmeasured")
+    && [...funderRoots.values()].every(root => root.funder_status !== "unmeasured");
    const complete = discovery.complete && (!poolId || poolDiscovery?.complete === true)
-    && direct.incomplete_pairs.length === 0 && creatorRecipientComplete
-    && resultBuyers.every(b => b.coverage.complete) && destinations.every(d => d.classification_complete && d.creator_payment_complete);
+    && direct.incomplete_pairs.length === 0 && creatorRecipientComplete && firstFundingComplete
+    && resultBuyers.every(b => b.coverage.complete)
+    && destinations.every(d => d.classification_complete && d.creator_payment_complete && d.creator_prior_complete);
    const advancePages = nextLaunchPageBudget(pages, !discovery.complete && discovery.next_cursor !== null
     || !!poolDiscovery && !poolDiscovery.complete && poolDiscovery.next_cursor !== null
     || ledgers.some(l => !l.complete && l.history_next_cursor !== null)
     || [...earlyHistories.values()].some(read => read && !read.complete && read.next_cursor !== null)
     || launchPaymentReadsCanAdvance(direct.can_advance, creatorRecipientReads)
-    || destinations.some(d => d.classification_can_advance || d.creator_payment_can_advance));
+    || destinations.some(d => d.classification_can_advance || d.creator_payment_can_advance || d.creator_prior_can_advance)
+    || firstFundingBudget.truncated || firstFunderPopularityBudget.truncated);
    const nextCall = advancePages !== null ? {
     tool: "analyze_launch", args: {
      coin_type: coin, ...(creation_tx ? { creation_tx } : {}),
@@ -373,20 +452,40 @@ export function registerLaunchTools(server: McpServer) {
      address: origin.creator, creation_tx: origin.creation_tx, created_at: origin.created_at,
      curve_id: origin.curve_id, graduation_target: origin.graduation_target,
      graduated: origin.graduated, pool_id: origin.pool_id, pool_venue: pool?.venue ?? null,
+     first_funding_ever: creatorFirstFundingRead, first_funder_status: creatorFirstFunding.status,
+     first_funder_root: creatorFirstFunding.funder ? funderRoots.get(creatorFirstFunding.funder) ?? null : null,
     },
     discovered_buyers: resultBuyers,
     destinations: destinations.map(d => ({
      address: d.address, deposit_verdict: d.deposit_verdict, sweep_to: d.sweep_to, sweeps: d.sweeps,
-     eligible: scores.destinations.find(s => s.address === d.address)?.eligible ?? false,
-     affiliation: scores.destinations.find(s => s.address === d.address)?.affiliation ?? "none",
+     eligible: scoredDestinations.get(d.address)?.eligible ?? false,
+     affiliation: scoredDestinations.get(d.address)?.affiliation ?? "none",
      creator_payments: d.creator_payments.map(p => ({
-      digest: p.digest, asset: p.asset, amount: decimalAmount(p.amount, p.asset === "sui" ? 9 : scale),
+      digest: p.digest, timestamp: p.timestamp ?? null, asset: p.asset,
+      amount: decimalAmount(p.amount, p.asset === "sui" ? 9 : scale),
+     })),
+     creator_prior_payments: d.creator_prior_payments.map(p => ({
+      digest: p.digest, timestamp: p.timestamp ?? null, asset: p.asset,
+      amount: decimalAmount(p.amount, p.asset === "sui" ? 9 : scale),
      })),
      classification_complete: d.classification_complete, classification_can_advance: d.classification_can_advance,
      creator_payment_complete: d.creator_payment_complete, creator_payment_can_advance: d.creator_payment_can_advance,
+     creator_prior_complete: d.creator_prior_complete, creator_prior_can_advance: d.creator_prior_can_advance,
+     creator_prior_reads: d.creator_prior_reads,
      distinct_depositors: d.distinctDepositors, inflow_payers: d.inflow_payers,
     })),
-    clusters: scores.clusters, pairs: scores.pairs, below_threshold: scores.below_threshold,
+    buyer_index: resultBuyers.map(({ address, status, cluster_id, creator_relation, coverage }) => ({
+     address, status, cluster_id, creator_relation: creator_relation?.status ?? null,
+     complete: coverage.complete,
+    })),
+    destination_index: destinations.map(d => ({
+     address: d.address, deposit_verdict: d.deposit_verdict,
+     affiliation: scoredDestinations.get(d.address)?.affiliation ?? "none",
+    })),
+    clusters: scores.clusters.map(cluster => ({
+     ...cluster,
+     member_links: cluster.member_links.map(link => ({ ...link, path: compactPath(link.path) })),
+    })), pairs: scores.pairs, below_threshold: scores.below_threshold,
     sub_threshold_payments: scores.sub_threshold_payments, observations: scores.observations, totals,
     coverage: {
      complete,
@@ -405,7 +504,14 @@ export function registerLaunchTools(server: McpServer) {
       address: d.address, classification_complete: d.classification_complete,
       classification_can_advance: d.classification_can_advance,
       creator_payment_complete: d.creator_payment_complete, creator_payment_can_advance: d.creator_payment_can_advance,
+      creator_prior_complete: d.creator_prior_complete, creator_prior_can_advance: d.creator_prior_can_advance,
+      creator_prior_reads: d.creator_prior_reads,
      })),
+     creator_prior_window: { from_checkpoint_exclusive: 0, before_checkpoint_exclusive: origin.created_checkpoint, order: "newest" },
+     first_funding: {
+      complete: firstFundingComplete, lookup_budget_exhausted: firstFundingBudget.truncated,
+      popularity_budget_exhausted: firstFunderPopularityBudget.truncated, roots_read: funderRoots.size
+     },
      creator_recipient_payments_complete: creatorRecipientComplete,
      subject_payments_complete: direct.incomplete_pairs.length === 0,
      subject_payments_can_advance: direct.can_advance,
@@ -413,7 +519,7 @@ export function registerLaunchTools(server: McpServer) {
      ...(!complete && nextCall ? { next_call: nextCall } : {}),
     },
     evidence_tiers: { flows: "chain-derived", deposit_classification: "heuristic", clusters: "heuristic" },
-    caveat: "SuiNS handles are self-chosen. A deposit address's exchange account holder cannot be named from chain data. Coordination is heuristic; this tool makes no allegation about anyone's intent.",
+    caveat: "SuiNS handles are self-chosen. Anyone can pay an exchange deposit address, and its account holder cannot be named from Sui data. A shared narrow funder or destination is a heuristic lead, not identity. Coordination is heuristic; this tool makes no allegation about anyone's intent.",
    };
    const result = {
     ...payload, reconciliation_note: "Event-first trades, inflows from others, forwards and gas are checked against complete-window balance changes; sui_leftover is reported only when a complete closed prior-history read establishes the opening balance.", coverage: {
@@ -428,16 +534,25 @@ export function registerLaunchTools(server: McpServer) {
     below_threshold: { budget: 500, brief: (row) => { const pair = row as { a: string; b: string; score: number }; return { a: pair.a, b: pair.b, score: pair.score }; } },
     sub_threshold_payments: { budget: 500, brief: (row) => { const payment = row as { from: string; to: string; asset: string }; return { from: payment.from, to: payment.to, asset: payment.asset }; } },
     observations: { budget: 700, brief: (row) => { const observation = row as { type: string; via?: string }; return { type: observation.type, via: observation.via }; } },
+    discovered_buyers: {
+     budget: 10_000,
+     rank: (a, b) => {
+      const priority = (row: typeof resultBuyers[number]) => (row.status === "core" ? 2 : 0) + (!row.coverage.complete ? 1 : 0);
+      return priority(b as typeof resultBuyers[number]) - priority(a as typeof resultBuyers[number]);
+     },
+     brief: (row) => { const buyer = row as { address: string; status: string; cluster_id: number | null }; return { address: buyer.address, status: buyer.status, cluster_id: buyer.cluster_id }; },
+    },
    };
    for (let i = 0; i < resultBuyers.length; i++) {
     for (const [field, budget] of [["forwarded", 750], ["sales", 500], ["launch_funding", 650], ["buy_events", 550], ["later_buys", 550]] as const) caps[`discovered_buyers.${i}.${field}`] = { budget, brief: (row) => { const item = row as { digest?: string; destination?: string }; return { digest: item.digest, ...(item.destination ? { destination: item.destination } : {}) }; } };
    }
    for (let i = 0; i < destinations.length; i++) {
     caps[`destinations.${i}.creator_payments`] = { budget: 800, brief: (row) => { const payment = row as { digest: string }; return { digest: payment.digest }; } };
+    caps[`destinations.${i}.creator_prior_payments`] = { budget: 800, brief: (row) => { const payment = row as { digest: string }; return { digest: payment.digest }; } };
     caps[`destinations.${i}.sweeps`] = { budget: 1_000, brief: (row) => { const sweep = row as { digest?: string }; return { digest: sweep.digest }; } };
    }
    caps.destinations = { budget: 6_500, rank: (a, b) => { const left = a as { affiliation: string; deposit_verdict: string; sweeps: unknown[] }; const right = b as typeof left; const priority = (d: typeof left) => (d.affiliation === "creator_affiliated" ? 4 : 0) + (d.deposit_verdict === "likely" ? 3 : 0) + (d.sweeps.length ? 2 : 0); return priority(right) - priority(left); }, brief: (row) => { const d = row as { address: string; affiliation: string; deposit_verdict: string }; return { address: d.address, affiliation: d.affiliation, deposit_verdict: d.deposit_verdict }; } };
-   for (let i = 0; i < scores.clusters.length; i++) caps[`clusters.${i}.edges`] = { budget: 6_000, brief: (row) => { const edge = row as { a: string; b: string; score: number }; return { a: edge.a, b: edge.b, score: edge.score }; } };
+   for (let i = 0; i < scores.clusters.length; i++) caps[`clusters.${i}.edges`] = { budget: 12_000, brief: (row) => { const edge = row as { a: string; b: string; score: number }; return { a: edge.a, b: edge.b, score: edge.score }; } };
    const childPaths = new Set(Object.keys(caps));
    const pagePaths = new Set([...childPaths, ...LAUNCH_PARENT_LISTS, "lists"]);
    const listCall = (path: string, at: number) => ({

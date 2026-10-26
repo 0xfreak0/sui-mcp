@@ -5229,6 +5229,66 @@ among them. Rules a change is likely to break:
   supported launchpads.
 - **Weights are in-sample.** Every weight and threshold is tuned on one case;
   negative controls are drawn separately and never tuned after being looked at.
+- **Creator-relative membership paths distinguish direct from indirect
+  affiliation.** `clusters[].member_links` and each buyer's
+  `creator_relation` carry the shortest qualifying-edge route to the
+  creator; each path edge names its pair and `edge_types`, while
+  `clusters[].edges` holds the transaction evidence without repeating it
+  at every hop. `direct` needs a qualifying direct creator→buyer payment,
+  `via_creator_linked_destination` needs that buyer's own qualifying edge
+  through an eligible private destination the creator paid, and
+  `buyer_link_only` is merely connected through other buyers. A path through
+  a creator-linked buyer does not transfer that buyer's affiliation to
+  everyone beyond them. `totals.core_creator_linked` and
+  `totals.core_buyer_link_only` split buyer amounts without asserting owner
+  identity or changing cluster membership.
+- **A shared first funder scores only when proven narrow.** Two buyers
+  sharing the same direct first funder get `shared_first_funder` (weight 3)
+  only when the funder's status is `narrow` and its popularity scan is
+  complete. A hub, unmeasured or provisional funder is rejected and reported
+  as a `hub_mediated` observation. The shared funder must be the exact same
+  address for both buyers; a funder that paid one buyer directly and another
+  through an intermediary does not qualify. This signal measures the
+  buyer's entire pre-launch funding origin, not its launch top-up, so it is
+  independent of the launch-window funding-burst and shared-funding-tx
+  signals.
+- **A strong deposit the creator paid pre-launch gets its own signal, not a
+  creator-linked-destination edge.** A likely deposit address with a complete
+  classification, at most 50 distinct depositors and a qualifying creator
+  payment dated strictly before the creation transaction's checkpoint gives
+  `creator_paid_deposit` (weight 3). This signal never creates a
+  `creator_linked_destination` edge through that same deposit (weight 6
+  belongs to ordinary destinations only), and never creates a funding edge.
+  Anyone can pay a deposit address, so the signal carries a static caveat
+  that payment does not name the account holder. A normal narrow destination
+  the creator paid before creation or during the bounded launch window gives
+  `creator_linked_destination` between buyer and creator. A shared deposit the
+  creator paid only after the launch gives neither creator signal and stays a
+  buyer-only `shared_deposit_address` (weight 6).
+- **Creator first funding and prior payments are reported apart from
+  launch-window payments.** `creator.first_funding_ever`,
+  `creator.first_funder_status`, and the same fields on buyers record
+  `firstFunderOf` separately from launch top-ups. Each destination carries
+  dated `creator_prior_payments` strictly before its launch checkpoint and
+  `creator_payments` in the launch window; the first list has its own
+  `creator_prior_complete`, advancing-cursor flag and read count. Both
+  creator and buyers' first funders carry measured statuses (`narrow`,
+  `hub`, `unmeasured`, `provisional`, `no_qualifying_inflow`). A budget
+  stop never means no funder or no creator payment. Repeated historical
+  creator payments are summed before scoring; at most their earliest four
+  and latest four digests appear on an edge, with `prior_payment_count`
+  and every dated record in `destinations[].creator_prior_payments`.
+  A creator→likely-deposit payment remains weak evidence even when large.
+  In the default view `buyer_index` and `destination_index` name every
+  candidate and status when the detail lists are capped; follow
+  `omitted.next_call` or `list_path` to read every underlying row.
+- **Historical event and accounting limits fence the result.** A buyer whose
+  opening balance could not be read carries `opening_balance_complete: false`
+  and the reconciliation stops at `window_reconciled`; a buyer whose pool
+  swap events were not all decoded has incomplete pool coverage and its
+  accounting is `partial`. The full result fits within 45k characters inline;
+  past that limit the catalog lists each parent record path and its
+  `list_path` argument instead of inlining.
 
 ### Reading Move bytecode
 

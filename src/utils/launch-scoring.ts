@@ -35,6 +35,11 @@ export interface LaunchTransfer {
  /** Explicitly distinguish an unpriced/unknown dust floor from a known failed floor. */
  qualifies: boolean | "unpriced";
 }
+export interface LaunchFirstFunding {
+ funder: string | null;
+ digest: string | null;
+ status: "narrow" | "hub" | "unmeasured" | "provisional" | "no_qualifying_inflow";
+}
 
 export interface LaunchBuyer {
  address: string;
@@ -46,6 +51,8 @@ export interface LaunchBuyer {
  /** Referral addresses named by buy events. */
  referrals: string[];
  suinsNames: string[];
+ /** First qualifying inflow, separate from launch-window top-ups. */
+ firstFunding?: LaunchFirstFunding;
 }
 
 export interface LaunchDestination {
@@ -65,15 +72,22 @@ export interface LaunchDestination {
 }
 
 export interface LaunchScoringInput {
- creator: { address: string; /** Direct payments discovered from destination history. */ payments: LaunchPayment[] };
+ creator: {
+  address: string;
+  /** Direct payments discovered from destination history after launch. */
+  payments: LaunchPayment[];
+  /** Payments strictly before launch; never a post-launch direct edge. */
+  priorPayments?: LaunchPayment[];
+  firstFunding?: LaunchFirstFunding;
+ };
  buyers: LaunchBuyer[];
  destinations: LaunchDestination[];
  totalSupplyRaw: bigint;
 }
 
 export type LaunchSignalType =
- | "shared_destination" | "shared_deposit_address" | "creator_linked_destination" | "direct"
- | "funding_burst" | "shared_funding_tx" | "referral" | "suins";
+ | "shared_destination" | "shared_deposit_address" | "creator_linked_destination" | "creator_paid_deposit" | "direct"
+ | "funding_burst" | "shared_funding_tx" | "shared_first_funder" | "referral" | "suins";
 
 export interface LaunchSignal {
  type: LaunchSignalType;
@@ -85,6 +99,8 @@ export interface LaunchSignal {
  transactionStrength?: "targeted" | "other";
  digests: string[];
  sweep_digests?: string[];
+ /** Total historical payments; digests sample both ends when the history is long. */
+ prior_payment_count?: number;
  basis?: string;
 }
 
@@ -96,6 +112,22 @@ export interface LaunchPairScore {
  signals: LaunchSignal[];
 }
 
+export interface LaunchMemberPathEdge {
+ from: string;
+ to: string;
+ score: number;
+ /** The scored pair's actual evidence, not an inferred relationship. */
+ signals: LaunchSignal[];
+}
+
+export interface LaunchMemberLink {
+ address: string;
+ /** Only a qualifying creator payment is direct; buyer-to-buyer paths remain buyer links. */
+ status: "direct" | "via_creator_linked_destination" | "buyer_link_only";
+ /** Shortest sequence of qualifying pairs from the creator (or micro-cluster root). */
+ path: LaunchMemberPathEdge[];
+}
+
 export interface LaunchCluster {
  id: string;
  members: string[];
@@ -104,6 +136,7 @@ export interface LaunchCluster {
  edges: LaunchPairScore[];
  status: "core" | "micro_cluster";
  evidence_tier: "heuristic";
+ member_links: LaunchMemberLink[];
 }
 
 export interface LaunchObservation {
@@ -127,7 +160,7 @@ export interface LaunchScoringResult {
  clusters: LaunchCluster[];
  /** Observed pairs that failed the pairwise threshold or shared-destination core condition. */
  below_threshold: LaunchPairScore[];
- buyers: { address: string; status: "core" | "micro_cluster" | "unclustered"; clusterId?: string }[];
+ buyers: { address: string; status: "core" | "micro_cluster" | "unclustered"; clusterId?: string; creator_relation?: Omit<LaunchMemberLink, "address"> }[];
  destinations: { address: string; eligible: boolean; affiliation: "creator_affiliated" | "buyer_shared" | "none" }[];
  observations: LaunchObservation[];
  sub_threshold_payments: LaunchSubThresholdPayment[];
@@ -222,31 +255,87 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
   payments.push(p);
   creatorDestinations.set(p.to, payments);
  }
+ // Keep the historical set separate: a creator's payment to an exchange
+ // deposit is evidence of a payment, not of control over its destination.
+ const priorDestinations = new Map<string, LaunchPayment[]>();
+ const priorTotals = new Map<string, bigint>();
+ const postlaunchPayments = new Set(input.creator.payments.map((p) => JSON.stringify([p.digest, p.to, p.asset, p.amount.toString()])));
+ const seenPrior = new Set<string>();
+ for (const p of input.creator.priorPayments ?? []) {
+  if (p.referral || p.amount <= 0n || p.to === input.creator.address) continue;
+  const identity = JSON.stringify([p.digest, p.to, p.asset, p.amount.toString()]);
+  if (postlaunchPayments.has(identity) || seenPrior.has(identity)) continue;
+  seenPrior.add(identity);
+  const k = JSON.stringify([p.to, p.asset]);
+  priorTotals.set(k, (priorTotals.get(k) ?? 0n) + p.amount);
+  const payments = priorDestinations.get(p.to) ?? [];
+  payments.push(p);
+  priorDestinations.set(p.to, payments);
+ }
+ for (const [address, payments] of priorDestinations) {
+  const historicalOnly = strongDeposit(destinationByAddress.get(address));
+  priorDestinations.set(address, payments.filter((p) => {
+   const k = JSON.stringify([p.to, p.asset]);
+   const total = (priorTotals.get(k) ?? 0n) + (historicalOnly ? 0n : creatorTotals.get(k) ?? 0n);
+   return total >= paymentFloor(p.asset, input.totalSupplyRaw);
+  }));
+ }
  const destinations: LaunchScoringResult["destinations"] = [];
  for (const address of new Set([...destinationByAddress.keys(), ...toDestination.keys()])) {
   const byBuyer = toDestination.get(address);
   const eligible = destinationEligible(destinationByAddress.get(address));
   const shared = !!byBuyer && byBuyer.size >= 2;
-  const creatorPayments = creatorDestinations.get(address);
+  const priorPayments = priorDestinations.get(address);
+  const deposit = strongDeposit(destinationByAddress.get(address));
+  const postlaunch = creatorDestinations.get(address) ?? [];
+  const historicNarrow = !deposit && eligible && !!priorPayments?.length;
+  const creatorPayments = [
+   ...postlaunch,
+   ...(historicNarrow ? input.creator.payments.filter((p) =>
+    p.to === address && !p.referral && p.amount > 0n && !postlaunch.includes(p) &&
+    (priorTotals.get(JSON.stringify([p.to, p.asset])) ?? 0n) +
+    (creatorTotals.get(JSON.stringify([p.to, p.asset])) ?? 0n) >= paymentFloor(p.asset, input.totalSupplyRaw)) : []),
+   ...(historicNarrow ? priorPayments! : []),
+  ];
   destinations.push({
    address, eligible, affiliation: shared && eligible
-    ? creatorPayments?.length ? "creator_affiliated" : "buyer_shared" : "none"
+    ? creatorPayments.length ? "creator_affiliated" : "buyer_shared" : "none"
   });
-  if (!byBuyer || !shared) continue;
-  if (!eligible) {
+  if (!byBuyer || !eligible) {
+   if (shared && !eligible) {
    observations.push({
-    type: "destination_ineligible", addresses: [...byBuyer.keys()].sort(), via: address,
-    digests: [...new Set([...byBuyer.values()].flat().map((t) => t.digest))].sort(),
+     type: "destination_ineligible", addresses: [...byBuyer!.keys()].sort(), via: address,
+     digests: [...new Set([...byBuyer!.values()].flat().map((t) => t.digest))].sort(),
     reason: "Destination is not a measured narrow wallet or a likely deposit address."
    });
+   }
    continue;
   }
+  if (deposit && priorPayments?.length) {
+   const amounts = new Map<LaunchPayment["asset"], bigint>();
+   for (const payment of priorPayments) amounts.set(payment.asset, (amounts.get(payment.asset) ?? 0n) + payment.amount);
+   const chronological = [...priorPayments].sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? "") || a.digest.localeCompare(b.digest));
+   const sampled = chronological.length <= 8 ? chronological : [...chronological.slice(0, 4), ...chronological.slice(-4)];
+   for (const [buyer, transfers] of byBuyer) {
+    if (buyer === input.creator.address) continue;
+    const assets = new Set([...transfers.map((t) => t.asset), ...amounts.keys()]);
+    add(buyer, input.creator.address, {
+     type: "creator_paid_deposit", weight: 3, via: address,
+     asset: assets.size === 2 ? "both" : [...assets][0],
+     amount: [...transfers.map((t) => `${t.amount} ${t.asset}`),
+     ...[...amounts].map(([asset, amount]) => `${amount} ${asset} in ${priorPayments.length} prior payment(s)`)].join(", "),
+     digests: [...new Set([...transfers.map((t) => t.digest), ...sampled.map((p) => p.digest)])].sort(),
+     prior_payment_count: priorPayments.length,
+     basis: "The creator previously paid this likely single-account deposit. Digests sample earliest and latest payments; destinations[].creator_prior_payments lists every dated transfer. Anyone can pay a deposit; its account holder is unknown."
+    });
+   }
+  }
+  if (!shared) continue;
   const buyers = [...byBuyer.keys()].sort();
   for (let i = 0; i < buyers.length; i++) {
    for (let j = i + 1; j < buyers.length; j++) {
     const transfers = [...byBuyer.get(buyers[i])!, ...byBuyer.get(buyers[j])!];
     const assets = new Set(transfers.map((t) => t.asset));
-    const deposit = strongDeposit(destinationByAddress.get(address));
     add(buyers[i], buyers[j], {
      type: deposit ? "shared_deposit_address" : "shared_destination",
      weight: deposit ? LAUNCH_PAIR_THRESHOLD : 3, via: address,
@@ -259,7 +348,7 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
      } : {}),
     });
    }
-   if (creatorPayments?.length && buyers[i] !== input.creator.address) {
+   if (creatorPayments.length && buyers[i] !== input.creator.address) {
     // Two independent facts: the buyer reached a jointly used destination,
     // and the creator paid that same destination directly.
     const buyerTransfers = byBuyer.get(buyers[i])!;
@@ -317,6 +406,36 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
    amount: flows.map((f) => `${f.amount} ${f.asset}`).join(", "),
    digests: [...new Set(flows.flatMap((f) => [...f.digests]))].sort()
   });
+ }
+ // First-ever funding is independent of top-ups in the launch window. A
+ // matching source scores once per pair only if BOTH origins were fully
+ // measured as narrow; a hub or partial verdict remains an observation.
+ const firstBySource = new Map<string, Array<{ address: string; funding: LaunchFirstFunding }>>();
+ for (const entry of [{ address: input.creator.address, funding: input.creator.firstFunding },
+ ...input.buyers.map((b) => ({ address: b.address, funding: b.firstFunding }))]) {
+  if (!entry.funding?.funder || isUnspendableAddress(entry.funding.funder)) continue;
+  const group = firstBySource.get(entry.funding.funder) ?? [];
+  group.push({ address: entry.address, funding: entry.funding });
+  firstBySource.set(entry.funding.funder, group);
+ }
+ for (const [funder, group] of firstBySource) {
+  for (let i = 0; i < group.length; i++) {
+   for (let j = i + 1; j < group.length; j++) {
+    const a = group[i], b = group[j];
+    if (a.address === b.address) continue;
+    const digests = [...new Set([a.funding.digest, b.funding.digest].filter((d): d is string => d != null))].sort();
+    if (a.funding.status === "narrow" && b.funding.status === "narrow") {
+     add(a.address, b.address, { type: "shared_first_funder", weight: 3, via: funder, digests });
+    } else {
+     const statuses = [a.funding.status, b.funding.status];
+     observations.push({
+      type: statuses.includes("hub") ? "hub_mediated" : "funding_unmeasured",
+      addresses: ordered(a.address, b.address), via: funder, digests,
+      reason: `Shared first funder has ${statuses.join(" and ")} source verdicts; a hub or incomplete source scores zero.`
+     });
+    }
+   }
+  }
  }
 
  const funding: { buyer: string; payment: LaunchFunding }[] = [];
@@ -447,9 +566,40 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
   .map((g) => ({
    id: "", members: g.members.sort(), score: Math.min(...g.edges.map((e) => e.score)),
    edges: g.edges, status: g.members.includes(input.creator.address) && g.edges.some((e) => e.sharedDestination) ? "core" as const : "micro_cluster" as const,
-   evidence_tier: "heuristic" as const
+   evidence_tier: "heuristic" as const, member_links: []
   }))
   .sort((a, b) => a.members[0].localeCompare(b.members[0]));
+ // Breadth-first traversal gives every member a shortest path made only of
+ // qualifying edges. Sort neighbours so ties do not depend on input order.
+ for (const cluster of clusters) {
+  const source = cluster.members.includes(input.creator.address) ? input.creator.address : cluster.members[0];
+  const neighbours = new Map<string, Array<{ to: string; pair: LaunchPairScore }>>();
+  for (const edge of cluster.edges) {
+   for (const [from, to] of [[edge.a, edge.b], [edge.b, edge.a]]) {
+    const rows = neighbours.get(from) ?? [];
+    rows.push({ to, pair: edge });
+    neighbours.set(from, rows);
+   }
+  }
+  const paths = new Map<string, LaunchMemberPathEdge[]>([[source, []]]);
+  const queue = [source];
+  for (let index = 0; index < queue.length; index++) {
+   const from = queue[index];
+   for (const { to, pair } of (neighbours.get(from) ?? []).sort((a, b) => a.to.localeCompare(b.to))) {
+    if (paths.has(to)) continue;
+    paths.set(to, [...paths.get(from)!, { from, to, score: pair.score, signals: pair.signals }]);
+    queue.push(to);
+   }
+  }
+  cluster.member_links = cluster.members.map((address) => {
+   const creatorPair = cluster.edges.find((edge) =>
+    (edge.a === input.creator.address && edge.b === address) || (edge.b === input.creator.address && edge.a === address));
+   const status = address === input.creator.address || creatorPair?.signals.some((s) => s.type === "direct")
+    ? "direct" : creatorPair?.signals.some((s) => s.type === "creator_linked_destination")
+     ? "via_creator_linked_destination" : "buyer_link_only";
+   return { address, status, path: paths.get(address)! };
+  });
+ }
  let coreId = 0;
  let microId = 0;
  const membership = new Map<string, LaunchCluster>();
@@ -462,8 +612,9 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
   below_threshold: scoredPairs.filter((p) => p.score < LAUNCH_PAIR_THRESHOLD),
   buyers: input.buyers.map((b) => {
    const cluster = membership.get(b.address);
-   return cluster ? { address: b.address, status: cluster.status, clusterId: cluster.id }
-    : { address: b.address, status: "unclustered" as const };
+   if (!cluster) return { address: b.address, status: "unclustered" as const };
+   const { status, path } = cluster.member_links.find((link) => link.address === b.address)!;
+   return { address: b.address, status: cluster.status, clusterId: cluster.id, creator_relation: { status, path } };
   }),
   destinations: destinations.sort((a, b) => a.address.localeCompare(b.address)), observations,
   sub_threshold_payments: subThreshold.sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to) || a.asset.localeCompare(b.asset)),

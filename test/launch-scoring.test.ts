@@ -390,6 +390,177 @@ describe("launch pairwise scoring", () => {
     ]);
   });
 
+  it("scores a direct first funder only when both source verdicts are narrow and complete", () => {
+    const [a, b, c] = ["0xa1", "0xa2", "0xa3"].map(buyer);
+    for (const member of [a, b, c]) transfer(member, STUDIO);
+    a.firstFunding = { funder: "0xf100", digest: "first-a", status: "narrow" };
+    b.firstFunding = { funder: "0xf100", digest: "first-b", status: "narrow" };
+    c.firstFunding = { funder: "0xf100", digest: "first-c", status: "hub" };
+    const data = input([a, b, c], [wallet(STUDIO)]);
+    data.creator.firstFunding = { funder: "0xf100", digest: "first-creator", status: "unmeasured" };
+    let result = scoreLaunch(data);
+    expect(pair(result, a.address, b.address)?.signals).toEqual([
+      expect.objectContaining({ type: "shared_destination", weight: 3 }),
+      expect.objectContaining({ type: "shared_first_funder", weight: 3, via: "0xf100", digests: ["first-a", "first-b"] }),
+    ]);
+    expect(pair(result, a.address, c.address)?.score).toBe(3);
+    expect(pair(result, CREATOR, a.address)).toBeUndefined();
+    expect(result.clusters).toMatchObject([{ status: "micro_cluster", members: [a.address, b.address] }]);
+    expect(result.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "hub_mediated", addresses: [a.address, c.address], via: "0xf100" }),
+      expect.objectContaining({ type: "funding_unmeasured", addresses: [a.address, CREATOR], via: "0xf100" }),
+    ]));
+    data.creator.firstFunding.status = "narrow";
+    c.firstFunding.status = "provisional";
+    result = scoreLaunch(data);
+    expect(pair(result, CREATOR, a.address)?.signals).toEqual([
+      expect.objectContaining({ type: "shared_first_funder", weight: 3, digests: ["first-a", "first-creator"] }),
+    ]);
+    expect(pair(result, b.address, c.address)?.signals.some((s) => s.type === "shared_first_funder")).toBe(false);
+    c.firstFunding.status = "no_qualifying_inflow";
+    c.firstFunding.funder = null;
+    expect(scoreLaunch(data).observations.some((o) => o.addresses.includes(c.address) && o.via === "0xf100")).toBe(false);
+  });
+
+  it("treats prior creator payments to likely deposits as three-point payments, not private funding or six-point links", () => {
+    const [a, b] = ["0xa1", "0xa2"].map(buyer);
+    transfer(a, DEPOSIT);
+    transfer(b, DEPOSIT);
+    const data = input([a, b], [{
+      ...wallet(DEPOSIT, "unmeasured"), depositVerdict: "likely", classificationComplete: true,
+      distinctDepositors: 4, labelCategory: "cex", exchangeHotWallet: false,
+    }]);
+    const payment = { to: DEPOSIT, asset: "sui" as const, amount: SUI, digest: "creator-before" };
+    data.creator.priorPayments = [
+      payment, payment,
+      { to: DEPOSIT, asset: "sui", amount: 100n * SUI, digest: "referral", referral: true },
+      { to: CREATOR, asset: "sui", amount: 100n * SUI, digest: "own-receipt" },
+    ];
+    let result = scoreLaunch(data);
+    expect(pair(result, CREATOR, a.address)).toMatchObject({ score: 3, sharedDestination: false });
+    expect(pair(result, CREATOR, a.address)?.signals).toEqual([
+      expect.objectContaining({
+        type: "creator_paid_deposit", weight: 3, via: DEPOSIT,
+        digests: ["creator-before", `transfer-${a.address}-${DEPOSIT}`],
+      }),
+    ]);
+    expect(pair(result, a.address, b.address)?.score).toBe(6);
+    expect(result.clusters[0]).toMatchObject({ status: "micro_cluster", members: [a.address, b.address] });
+    expect(result.destinations.find((d) => d.address === DEPOSIT)?.affiliation).toBe("buyer_shared");
+    expect(result.pairs.some((p) => p.signals.some((s) => s.type === "creator_linked_destination" || s.type === "shared_first_funder"))).toBe(false);
+    b.transfers = [];
+    result = scoreLaunch(data);
+    expect(pair(result, CREATOR, a.address)?.score).toBe(3); // A sole buyer still witnessed the prior deposit.
+    data.creator.firstFunding = { funder: "0xf100", digest: "creator-origin", status: "hub" };
+    a.firstFunding = { funder: "0xf100", digest: "buyer-origin", status: "narrow" };
+    result = scoreLaunch(data);
+    expect(pair(result, CREATOR, a.address)?.score).toBe(3);
+    expect(result.clusters).toEqual([]);
+    expect(result.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "hub_mediated", via: "0xf100", addresses: [a.address, CREATOR] }),
+    ]));
+    data.creator.firstFunding.status = "narrow";
+    result = scoreLaunch(data);
+    expect(pair(result, CREATOR, a.address)).toMatchObject({ score: 6, sharedDestination: false });
+    expect(result.clusters[0]?.member_links.find((link) => link.address === a.address)).toMatchObject({
+      status: "buyer_link_only", path: [{ from: CREATOR, to: a.address }],
+    });
+    data.creator.firstFunding.status = "hub";
+    data.destinations[0].classificationComplete = false;
+    expect(pair(scoreLaunch(data), CREATOR, a.address)).toBeUndefined();
+  });
+
+  it("summarizes long historical deposit evidence without losing its complete count or dated source rows", () => {
+    const a = buyer("0xa1");
+    transfer(a, DEPOSIT);
+    const data = input([a], [{
+      ...wallet(DEPOSIT, "unmeasured"), depositVerdict: "likely", classificationComplete: true,
+      distinctDepositors: 1, labelCategory: "cex", exchangeHotWallet: false,
+    }]);
+    data.creator.priorPayments = Array.from({ length: 25 }, (_, i) => ({
+      to: DEPOSIT, asset: "sui" as const, amount: SUI,
+      timestamp: `2025-01-${String(i + 1).padStart(2, "0")}T00:00:00Z`,
+      digest: `prior-${String(i).padStart(2, "0")}`,
+    }));
+    const evidence = pair(scoreLaunch(data), CREATOR, a.address)!.signals[0];
+    expect(evidence).toMatchObject({
+      type: "creator_paid_deposit", weight: 3, prior_payment_count: 25,
+      amount: `20000000000 sui, 25000000000 sui in 25 prior payment(s)`,
+    });
+    expect(evidence.digests).toEqual([
+      "prior-00", "prior-01", "prior-02", "prior-03",
+      "prior-21", "prior-22", "prior-23", "prior-24",
+      `transfer-${a.address}-${DEPOSIT}`,
+    ]);
+    expect(data.creator.priorPayments).toHaveLength(25);
+  });
+
+  it("uses historical narrow studio payments once for creator links but never scores receipts or referral fees", () => {
+    const [a, b] = ["0xa1", "0xa2"].map(buyer);
+    transfer(a, STUDIO);
+    transfer(b, STUDIO);
+    const data = input([a, b], [wallet(STUDIO)]);
+    data.creator.priorPayments = [
+      { to: STUDIO, asset: "sui", amount: 600_000_000n, digest: "prior-1" },
+      { to: STUDIO, asset: "sui", amount: 400_000_000n, digest: "prior-2" },
+      { to: STUDIO, asset: "sui", amount: 400_000_000n, digest: "prior-2" },
+      { to: STUDIO, asset: "sui", amount: 50n * SUI, digest: "referral", referral: true },
+      { to: CREATOR, asset: "sui", amount: 50n * SUI, digest: "self" },
+    ];
+    const result = scoreLaunch(data);
+    expect(pair(result, CREATOR, a.address)?.signals).toEqual([
+      expect.objectContaining({
+        type: "creator_linked_destination", weight: 6, via: STUDIO,
+        digests: ["prior-1", "prior-2", `transfer-${a.address}-${STUDIO}`],
+        amount: `20000000000 sui, 600000000 sui, 400000000 sui`,
+      }),
+    ]);
+    expect(result.clusters[0]?.status).toBe("core");
+    const historical = data.creator.priorPayments[0];
+    data.creator.payments.push(historical);
+    expect(pair(scoreLaunch(data), CREATOR, a.address)?.signals.filter((s) => s.type === "creator_linked_destination")).toHaveLength(1);
+  });
+
+  it("reports shortest real qualifying paths and keeps indirectly connected buyers buyer_link_only", () => {
+    const [a, b, c, d] = ["0xa1", "0xa2", "0xa3", "0xa4"].map(buyer);
+    const x = "0xdd3", y = "0xdd4", z = "0xdd5", w = "0xdd6";
+    for (const member of [a, d]) transfer(member, STUDIO);
+    for (const member of [a, b]) { transfer(member, x); transfer(member, y); }
+    for (const member of [b, c]) { transfer(member, z); transfer(member, w); }
+    for (const member of [a, c]) { transfer(member, DEPOSIT); transfer(member, "0xdd7"); }
+    const data = input([a, b, c, d], [STUDIO, x, y, z, w, DEPOSIT, "0xdd7"].map((address) => wallet(address)));
+    data.creator.priorPayments = [{ to: STUDIO, asset: "sui", amount: SUI, digest: "creator-studio" }];
+    data.creator.payments.push({ to: d.address, asset: "sui", amount: SUI, digest: "creator-d" });
+    const result = scoreLaunch(data);
+    const links = result.clusters[0].member_links;
+    expect(links.find((link) => link.address === CREATOR)).toEqual({ address: CREATOR, status: "direct", path: [] });
+    expect(links.find((link) => link.address === a.address)).toMatchObject({ status: "via_creator_linked_destination", path: [{ from: CREATOR, to: a.address }] });
+    expect(links.find((link) => link.address === d.address)).toMatchObject({ status: "direct", path: [{ from: CREATOR, to: d.address }] });
+    expect(links.find((link) => link.address === b.address)?.path.map((edge) => [edge.from, edge.to]))
+      .toEqual([[CREATOR, a.address], [a.address, b.address]]);
+    expect(links.find((link) => link.address === c.address)?.path.map((edge) => [edge.from, edge.to]))
+      .toEqual([[CREATOR, a.address], [a.address, c.address]]);
+    for (const member of [b, c]) {
+      const link = links.find((row) => row.address === member.address)!;
+      expect(link.status).toBe("buyer_link_only");
+      expect(result.buyers.find((row) => row.address === member.address)?.creator_relation).toEqual({ status: link.status, path: link.path });
+      for (const edge of link.path) {
+        expect(edge.score).toBeGreaterThanOrEqual(6);
+        expect(edge.signals).toEqual(pair(result, edge.from, edge.to)?.signals);
+      }
+    }
+    const [m, n] = ["0xb1", "0xb2"].map(buyer);
+    transfer(m, DEPOSIT);
+    transfer(n, DEPOSIT);
+    const micro = scoreLaunch(input([m, n], [{
+      ...wallet(DEPOSIT), depositVerdict: "likely", classificationComplete: true, distinctDepositors: 2,
+    }])).clusters[0].member_links;
+    expect(micro).toMatchObject([
+      { address: m.address, status: "buyer_link_only", path: [] },
+      { address: n.address, status: "buyer_link_only", path: [{ from: m.address, to: n.address }] },
+    ]);
+  });
+
   it("round-trips consecutive full-list pages without losing or repeating an evidence row", () => {
     const rows = Array.from({ length: 37 }, (_, index) => ({ index, digest: `synthetic-${index}` }));
     const recovered: typeof rows = [];

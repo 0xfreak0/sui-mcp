@@ -9,7 +9,7 @@ sidebar:
 |---|---|
 | [`aggregate_events`](#aggregate_events) | Rank senders or event types by count or by a summed event field over a window, in one call instead of paging query_events. |
 | [`analyze_attack_tx`](#analyze_attack_tx) | Investigate one exploit transaction. |
-| [`analyze_launch`](#analyze_launch) | Discover SuiPump buy-event signers from the coin type alone, including graduated-pool trades, and account for their launch funding, initial and later buys, sales and forwards. |
+| [`analyze_launch`](#analyze_launch) | Discover SuiPump buyers from the exact coin type, including trades after graduation. |
 | [`analyze_multisig`](#analyze_multisig) | Read which of a multisig wallet's committee keys sign and which never have, across its recent sent transactions rather than one. |
 | [`build_timeline`](#build_timeline) | Reconstruct an incident across up to 10 wallets or objects as one decoded timeline, deduplicated and ordered by checkpoint. |
 | [`build_wallet_edges`](#build_wallet_edges) | Find possible shared operators when a fund trace reaches fresh wallets. |
@@ -93,7 +93,7 @@ sidebar:
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-(Incident investigation) Discover SuiPump buy-event signers from the coin type alone, including graduated-pool trades, and account for their launch funding, initial and later buys, sales and forwards. Buyers are ranked by initial tokens and percentage of supply, each with status and reconciliation. Scores each pair, including the creator, with evidence tiers; a shared likely deposit qualifies by itself only with a complete scan and at most 50 distinct depositors. A signer whose purchase did not credit its own token balance is unverified and not scored. Event amounts exclude gas; gas-inclusive debits are separate. A partial scan reports coverage, with next_call only when its read bound can advance. Full results page parent buyer/cluster/destination records and child evidence via path and offset arguments. No account-holder or misconduct verdict. Start with the exact coin type; creation_tx optionally cross-checks it.
+(Incident investigation) Discover SuiPump buyers from the exact coin type, including trades after graduation. Report every early buyer's status, event-first trades, gross proceeds, funding and reconciliation. Pairwise evidence distinguishes a direct creator payment, a creator-linked private collection wallet and buyer-only paths; shared narrow first funders score only when measured, never via a popular service. A bounded pre-launch creator payment to a likely deposit scores a separate, weaker observation, not shared ownership or exchange funding. Every historical destination payment carries its date; an incomplete scan reports coverage and a continuation where its bound can advance. detail: 'full' returns records inline when they fit, otherwise pages the selected list by offset. No account-holder or misconduct verdict.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -101,7 +101,7 @@ sidebar:
 | `creation_tx` | string | no | Optional creation digest to cross-check discovery from coin type |
 | `window_minutes` | integer (1 to 1440) | no | Minutes from creation for initial buyer discovery (default 10) |
 | `sell_window_days` | integer (1 to 30) | no | Days from creation to trace every buyer's sales and forwards (default 7) |
-| `max_pages` | integer (1 to 1000) | no | Discovery, buyer, destination and creator-payment page budget (default 20); coverage.next_call raises it only when an unfinished bound can advance |
+| `max_pages` | integer (1 to 1000) | no | Discovery, buyer, pre-launch creator-payment and first-funder page budget (default 20); coverage.next_call raises a bound only when it can advance |
 | `detail` | `summary` \| `full` | no | Full returns all data if small, otherwise lists consecutive pages by path and offset |
 | `list_path` | string | no | Full-view list path from the catalog (including parent lists and the catalog itself), for example discovered_buyers.0.sales |
 | `offset` | integer (at least 0) | no | Index of the first row in the selected list (default 0) |

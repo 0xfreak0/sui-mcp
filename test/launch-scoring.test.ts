@@ -9,8 +9,8 @@ import {
 import { pageAt } from "../src/utils/output-cap.js";
 
 const CREATOR = "0xc0";
-const STUDIO = "0xd1";
-const DEPOSIT = "0xd2";
+const STUDIO = "0xdd1";
+const DEPOSIT = "0xdd2";
 const SUI = 1_000_000_000n;
 const SUPPLY = 1_000_000_000n;
 
@@ -183,21 +183,21 @@ describe("launch pairwise scoring", () => {
 
   it("refuses unknown, popular, protocol, and incomplete destinations even if many buyers reach them", () => {
     const buyers = [buyer("0xa1"), buyer("0xa2"), buyer("0xa3")];
-    const destinations = [wallet("0xd1", "unmeasured"), wallet("0xd2", "provisional"),
-    wallet("0xd3", "popular"), { ...wallet("0xd4"), labelCategory: "cex" as const },
-    { ...wallet("0xd5"), kind: "object" as const }, { ...wallet("0xd6"), depositVerdict: "likely" as const },
-    { ...wallet("0xd8"), depositVerdict: "likely" as const, exchangeHotWallet: true }];
+    const destinations = [wallet("0xdd1", "unmeasured"), wallet("0xdd2", "provisional"),
+    wallet("0xdd3", "popular"), { ...wallet("0xdd4"), labelCategory: "cex" as const },
+    { ...wallet("0xdd5"), kind: "object" as const }, { ...wallet("0xdd6"), depositVerdict: "likely" as const },
+    { ...wallet("0xdd8"), depositVerdict: "likely" as const, exchangeHotWallet: true }];
     for (const [i, b] of buyers.entries()) {
       for (const destination of destinations) transfer(b, destination.address);
-      transfer(b, "0xd7"); // No classification is not a narrow verdict.
+      transfer(b, "0xdd7"); // No classification is not a narrow verdict.
       topup(b, i, `fund-${i}`);
     }
     const result = scoreLaunch(input(buyers, destinations));
     expect(pair(result, buyers[0].address, buyers[1].address)?.signals.filter((s) => s.type === "shared_deposit_address")).toEqual([
-      expect.objectContaining({ via: "0xd6", weight: 6 }),
+      expect.objectContaining({ via: "0xdd6", weight: 6 }),
     ]);
     expect(result.observations.filter((o) => o.type === "destination_ineligible")).toHaveLength(7);
-    expect(result.destinations.find((d) => d.address === "0xd7")?.eligible).toBe(false);
+    expect(result.destinations.find((d) => d.address === "0xdd7")?.eligible).toBe(false);
   });
 
   it("qualifies one likely single-account deposit alone, with payer and sweep digests", () => {
@@ -259,6 +259,42 @@ describe("launch pairwise scoring", () => {
     expect(result.observations.filter((o) => o.type === "funding_below_floor")).toHaveLength(3);
     expect(result.clusters).toEqual([]);
   });
+  it("never links buyers through a burn address", () => {
+    const a = buyer("0xa1");
+    const b = buyer("0xa2");
+    for (const member of [a, b]) {
+      transfer(member, "0x0", "token");
+      transfer(member, "0x0", "sui");
+    }
+    const result = scoreLaunch(input([a, b], [wallet("0x0")]));
+    expect(result.pairs).toEqual([]);
+    expect(result.destinations.find((d) => d.address === "0x0")?.eligible).toBe(false);
+  });
+
+  it("links the creator to a destination only above the direct-payment floor, and never through itself", () => {
+    const a = buyer("0xa1");
+    const b = buyer("0xa2");
+    transfer(a, STUDIO);
+    transfer(b, STUDIO);
+    transfer(a, CREATOR);
+    transfer(b, CREATOR);
+    const data = input([a, b], [wallet(STUDIO), wallet(CREATOR)]);
+    // A creator's own receipts are not a payment to a destination.
+    data.creator.payments.push({ to: CREATOR, asset: "sui", amount: 50n * SUI, digest: "creator-self" });
+    // Dust sends to the studio sum below the 1 SUI floor.
+    data.creator.payments.push({ to: STUDIO, asset: "sui", amount: 400_000_000n, digest: "creator-dust-1" },
+      { to: STUDIO, asset: "sui", amount: 500_000_000n, digest: "creator-dust-2" },
+      { to: STUDIO, asset: "token", amount: 1n, digest: "creator-token-dust" });
+    let result = scoreLaunch(data);
+    expect(result.pairs.some((p) => p.signals.some((s) => s.type === "creator_linked_destination"))).toBe(false);
+    expect(result.clusters.every((c) => c.status !== "core")).toBe(true);
+    data.creator.payments.push({ to: STUDIO, asset: "sui", amount: 100_000_000n, digest: "creator-third" });
+    result = scoreLaunch(data);
+    expect(pair(result, a.address, CREATOR)?.signals.filter((s) => s.type === "creator_linked_destination")).toEqual([
+      expect.objectContaining({ via: STUDIO, weight: 6 }),
+    ]);
+  });
+
   it("round-trips consecutive full-list pages without losing or repeating an evidence row", () => {
     const rows = Array.from({ length: 37 }, (_, index) => ({ index, digest: `synthetic-${index}` }));
     const recovered: typeof rows = [];

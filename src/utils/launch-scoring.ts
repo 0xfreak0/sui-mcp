@@ -1,4 +1,6 @@
 /** Pure, pairwise evidence scoring for one token launch. All coin amounts are raw units. */
+import { isUnspendableAddress } from "./upgrade-cap.js";
+
 export const LAUNCH_PAIR_THRESHOLD = 6;
 export const LAUNCH_BURST_MS = 10 * 60_000;
 const SUI_PAYMENT_FLOOR = 1_000_000_000n;
@@ -128,7 +130,8 @@ export interface LaunchScoringResult {
 }
 
 function destinationEligible(d: LaunchDestination | undefined): boolean {
- if (!d || d.kind !== "wallet" || d.exchangeHotWallet
+ // A burn address is nobody: two buyers burning coins there share no party.
+ if (!d || isUnspendableAddress(d.address) || d.kind !== "wallet" || d.exchangeHotWallet
   || d.labelCategory === "bridge" || d.labelCategory === "protocol") return false;
  if (d.depositVerdict === "likely") return true;
  return d.popularity === "narrow" && d.labelCategory !== "cex";
@@ -187,9 +190,18 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
    toDestination.set(t.destination, byBuyer);
   }
  }
+ // The creator paying a destination links it only above the direct-payment
+ // floor, summed per coin, and never when the destination is the creator.
  const creatorDestinations = new Map<string, LaunchPayment[]>();
+ const creatorTotals = new Map<string, bigint>();
  for (const p of input.creator.payments) {
-  if (p.referral || p.amount <= 0n) continue;
+  if (p.referral || p.amount <= 0n || p.to === input.creator.address) continue;
+  const k = JSON.stringify([p.to, p.asset]);
+  creatorTotals.set(k, (creatorTotals.get(k) ?? 0n) + p.amount);
+ }
+ for (const p of input.creator.payments) {
+  const total = creatorTotals.get(JSON.stringify([p.to, p.asset]));
+  if (p.referral || p.amount <= 0n || total === undefined || total < paymentFloor(p.asset, input.totalSupplyRaw)) continue;
   const payments = creatorDestinations.get(p.to) ?? [];
   payments.push(p);
   creatorDestinations.set(p.to, payments);

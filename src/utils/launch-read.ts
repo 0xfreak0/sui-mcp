@@ -7,6 +7,8 @@ import type { GqlBalanceChangeNode } from "./gql-adapters.js";
 import { accountBuy, type LaunchBuy, type LaunchChange, type LaunchEvent } from "./launch-accounting.js";
 import { fetchEventJson } from "./event-json.js";
 import { netGas, type GqlGasSummary } from "./trace-read.js";
+import { isSponsorGasChange, isSuiCoinType } from "./sponsor-gas.js";
+import { clearsDustFloor } from "./funding.js";
 
 export const SUIPUMP = "0xb205fea41ccedac051bc66498e6ca68cb802c4a6ea06da12e524bed09c80d9b0";
 export const LAUNCHPAD_ADAPTERS = [{ root: SUIPUMP, name: "SuiPump", module: "bonding_curve", buy: "TokensPurchased", sell: "TokensSold", create: "CurveCreated", graduation: "Graduated", coinField: "curve_id", referralField: "referral" }] as const;
@@ -15,6 +17,10 @@ const CURVE_QUERY = `query($type:String!){objects(filter:{type:$type},first:2){n
 const CREATION_QUERY = `query($id:SuiAddress!){objectVersions(address:$id,first:1){nodes{previousTransaction{digest sender{address} effects{timestamp checkpoint{sequenceNumber} events(first:50){nodes{contents{type{repr} json}}pageInfo{hasNextPage}}}}}}}`;
 const TOKEN_QUERY = `query($coin:String!){coinMetadata(coinType:$coin){symbol decimals supply}}`;
 const TX_QUERY = `query($address:SuiAddress!,$afterCp:UInt53!,$beforeCp:UInt53!,$after:String){transactions(filter:{affectedAddress:$address,afterCheckpoint:$afterCp,beforeCheckpoint:$beforeCp},first:50,after:$after){nodes{digest sender{address} gasInput{gasSponsor{address}} effects{status timestamp gasEffects{gasSummary{computationCost storageCost storageRebate}} ${BALANCE_CHANGES_SELECTION} ${EVENTS_SELECTION}}}pageInfo{hasNextPage endCursor}}}`;
+const POOL_QUERY = `query($id:SuiAddress!){object(address:$id){asMoveObject{contents{type{repr}}}}}`;
+const PAYERS_QUERY = `query($address:SuiAddress!,$before:String){transactions(filter:{affectedAddress:$address},last:50,before:$before){nodes{digest sender{address} gasInput{gasSponsor{address}} effects{${BALANCE_CHANGES_SELECTION}}}pageInfo{hasPreviousPage startCursor}}}`;
+/** Pages of an address's newest transactions read for its distinct payers. */
+const PAYER_PAGES = 20;
 
 interface EventNode { contents?: { type?: { repr: string }; json?: Record<string, unknown> }; timestamp?: string; transaction?: { digest: string } }
 interface EventPage { events: { nodes: EventNode[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } }
@@ -85,9 +91,14 @@ export async function readLaunchHistory(owner: string, from: string, to: string,
   return readHistoryBetween(owner, window.after.checkpoint, window.before.checkpoint, maxPages);
 }
 
-/** Read the owner's earlier activity as a closed range to establish its opening balance. */
-export async function readEarlyLaunchHistory(owner: string, beforeCheckpoint: number, maxPages: number): Promise<LaunchScan<LaunchTx>> {
-  return readHistoryBetween(owner, 0, beforeCheckpoint, maxPages);
+/**
+ * Read the owner's activity up to and including `historyAfterCheckpoint`, the
+ * exclusive lower bound of its window history, to establish its opening
+ * balance. Both bounds are exclusive, so the early read ends one checkpoint
+ * later; ending at the same number would leave that checkpoint in neither.
+ */
+export async function readEarlyLaunchHistory(owner: string, historyAfterCheckpoint: number, maxPages: number): Promise<LaunchScan<LaunchTx>> {
+  return readHistoryBetween(owner, 0, historyAfterCheckpoint + 1, maxPages);
 }
 
 async function readHistoryBetween(owner: string, afterCp: number, beforeCp: number, maxPages: number): Promise<LaunchScan<LaunchTx>> {
@@ -106,4 +117,79 @@ async function readHistoryBetween(owner: string, afterCp: number, beforeCp: numb
   }
   return { rows, complete: complete && rows.every((r) => r.complete), reads, next_cursor: cursor ?? null };
 }
-export function matchBuy(event: LaunchEvent, tx: LaunchTx, coinType: string): LaunchBuy { return accountBuy(event, tx.changes, coinType); }
+export function matchBuy(event: LaunchEvent, tx: LaunchTx): LaunchBuy { return accountBuy(event, tx.changes, tx.gas); }
+
+/**
+ * Whether the launch coin is coin A of the graduated pool, read from the pool
+ * object's type. A swap event states direction only as `atob`. Null when the
+ * pool or its type cannot be read.
+ */
+export async function readPoolCoinIsA(poolId: string, coinType: string): Promise<boolean | null> {
+  const result = await gqlQuery<{ object: { asMoveObject?: { contents?: { type?: { repr: string } } } } | null }>(POOL_QUERY, { id: poolId }).catch(() => null);
+  const repr = result?.object?.asMoveObject?.contents?.type?.repr;
+  const open = repr?.indexOf("<") ?? -1;
+  if (!repr || open < 0 || !repr.endsWith(">")) return null;
+  const args: string[] = [];
+  let depth = 0;
+  let start = open + 1;
+  for (let i = start; i < repr.length - 1; i++) {
+    if (repr[i] === "<") depth++;
+    else if (repr[i] === ">") depth--;
+    else if (repr[i] === "," && depth === 0) { args.push(repr.slice(start, i).trim()); start = i + 1; }
+  }
+  args.push(repr.slice(start, repr.length - 1).trim());
+  if (args.length !== 2) return null;
+  return args[0] === coinType ? true : args[1] === coinType ? false : null;
+}
+
+/**
+ * Distinct addresses that paid `target` in the given transactions: the sender
+ * of each transaction that credited it SUI above the dust floor or any of the
+ * launch coin. Its own transactions and a sponsor's gas rebate are not payments.
+ */
+export function payersIn(rows: Array<{ sender: string | null; sponsor: string | null; changes: LaunchChange[] }>, target: string, coinType: string): Set<string> {
+  const payers = new Set<string>();
+  for (const row of rows) {
+    if (!row.sender || row.sender === target) continue;
+    let sui = 0n;
+    let token = 0n;
+    let suiType: string | null = null;
+    for (const c of row.changes) {
+      if (c.address !== target) continue;
+      if (isSuiCoinType(c.coin_type)) { sui += c.amount; suiType = c.coin_type; }
+      else if (c.coin_type === coinType) token += c.amount;
+    }
+    const paidSui = suiType !== null && !isSponsorGasChange(target, suiType, row.sender, row.sponsor ?? undefined) && clearsDustFloor(suiType, sui) === true;
+    if (paidSui || token > 0n) payers.add(row.sender);
+  }
+  return payers;
+}
+
+/**
+ * How many distinct addresses pay into `address`, newest transactions first,
+ * stopping once `limit` is passed. An outgoing popularity probe cannot see a
+ * collector (a bot's fee wallet, a payment processor) that many pay and that
+ * pays few, so a shared destination is narrow only when this is narrow too.
+ * A scan that ran out of pages or budget, or failed, is unmeasured: a
+ * destination never reads narrow on an unread inflow side.
+ */
+export async function probeLaunchPayers(target: string, coinType: string, limit: number, take: () => boolean): Promise<{ payers: number; verdict: "narrow" | "popular" | "unmeasured" }> {
+  const payers = new Set<string>();
+  let before: string | undefined;
+  for (let page = 0; page < PAYER_PAGES; page++) {
+    if (!take()) return { payers: payers.size, verdict: "unmeasured" };
+    const read = await gqlQuery<{ transactions: { nodes: TxNode[]; pageInfo: { hasPreviousPage: boolean; startCursor: string | null } } }>(PAYERS_QUERY, { address: target, before }).catch(() => null);
+    if (!read) return { payers: payers.size, verdict: "unmeasured" };
+    const nodes = read.transactions.nodes;
+    const completed = await completeTxConnections(nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })), take);
+    if (completed.some((c) => c.balanceChangesTruncated)) return { payers: payers.size, verdict: "unmeasured" };
+    const rows = nodes.map((n, i) => ({ sender: address(n.sender?.address ?? null), sponsor: address(n.gasInput?.gasSponsor?.address ?? null), changes: convert(completed[i].balanceChanges) }));
+    for (const payer of payersIn(rows, target, coinType)) payers.add(payer);
+    if (payers.size > limit) return { payers: payers.size, verdict: "popular" };
+    const next = read.transactions.pageInfo.startCursor;
+    if (!read.transactions.pageInfo.hasPreviousPage) return { payers: payers.size, verdict: "narrow" };
+    if (!next || next === before) return { payers: payers.size, verdict: "unmeasured" };
+    before = next;
+  }
+  return { payers: payers.size, verdict: "unmeasured" };
+}

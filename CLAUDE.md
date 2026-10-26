@@ -5117,16 +5117,23 @@ among them. Rules a change is likely to break:
   scores 6, the cluster threshold, on its own; a narrow unlabelled wallet that
   passed the popularity filter and a deposit with verdict `unknown` each score
   +3. It is never a labelled exchange hot wallet, a pool, a package, a shared
-  object, a router or fee collector, or an address with
-  `Popularity.unmeasured`. Exclude sponsor gas changes (`isSponsorGasChange`)
+  object, a router or fee collector, a burn address (`isUnspendableAddress`),
+  or an address with `Popularity.unmeasured`. Narrow is read on both sides:
+  `probeRecipients` counts whom it pays and `probeLaunchPayers` whom it is
+  paid by, both against `DEFAULT_POPULARITY_LIMIT`. A trading bot's fee
+  wallet pays a few addresses and is paid by hundreds, so an outflow probe
+  alone reads it narrow and links every two users of the bot. Exclude sponsor gas changes (`isSponsorGasChange`)
   and value below the dust floors (`clearsDustFloor`). Each destination lists
   the digests of payments into it and of its sweep out, with the caveat that
   anyone can pay a deposit address: a payment from the creator does not name
   the account holder.
 - **The creator-affiliation window is not the sell window.** A direct
   creator → destination payment is looked up over the destination's history
-  (bounded, with a continuation) and reported with its date. The direct-payment
-  floor window applies to buyer↔buyer payments only.
+  (bounded, with a continuation) and reported with its date. It links the
+  destination only when its sum per coin clears the direct-payment floor, never
+  when it is a SuiPump referral fee the curve paid, and never when the
+  destination is the creator. The creator is also a subject of the
+  direct-payment scan, so a payment between it and a buyer is `direct`.
 - **Evidence tiers use the repo vocabulary.** `chain-derived` for flows, amounts,
   destinations, sweeps and creator; `heuristic` for clusters and affiliation;
   `indexer-attested` where a third party supplies it. Never `chain_proven`,
@@ -5140,19 +5147,33 @@ among them. Rules a change is likely to break:
   referral credits from both direct-payment and shared-destination edges.
   An unread event page makes the pair incomplete; do not turn an unknown
   referral into independent payment evidence.
+- **Event amounts always count.** Event `sui_in` is the buy amount whatever the
+  transaction's debit: snipers pay gas above 0.01 SUI, trading bots take a fee
+  leg in the buy PTB, and some buys are paid with SUI swapped in from another
+  coin. The difference is `sui_outside_trade`, reported and never subtracted.
+  Withholding such buys dropped 7 of 12 buyers and two thirds of the initial
+  SUI on a random launch.
+- **A forward is capped at what the owner moved, after its trades.**
+  `ownerForwards` caps each coin at the owner's debit less gas it paid plus its
+  trade legs' proceeds less their cost. Capping at the bare net debit skips a
+  forward made in the same PTB as a sale (the net is positive) and understates
+  a send-all whose storage rebate exceeds its gas.
 - **Reconciliation is over the window's balance changes, not an invented
-  closing balance.** Event `sui_in` is the buy amount, separate from the
-  buyer's gas-inclusive net debit. A debit within 0.01 SUI on either side of
-  the event is within tolerance: a PTB may credit its buyer too. Compare
-  event buy/sale/forward legs and gas with complete on-chain SUI and token
-  balance-change deltas; gas already included in a net sale must not be
-  subtracted again. An earlier balance outside the bounded window is unknown.
-  Name a window delta as such and keep `sui_leftover` null until a historical
-  balance read establishes the opening amount.
+  closing balance.** `accountBuyer` sets SUI received in other senders'
+  transactions, event trade legs (curve and pool, `tradeLegs`), forwards and
+  all gas the owner paid against complete on-chain SUI and token deltas. A
+  pool swap's direction is `atob` against the pool's coin order
+  (`readPoolCoinIsA`); unread, its swaps are not counted and coverage says so.
+  An earlier balance outside the bounded window is unknown. Name a window
+  delta as such and keep `sui_leftover` null until a historical balance read
+  establishes the opening amount; that read ends one checkpoint after the
+  window's exclusive lower bound, or the boundary checkpoint is in neither.
 - **Rebuys are separate from initial buys.** SUI is fungible, so "funded by
-  proceeds" is unprovable. Report buys after a buyer's first sale as
-  `buys_after_first_sale`, separate from initial buys; totals give `initial_buys`
-  and `gross_buys` side by side.
+  proceeds" is unprovable. `initial_buys` are launch-window curve buys before
+  the buyer's first sale. Every other buy of the coin in the sell window, a
+  curve buy after the window or a pool buy, is in `later_buys` with
+  `after_first_sale`, and counts in `gross_buys` only. Totals give both, for
+  `discovered` and `core` buyers apart, summed in raw units.
 - **Every walk is bounded, resumable and sized.** Per-buyer history walks,
   destination classification and discovery pages carry a budget and a
   `next_call` that retains all original arguments and the network. A walk cut

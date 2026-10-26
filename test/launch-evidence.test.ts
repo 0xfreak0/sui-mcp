@@ -78,11 +78,18 @@ describe("launch payment evidence", () => {
     expect(result.destinations.find(row => row.address === sharedDestination)?.affiliation).toBe("buyer_shared");
   });
 
-  it("marks unread pool swaps as partial even when window balances reconcile", () => {
+  it("marks totals partial after a bounded or failed read, or an undecoded pool swap", () => {
+    const complete = { raw: { unread_pool_events: 0 }, row: { coverage: { complete: true } } };
+    const unreadPool = { raw: { unread_pool_events: 1 }, row: { coverage: { complete: false } } };
+    const incompleteHistory = { raw: { unread_pool_events: 0 }, row: { coverage: { complete: false } } };
     expect(launchAccountingComplete(true, true, 0)).toBe(true);
     expect(launchAccountingComplete(true, true, 1)).toBe(false);
+    expect(launchAccountingComplete(false, true, 0)).toBe(false);
     expect(launchAccountingComplete(true, false, 0)).toBe(false);
-    expect(launchTotalsPartial([{ raw: { unread_pool_events: 0 } }])).toBe(false);
-    expect(launchTotalsPartial([{ raw: { unread_pool_events: 0 } }, { raw: { unread_pool_events: 1 } }])).toBe(true);
+    expect(launchTotalsPartial([complete], true)).toBe(false);
+    expect(launchTotalsPartial([complete], false)).toBe(true);
+    expect(launchTotalsPartial([], false)).toBe(true);
+    expect(launchTotalsPartial([complete, incompleteHistory], true)).toBe(true);
+    expect(launchTotalsPartial([complete, unreadPool], true)).toBe(true);
   });
 });

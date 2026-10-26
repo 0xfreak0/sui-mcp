@@ -62,6 +62,7 @@ export function launchAccountingComplete(historyComplete: boolean, openingComple
   return historyComplete && openingComplete && unreadPoolEvents === 0;
 }
 
-export function launchTotalsPartial(rows: readonly { raw: { unread_pool_events: number } }[]): boolean {
-  return rows.some(row => row.raw.unread_pool_events > 0);
+/** Totals over an incomplete buyer set or unread transactions are observed, not complete. */
+export function launchTotalsPartial(rows: readonly { raw: { unread_pool_events: number }; row: { coverage: { complete: boolean } } }[], discoveryComplete: boolean): boolean {
+  return !discoveryComplete || rows.some(row => !row.row.coverage.complete || row.raw.unread_pool_events > 0);
 }

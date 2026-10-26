@@ -5195,6 +5195,10 @@ among them. Rules a change is likely to break:
   unreconciled reading even when its observed balance changes happen to
   balance. Totals containing that buyer are `partial`, since the unread
   event may change the sale proceeds or gross buys.
+  A bounded or failed event-discovery walk marks both discovered and core
+  totals `partial`: an unseen buyer can change either group. An incomplete
+  buyer-history read marks every aggregate containing that buyer `partial`,
+  even if its observed transactions happen to reconcile.
   An earlier balance outside the bounded window is unknown. Name a window
   delta as such and keep `sui_leftover` null until a historical balance read
   establishes the opening amount; that read ends one checkpoint after the

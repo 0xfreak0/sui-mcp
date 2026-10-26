@@ -342,7 +342,7 @@ export function registerLaunchTools(server: McpServer) {
      curve_proceeds_gross: decimalAmount(total(r => r.curveProceeds), 9),
      pool_proceeds_gross: { venue: pool?.venue ?? null, sui: decimalAmount(total(r => r.poolProceeds), 9) },
      ...(pool?.venue === "Cetus" ? { cetus_proceeds_gross: decimalAmount(total(r => r.poolProceeds), 9) } : {}),
-     partial: launchTotalsPartial(rows),
+     partial: launchTotalsPartial(rows, discovery.complete),
     };
    };
    const totals = {

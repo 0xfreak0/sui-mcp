@@ -11,6 +11,7 @@
 - Long payment-digest lists inside scored pairs and cluster edges page independently in the default view; each omitted digest remains available through its full-view list path.
 - Creator payment history is checked for every buyer destination above the dust floor, including wallets used by only one buyer. A narrow creator-funded private wallet yields a six-point buyer-to-creator link and reports whether the creator first funded it; a likely exchange deposit retains its three-point lead with no account-holder attribution. Destination coverage distinguishes qualifying per-coin payments from transaction rows queried. Buyers expose `initial_token_rank`, `initial_time_rank`, and `initial_buy_sui_debit_incl_gas` alongside event-ledger SUI.
 - Buys after the first sale are listed as `buys_after_first_sale`; postwindow buys before the first sale remain under `later_buys`. Neither is counted as an initial buy, and the two lists never duplicate a trade.
+- A tentative first funder scores no origin edge while an earlier inflow is unread; destinations state why `creator_first_funded` is unknown. Funding bursts require three independent participants after a first-funding transaction is excluded.
 
 ## 1.28.0 (2026-10-25)
 

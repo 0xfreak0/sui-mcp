@@ -38,6 +38,8 @@ export interface LaunchTransfer {
 export interface LaunchFirstFunding {
  funder: string | null;
  digest: string | null;
+ /** A known funder can still be provisional when an earlier unpriced inflow could qualify. */
+ lookupComplete: boolean;
  status: "narrow" | "hub" | "unmeasured" | "provisional" | "no_qualifying_inflow";
 }
 
@@ -399,7 +401,14 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
  ...input.buyers.map((b) => ({ address: b.address, funding: b.firstFunding }))];
  const firstFundingDirectDigests = new Map<string, Set<string>>();
  for (const { address, funding: first } of firstEntries) {
-  if (!first?.funder || !allAddresses.has(first.funder) || first.funder === address || isUnspendableAddress(first.funder)) continue;
+  if (first && !first.lookupComplete && first.funder) {
+   observations.push({
+    type: "funding_unmeasured", addresses: [address], via: first.funder,
+    digests: first.digest ? [first.digest] : [],
+    reason: "An earlier inflow could qualify; this tentative first funder scores zero."
+   });
+  }
+  if (!first?.lookupComplete || !first.funder || !allAddresses.has(first.funder) || first.funder === address || isUnspendableAddress(first.funder)) continue;
   const pairKey = key(first.funder, address);
   const digests = firstFundingDirectDigests.get(pairKey) ?? new Set<string>();
   if (first.digest) digests.add(first.digest);
@@ -461,7 +470,7 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
  // verdict stays an observation even if the first transfers were on one date.
  const firstBySource = new Map<string, Array<{ address: string; funding: LaunchFirstFunding }>>();
  for (const entry of firstEntries) {
-  if (!entry.funding?.funder || isUnspendableAddress(entry.funding.funder)) continue;
+  if (!entry.funding?.lookupComplete || !entry.funding.funder || isUnspendableAddress(entry.funding.funder)) continue;
   const group = firstBySource.get(entry.funding.funder) ?? [];
   group.push({ address: entry.address, funding: entry.funding });
   firstBySource.set(entry.funding.funder, group);
@@ -527,16 +536,39 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
   for (let i = 0; i < addresses.length; i++) {
    for (let j = i + 1; j < addresses.length; j++) {
     const k = key(addresses[i], addresses[j]);
+    const excluded = firstFundingDirectDigests.get(k);
+    if (!excluded) {
     const digests = burstPairs.get(k) ?? new Set<string>();
     for (const digest of [...buyers.get(addresses[i])!, ...buyers.get(addresses[j])!]) digests.add(digest);
+     burstPairs.set(k, digests);
+     continue;
+    }
+    // Removing one first-funding transaction can remove a participant,
+    // not merely a digest. Keep the pair only if both members and a third
+    // buyer still have independent top-ups within this same ten-minute window.
+    const independent = new Set<string>();
+    let participants = 0, pairParticipants = 0;
+    for (const [buyer, digests] of buyers) {
+     let included = false;
+     for (const digest of digests) {
+      if (excluded.has(digest)) continue;
+      included = true;
+      if (buyer === addresses[i] || buyer === addresses[j]) independent.add(digest);
+     }
+     if (!included) continue;
+     participants++;
+     if (buyer === addresses[i] || buyer === addresses[j]) pairParticipants++;
+    }
+    if (participants < 3 || pairParticipants < 2) continue;
+    const digests = burstPairs.get(k) ?? new Set<string>();
+    for (const digest of independent) digests.add(digest);
     burstPairs.set(k, digests);
    }
   }
  }
  for (const [k, digests] of burstPairs) {
   const [a, b] = JSON.parse(k) as [string, string];
-  const independent = [...digests].filter((digest) => !firstFundingDirectDigests.get(k)?.has(digest));
-  if (independent.length) add(a, b, { type: "funding_burst", weight: 2, digests: independent.sort() });
+  add(a, b, { type: "funding_burst", weight: 2, digests: [...digests].sort() });
  }
  const sharedTxPairs = new Map<string, LaunchSignal>();
  for (const [digest, entries] of byTx) {

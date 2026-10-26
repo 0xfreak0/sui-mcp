@@ -5293,6 +5293,20 @@ among them. Rules a change is likely to break:
   service. A funding digest scored this way cannot earn another three from
   direct payment or launch top-up for the same pair. A third-party first
   funder remains subject to the complete narrow-popularity check.
+- **First-funder certainty is separate from popularity.** `firstFunderOf`
+  may return a candidate funder despite `originUnread` or unavailable
+  prices: an earlier coin could have funded the wallet. Such a read has
+  `lookupComplete: false` and scores neither a directed `first_funding`
+  edge nor `shared_first_funder`, even if the named candidate is another
+  subject. A destination's `creator_first_funded` stays null with
+  `creator_first_funding_unavailable` naming the missing read. A complete
+  lookup with an unmeasured or popular funder still establishes direct
+  first funding, but not narrow shared ancestry.
+- **A burst must survive removal of first-funding evidence.** When a
+  subject's first-funding transaction is excluded from a pair, recompute
+  the burst within the ten-minute window: both pair members and a third
+  buyer must still have independent top-ups. One surviving payment from
+  the other member does not justify two timing points.
 - **A strong deposit the creator paid pre-launch gets its own signal, not a
   creator-linked-destination edge.** A likely deposit address with a complete
   classification, at most 50 distinct depositors and a qualifying creator

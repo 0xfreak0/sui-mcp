@@ -20,7 +20,7 @@ import { sumRaw, decimalAmount, isSuiPumpReferralFee, tradeLegs, ownerForwards, 
 import { fetchEventJson } from "../utils/event-json.js";
 import { scoreLaunch, type LaunchBuyer, type LaunchDestination, type LaunchFirstFunding, type LaunchFunding, type LaunchMemberPathEdge, type LaunchPayment, type LaunchSignal, type LaunchTransfer } from "../utils/launch-scoring.js";
 import { netGas, type GqlGasSummary } from "../utils/trace-read.js";
-import { buyerReceivedLaunchCoin, creatorPaid, creatorPaidCoins, creatorPaymentTotals, launchAccountingComplete, launchTopup, launchTotalsPartial, uniqueCreatorPayments, SUI_LAUNCH_TYPE } from "../utils/launch-evidence.js";
+import { buyerReceivedLaunchCoin, creatorPaid, creatorPaidCoins, creatorPaymentTotals, firstFundingUnavailableReason, launchAccountingComplete, launchTopup, launchTotalsPartial, uniqueCreatorPayments, SUI_LAUNCH_TYPE } from "../utils/launch-evidence.js";
 import { DEFAULT_NETWORK, getNetwork } from "../config.js";
 import { LAUNCH_PARENT_LISTS, launchCatalogLists, launchListRows, launchPaymentReadsCanAdvance, launchFirstFundingCanAdvance, nextLaunchPageBudget } from "../utils/launch-pages.js";
 import { launchTokenUsd } from "../utils/launch-price.js";
@@ -39,10 +39,11 @@ interface AffiliationRead { transactions: { nodes: Array<{ digest: string; sende
 interface KindRead { object: { __typename: string; asMovePackage?: unknown; asMoveObject?: unknown } | null }
 interface BuyerLedger { address: string; first_buy_at: string; buys: LaunchBuy[]; first_funding_ever: FirstFunderLookup | null; launch_funding: LaunchFunding[]; launch_topup_present: boolean; transfers: LaunchTransfer[]; payments: LaunchPayment[]; referrals: string[]; history: LaunchTx[]; complete: boolean; buyer_ownership_unverified: string[]; history_reads: number; history_next_cursor: string | null }
 
-/** A first funder is evidence for scoring only if the funder is measured narrow. */
+/** First-funding lookup certainty and source popularity are distinct claims. */
 async function classifyFirstFunding(read: FirstFunderLookup | null, budget: Budget, cache: Map<string, LaunchFirstFunding["status"]>, beforeCheckpoint: number): Promise<LaunchFirstFunding> {
- if (!read) return { funder: null, digest: null, status: "unmeasured" };
- if (!read.funder) return { funder: null, digest: null, status: read.originUnread.length || read.pricesUnavailable ? "unmeasured" : "no_qualifying_inflow" };
+ const lookupComplete = firstFundingUnavailableReason(read) === null;
+ if (!read) return { funder: null, digest: null, status: "unmeasured", lookupComplete };
+ if (!read.funder) return { funder: null, digest: null, status: lookupComplete ? "no_qualifying_inflow" : "unmeasured", lookupComplete };
  const funder = read.funder;
  let status = cache.get(funder);
  if (!status) {
@@ -54,7 +55,7 @@ async function classifyFirstFunding(read: FirstFunderLookup | null, budget: Budg
   }
   cache.set(funder, status);
  }
- return { funder, digest: read.digest, status: read.pricesUnavailable || read.originUnread.length ? "unmeasured" : status };
+ return { funder, digest: read.digest, status: lookupComplete ? status : "unmeasured", lookupComplete };
 }
 
 function namedKind(result: KindRead | null): LaunchDestination["kind"] {
@@ -121,7 +122,7 @@ function amountOf(tx: Pick<LaunchTx, "changes">, owner: string, coin: string): b
 }
 
 export function registerLaunchTools(server: McpServer) {
- server.tool("analyze_launch", "(Incident investigation) Discover SuiPump buyers from the exact coin type, including trades after graduation. Every early buyer has a status, initial-token-amount rank, first-buy-time rank, event-first trades, gross proceeds, funding and reconciliation; initial_buy_sui_debit_incl_gas counts the initial buys only. Pairwise evidence distinguishes creator-to-buyer funding, a buyer's payment to the creator, a creator-funded private collection wallet used by even one buyer, and buyer-only paths. Shared narrow first funders score only when measured; a subject first-funding another is a directed edge even when old. Historical creator payments include every coin as separate per-coin totals with dated transactions; a payment to a likely deposit is a weaker observation, not evidence of account ownership. Incomplete reads report coverage and a continuation only when their bounds can advance. detail: 'full' returns records inline when they fit, otherwise pages the selected list by offset. No account-holder or misconduct verdict.", {
+ server.tool("analyze_launch", "(Incident investigation) Discover SuiPump buyers from the exact coin type, including trades after graduation. Every early buyer has a status, initial-token-amount rank, first-buy-time rank, event-first trades, gross proceeds, funding and reconciliation; initial_buy_sui_debit_incl_gas counts the initial buys only. Pairwise evidence distinguishes creator-to-buyer funding, a buyer's payment to the creator, a creator-funded private collection wallet used by even one buyer, and buyer-only paths. Shared narrow first funders score only when measured; a subject first-funding another is a directed edge even when old, but an unread earlier inflow makes the apparent first funder tentative and scores nothing. A funding burst needs three buyers with independent top-ups after any first-funding transaction is excluded. Historical creator payments include every coin as separate per-coin totals with dated transactions; a payment to a likely deposit is a weaker observation, not evidence of account ownership. Incomplete reads report coverage and a continuation only when their bounds can advance. detail: 'full' returns records inline when they fit, otherwise pages the selected list by offset. No account-holder or misconduct verdict.", {
   coin_type: coinTypeArg().describe("Exact SuiPump coin type, not a symbol"),
   creation_tx: z.string().optional().describe("Optional creation digest to cross-check discovery from coin type"),
   window_minutes: numArg().int().min(1).max(1440).optional().describe("Minutes from creation for initial buyer discovery (default 10)"),
@@ -254,7 +255,7 @@ export function registerLaunchTools(server: McpServer) {
    const creatorRecipientComplete = creatorRecipientReads.every(read => read.complete);
    const outgoing = new Map<string, LaunchTransfer[]>();
    for (const ledger of ledgers) for (const transfer of ledger.transfers) { const old = outgoing.get(transfer.destination) ?? []; old.push(transfer); outgoing.set(transfer.destination, old); }
-   const destinations: Array<LaunchDestination & { deposit_verdict: string; sweeps: Array<{ digest: string }>; sweep_to: string | null; classification_complete: boolean; classification_can_advance: boolean; creator_payments: LaunchPayment[]; creator_payment_complete: boolean; creator_payment_can_advance: boolean; creator_prior_payments: LaunchPayment[]; creator_prior_complete: boolean; creator_prior_can_advance: boolean; creator_prior_reads: number; creator_prior_transactions_read: number; creator_first_funded: boolean | null; creator_first_funding_digest: string | null; creator_first_funding_unavailable: boolean; inflow_payers: number | null }> = [];
+   const destinations: Array<LaunchDestination & { deposit_verdict: string; sweeps: Array<{ digest: string }>; sweep_to: string | null; classification_complete: boolean; classification_can_advance: boolean; creator_payments: LaunchPayment[]; creator_payment_complete: boolean; creator_payment_can_advance: boolean; creator_prior_payments: LaunchPayment[]; creator_prior_complete: boolean; creator_prior_can_advance: boolean; creator_prior_reads: number; creator_prior_transactions_read: number; creator_first_funded: boolean | null; creator_first_funding_digest: string | null; creator_first_funding_unavailable: string | null; inflow_payers: number | null }> = [];
    const inflowBudget = new Budget(200);
    const destinationCandidates = [...outgoing].filter(([, flows]) => flows.some(flow => flow.qualifies === true && flow.amount > 0n));
    const destinationScanLimit = Math.min(1000, pages * 2);
@@ -272,6 +273,8 @@ export function registerLaunchTools(server: McpServer) {
     const kind = namedKind(kindRead);
     const destinationFirstFunding = kind === "wallet" && (creatorPay.payments.length > 0 || creatorPrior.payments.length > 0)
      ? await firstFunderOf(dest, firstFundingBudget, directBefore) : undefined;
+    const destinationFirstFundingUnavailable = destinationFirstFunding === undefined
+     ? null : firstFundingUnavailableReason(destinationFirstFunding);
     const measured = kind === "wallet" && (!label?.category || label.source === "inferred") ? await probeRecipients(dest, DEFAULT_POPULARITY_LIMIT, budget, directBefore).catch(() => null) : null;
     const outflow = measured?.popular ? "popular" as const : measured?.complete && !measured.unmeasured ? "narrow" as const : "unmeasured" as const;
     // Narrow on what it pays is half the test: a collector many unrelated
@@ -297,9 +300,9 @@ export function registerLaunchTools(server: McpServer) {
      creator_prior_payments: creatorPrior.payments, creator_prior_complete: creatorPrior.complete,
      creator_prior_can_advance: creatorPrior.canAdvance, creator_prior_reads: creatorPrior.reads,
      creator_prior_transactions_read: creatorPrior.transactionsRead ?? 0,
-     creator_first_funded: destinationFirstFunding ? destinationFirstFunding.funder === origin.creator : null,
-     creator_first_funding_digest: destinationFirstFunding?.funder === origin.creator ? destinationFirstFunding.digest : null,
-     creator_first_funding_unavailable: destinationFirstFunding === null,
+     creator_first_funded: destinationFirstFundingUnavailable || !destinationFirstFunding ? null : destinationFirstFunding.funder === origin.creator,
+     creator_first_funding_digest: !destinationFirstFundingUnavailable && destinationFirstFunding?.funder === origin.creator ? destinationFirstFunding.digest : null,
+     creator_first_funding_unavailable: destinationFirstFundingUnavailable,
     });
    }
    const priorCoinTypes = new Set(destinations.flatMap(d => d.creator_prior_payments.map(p =>
@@ -333,7 +336,7 @@ export function registerLaunchTools(server: McpServer) {
    const groupedAddresses = new Set(scores.clusters.flatMap(cluster => cluster.members));
    for (const address of groupedAddresses) {
     const first = address === origin.creator ? creatorFirstFunding : buyerFirstFunding.get(address);
-    if (!first?.funder || funderRoots.has(first.funder)) continue;
+    if (!first?.lookupComplete || !first.funder || funderRoots.has(first.funder)) continue;
     const read = await firstFunderOf(first.funder, firstFundingBudget, directBefore);
     const status = await classifyFirstFunding(read, firstFunderPopularityBudget, firstFunderStatuses, directBefore);
     funderRoots.set(first.funder, { address: first.funder, first_funding_ever: read, funder_status: status.status });
@@ -487,7 +490,7 @@ export function registerLaunchTools(server: McpServer) {
      curve_id: origin.curve_id, graduation_target: origin.graduation_target,
      graduated: origin.graduated, pool_id: origin.pool_id, pool_venue: pool?.venue ?? null,
      first_funding_ever: creatorFirstFundingRead, first_funder_status: creatorFirstFunding.status,
-     first_funder_root: creatorFirstFunding.funder ? funderRoots.get(creatorFirstFunding.funder) ?? null : null,
+     first_funder_root: creatorFirstFunding.lookupComplete && creatorFirstFunding.funder ? funderRoots.get(creatorFirstFunding.funder) ?? null : null,
     },
     discovered_buyers: resultBuyers,
     destinations: destinations.map(d => {
@@ -498,7 +501,7 @@ export function registerLaunchTools(server: McpServer) {
      affiliation: scoredDestinations.get(d.address)?.affiliation ?? "none",
       creator_first_funded: d.creator_first_funded,
       creator_first_funding_digest: d.creator_first_funding_digest,
-      ...(d.creator_first_funding_unavailable ? { creator_first_funding_unavailable: true } : {}),
+      ...(d.creator_first_funding_unavailable ? { creator_first_funding_unavailable: d.creator_first_funding_unavailable } : {}),
      creator_payments: d.creator_payments.map(p => ({
       digest: p.digest, timestamp: p.timestamp ?? null, asset: p.asset,
       amount: decimalAmount(p.amount, p.asset === "sui" ? 9 : scale),

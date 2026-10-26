@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buyerReceivedLaunchCoin, creatorPaid, creatorPaidCoins, creatorPaymentTotals, launchAccountingComplete, launchTotalsPartial, launchTopup, SUI_LAUNCH_TYPE, uniqueCreatorPayments } from "../src/utils/launch-evidence.js";
+import { buyerReceivedLaunchCoin, creatorPaid, creatorPaidCoins, creatorPaymentTotals, firstFundingUnavailableReason, launchAccountingComplete, launchTotalsPartial, launchTopup, SUI_LAUNCH_TYPE, uniqueCreatorPayments } from "../src/utils/launch-evidence.js";
 import { scoreLaunch, type LaunchBuyer } from "../src/utils/launch-scoring.js";
 
 const creator = "0xc0";
@@ -9,6 +9,16 @@ const destination = "0xd1";
 const change = (address: string, amount: bigint, coin_type = SUI_LAUNCH_TYPE) => ({ address, amount, coin_type });
 
 describe("launch payment evidence", () => {
+  it("reports an unavailable first-funding lookup even when a later SUI funder was tentatively named", () => {
+    const picked = { funder: creator, digest: "later-sui-inflow", pricesUnavailable: false, originUnread: [] as string[] };
+    expect(firstFundingUnavailableReason(picked)).toBeNull();
+    expect(firstFundingUnavailableReason({ ...picked, originUnread: ["0xc01::coin::TEST"] }))
+      .toContain("0xc01::coin::TEST");
+    expect(firstFundingUnavailableReason({ ...picked, pricesUnavailable: true }))
+      .toContain("Historical coin prices");
+    expect(firstFundingUnavailableReason(null)).toContain("lookup failed");
+  });
+
   it("never attributes a gas sponsor debit or rebate as launch funding", () => {
     expect(launchTopup({
       sender: creator, sponsor, gas: 20n, changes: [

@@ -185,8 +185,8 @@ describe("launch pairwise scoring", () => {
     const a = buyer("0xa1");
     const data = input([a]);
     a.payments.push({ to: CREATOR, asset: "sui", amount: SUI, digest: "buyer-paid-creator" });
-    a.firstFunding = { funder: "0xf100", digest: "first-buyer", status: "narrow" };
-    data.creator.firstFunding = { funder: "0xf100", digest: "first-creator", status: "narrow" };
+    a.firstFunding = { funder: "0xf100", digest: "first-buyer", status: "narrow", lookupComplete: true };
+    data.creator.firstFunding = { funder: "0xf100", digest: "first-creator", status: "narrow", lookupComplete: true };
     let result = scoreLaunch(data);
     expect(pair(result, a.address, CREATOR)).toMatchObject({ score: 6, sharedDestination: false });
     expect(pair(result, a.address, CREATOR)?.signals.find((s) => s.type === "direct")).toMatchObject({
@@ -430,11 +430,11 @@ describe("launch pairwise scoring", () => {
   it("scores shared third-party first funders only when both source verdicts are narrow and complete", () => {
     const [a, b, c] = ["0xa1", "0xa2", "0xa3"].map(buyer);
     for (const member of [a, b, c]) transfer(member, STUDIO);
-    a.firstFunding = { funder: "0xf100", digest: "first-a", status: "narrow" };
-    b.firstFunding = { funder: "0xf100", digest: "first-b", status: "narrow" };
-    c.firstFunding = { funder: "0xf100", digest: "first-c", status: "hub" };
+    a.firstFunding = { funder: "0xf100", digest: "first-a", status: "narrow", lookupComplete: true };
+    b.firstFunding = { funder: "0xf100", digest: "first-b", status: "narrow", lookupComplete: true };
+    c.firstFunding = { funder: "0xf100", digest: "first-c", status: "hub", lookupComplete: true };
     const data = input([a, b, c], [wallet(STUDIO)]);
-    data.creator.firstFunding = { funder: "0xf100", digest: "first-creator", status: "unmeasured" };
+    data.creator.firstFunding = { funder: "0xf100", digest: "first-creator", status: "unmeasured", lookupComplete: true };
     let result = scoreLaunch(data);
     expect(pair(result, a.address, b.address)?.signals).toEqual([
       expect.objectContaining({ type: "shared_destination", weight: 3 }),
@@ -463,10 +463,10 @@ describe("launch pairwise scoring", () => {
     const [a, b, c] = ["0xa101", "0xa102", "0xa103"].map(buyer);
     for (const member of [a, b, c]) transfer(member, STUDIO);
     const data = input([a, b, c], [wallet(STUDIO)]);
-    a.firstFunding = { funder: CREATOR, digest: "old-first-buyer", status: "hub" };
-    b.firstFunding = { funder: a.address, digest: "much-later-first-buyer", status: "narrow" };
-    c.firstFunding = { funder: "0xf100", digest: "third-party-buyer", status: "hub" };
-    data.creator.firstFunding = { funder: "0xf100", digest: "third-party-creator", status: "hub" };
+    a.firstFunding = { funder: CREATOR, digest: "old-first-buyer", status: "hub", lookupComplete: true };
+    b.firstFunding = { funder: a.address, digest: "much-later-first-buyer", status: "narrow", lookupComplete: true };
+    c.firstFunding = { funder: "0xf100", digest: "third-party-buyer", status: "hub", lookupComplete: true };
+    data.creator.firstFunding = { funder: "0xf100", digest: "third-party-creator", status: "hub", lookupComplete: true };
     const result = scoreLaunch(data);
     expect(pair(result, CREATOR, a.address)?.signals).toEqual([
       expect.objectContaining({ type: "first_funding", weight: 3, from: CREATOR, to: a.address, digests: ["old-first-buyer"] }),
@@ -486,10 +486,29 @@ describe("launch pairwise scoring", () => {
     expect(corroborated.clusters[0]?.member_links.find((link) => link.address === a.address)?.status).toBe("direct");
     expect(corroborated.clusters[0]?.member_links.find((link) => link.address === b.address)?.status).toBe("buyer_link_only");
   });
+  it("does not call a tentative funder a first funder when earlier inflows were unread", () => {
+    const [a, b, c] = ["0xa101", "0xa102", "0xa103"].map(buyer);
+    a.firstFunding = { funder: CREATOR, digest: "apparent-creator", status: "unmeasured", lookupComplete: false };
+    b.firstFunding = { funder: "0xf100", digest: "apparent-shared", status: "unmeasured", lookupComplete: false };
+    c.firstFunding = { funder: "0xf100", digest: "established-shared", status: "narrow", lookupComplete: true };
+    const result = scoreLaunch(input([a, b, c]));
+    expect(pair(result, CREATOR, a.address)).toBeUndefined();
+    expect(pair(result, b.address, c.address)).toBeUndefined();
+    expect(result.clusters).toEqual([]);
+    expect(result.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "funding_unmeasured", addresses: [a.address], digests: ["apparent-creator"] }),
+      expect.objectContaining({ type: "funding_unmeasured", addresses: [b.address], digests: ["apparent-shared"] }),
+    ]));
+    // Popularity can remain inconclusive without invalidating a complete
+    // direct first-funding lookup; it only disqualifies shared ancestry.
+    a.firstFunding.lookupComplete = true;
+    expect(pair(scoreLaunch(input([a, b, c])), CREATOR, a.address)?.score).toBe(3);
+  });
+
 
   it("does not score a first-funding transaction twice as a direct payment, burst or shared top-up", () => {
     const [a, b, c] = ["0xa101", "0xa102", "0xa103"].map(buyer);
-    a.firstFunding = { funder: b.address, digest: "same-funding-tx", status: "narrow" };
+    a.firstFunding = { funder: b.address, digest: "same-funding-tx", status: "narrow", lookupComplete: true };
     b.payments.push({ to: a.address, asset: "sui", amount: 20n * SUI, digest: "same-funding-tx" });
     for (const [index, member] of [a, b, c].entries()) topup(member, index, "same-funding-tx");
     const result = scoreLaunch(input([a, b, c]));
@@ -499,11 +518,29 @@ describe("launch pairwise scoring", () => {
     expect(pair(result, a.address, b.address)?.score).toBe(3);
     expect(pair(result, a.address, c.address)?.signals.some((signal) => signal.type === "shared_funding_tx")).toBe(true);
   });
+  it("recomputes burst participants after excluding a pair's first-funding transaction", () => {
+    const [a, b, c] = ["0xa101", "0xa102", "0xa103"].map(buyer);
+    a.firstFunding = { funder: b.address, digest: "first-a", status: "narrow", lookupComplete: true };
+    topup(a, 0, "first-a");
+    topup(b, 1, "b-own-topup");
+    topup(c, 2, "c-own-topup");
+    const data = input([a, b, c]);
+    expect(pair(scoreLaunch(data), a.address, b.address)?.signals).toEqual([
+      expect.objectContaining({ type: "first_funding", weight: 3, digests: ["first-a"] }),
+    ]);
+    topup(a, 3, "a-independent-topup");
+    const corroborated = pair(scoreLaunch(data), a.address, b.address);
+    expect(corroborated?.signals).toEqual([
+      expect.objectContaining({ type: "first_funding", weight: 3 }),
+      expect.objectContaining({ type: "funding_burst", weight: 2, digests: ["a-independent-topup", "b-own-topup"] }),
+    ]);
+  });
+
 
   it("labels a buyer who first-funded the creator as paying the creator, never receiving creator funding", () => {
     const a = buyer("0xa101");
     const data = input([a]);
-    data.creator.firstFunding = { funder: a.address, digest: "creator-first-inflow", status: "narrow" };
+    data.creator.firstFunding = { funder: a.address, digest: "creator-first-inflow", status: "narrow", lookupComplete: true };
     a.payments.push({ to: CREATOR, asset: "sui", amount: SUI, digest: "later-payment" });
     const result = scoreLaunch(data);
     expect(pair(result, CREATOR, a.address)?.signals).toEqual([
@@ -542,8 +579,8 @@ describe("launch pairwise scoring", () => {
     b.transfers = [];
     result = scoreLaunch(data);
     expect(pair(result, CREATOR, a.address)?.score).toBe(3); // A sole buyer still witnessed the prior deposit.
-    data.creator.firstFunding = { funder: "0xf100", digest: "creator-origin", status: "hub" };
-    a.firstFunding = { funder: "0xf100", digest: "buyer-origin", status: "narrow" };
+    data.creator.firstFunding = { funder: "0xf100", digest: "creator-origin", status: "hub", lookupComplete: true };
+    a.firstFunding = { funder: "0xf100", digest: "buyer-origin", status: "narrow", lookupComplete: true };
     result = scoreLaunch(data);
     expect(pair(result, CREATOR, a.address)?.score).toBe(3);
     expect(result.clusters).toEqual([]);

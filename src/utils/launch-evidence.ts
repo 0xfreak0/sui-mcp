@@ -1,6 +1,15 @@
 import { isSponsorGasChange } from "./sponsor-gas.js";
 import type { LaunchChange } from "./launch-accounting.js";
 import type { LaunchPayment } from "./launch-scoring.js";
+import type { FirstFunderLookup } from "./edge-probe.js";
+
+/** A tentative pick cannot establish a first funder while earlier inflows remain unread. */
+export function firstFundingUnavailableReason(read: FirstFunderLookup | null): string | null {
+ if (!read) return "First-funder lookup failed or exhausted its read budget.";
+ if (read.originUnread.length) return `An earlier unpriced coin could not be checked for funding: ${read.originUnread.join(", ")}.`;
+ if (read.pricesUnavailable) return "Historical coin prices were unavailable during first-funder selection.";
+ return null;
+}
 
 export const SUI_LAUNCH_TYPE = "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
 

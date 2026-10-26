@@ -5084,6 +5084,87 @@ uses `pnl_digest_offset` pages. Follow those calls before reading a partial
 page as all participants or transactions.
 
 
+### Launch discovery and coordination
+
+`analyze_launch` discovers a SuiPump launch's buyers and scores coordination
+among them. Rules a change is likely to break:
+
+- **Discovery reads buy EVENTS, not a function filter.** A `function` filter on
+  `bonding_curve::buy` matches only PTBs that call that exact version directly;
+  it misses `agent_session::buy_with_session`, any router or aggregator, and
+  versions the window did not hit. Query the curve's buy event type through
+  `resolveEventTypeFilter`: an event's type carries the defining package, so one
+  filter covers every version. Report the defining package and lineage in
+  `coverage`.
+- **Pairwise scoring, not component sums.** Score each pair of nodes, keep the
+  pairs at or above the threshold, and take connected components over those
+  pairs. A component sum grows with component size and means nothing. The
+  creator is a node; a buyer whose tokens or SUI reach a destination the creator
+  also paid directly gets a `creator_linked_destination` edge.
+- **Core means the creator participates.** A qualified buyer-only pair or
+  component is a `micro_cluster` even if it shares a destination. A `core`
+  component contains the creator through a qualified direct destination edge.
+  Do not suppress buyer-only edges to make the core appear more precise; their
+  pair scores and evidence remain visible.
+- **Funding from a popular funder scores 0.** Reuse `probeRecipients` /
+  `DEFAULT_POPULARITY_LIMIT` and `assessCoFunding`; a shared first funder counts
+  only if it passes the popularity check. A funding burst or shared funding
+  transaction from a hub scores 0 and is reported as a `hub_mediated`
+  observation. Do not invent a second rule that lets a hub's batch count.
+- **A shared destination is weighted by its classification.** "≥2 buyers → same
+  destination" scores only for a measured narrow destination. A `likely` deposit
+  address (`readDepositPattern` / `decideDepositVerdict`, one exchange account)
+  scores 6, the cluster threshold, on its own; a narrow unlabelled wallet that
+  passed the popularity filter and a deposit with verdict `unknown` each score
+  +3. It is never a labelled exchange hot wallet, a pool, a package, a shared
+  object, a router or fee collector, or an address with
+  `Popularity.unmeasured`. Exclude sponsor gas changes (`isSponsorGasChange`)
+  and value below the dust floors (`clearsDustFloor`). Each destination lists
+  the digests of payments into it and of its sweep out, with the caveat that
+  anyone can pay a deposit address: a payment from the creator does not name
+  the account holder.
+- **The creator-affiliation window is not the sell window.** A direct
+  creator → destination payment is looked up over the destination's history
+  (bounded, with a continuation) and reported with its date. The direct-payment
+  floor window applies to buyer↔buyer payments only.
+- **Evidence tiers use the repo vocabulary.** `chain-derived` for flows, amounts,
+  destinations, sweeps and creator; `heuristic` for clusters and affiliation;
+  `indexer-attested` where a third party supplies it. Never `chain_proven`,
+  `chain_suggestive` or `off_chain_only`. A static caveat states that SuiNS names
+  are self-chosen, that a deposit address's account holder cannot be named, and
+  that the tool gives no scam or rug verdict.
+- **A referral fee is not a direct buyer payment.** A curve's
+  `TokensPurchased` or `TokensSold` can pay its `referral` from another token
+  launch, before the buyer's short launch history starts. The pairwise direct
+  payment window is longer, so read each older payment's events and exclude
+  referral credits from both direct-payment and shared-destination edges.
+  An unread event page makes the pair incomplete; do not turn an unknown
+  referral into independent payment evidence.
+- **Reconciliation is over the window's balance changes, not an invented
+  closing balance.** Event `sui_in` is the buy amount, separate from the
+  buyer's gas-inclusive net debit. A debit within 0.01 SUI on either side of
+  the event is within tolerance: a PTB may credit its buyer too. Compare
+  event buy/sale/forward legs and gas with complete on-chain SUI and token
+  balance-change deltas; gas already included in a net sale must not be
+  subtracted again. An earlier balance outside the bounded window is unknown.
+  Name a window delta as such and keep `sui_leftover` null until a historical
+  balance read establishes the opening amount.
+- **Rebuys are separate from initial buys.** SUI is fungible, so "funded by
+  proceeds" is unprovable. Report buys after a buyer's first sale as
+  `buys_after_first_sale`, separate from initial buys; totals give `initial_buys`
+  and `gross_buys` side by side.
+- **Every walk is bounded, resumable and sized.** Per-buyer history walks,
+  destination classification and discovery pages carry a budget and a
+  `next_call` that retains all original arguments and the network. A walk cut
+  short sets `coverage.complete = false` per buyer. Long lists go through
+  `capPayload` with `omitted.next_call`.
+- **Launchpad scope is one adapter table.** SuiPump is implemented through an
+  adapter table keyed by the curated launchpad lineage (event types, coin field,
+  buy/sell, referral field). An unsupported coin returns an error naming the
+  supported launchpads.
+- **Weights are in-sample.** Every weight and threshold is tuned on one case;
+  negative controls are drawn separately and never tuned after being looked at.
+
 ### Reading Move bytecode
 
 `disassemble_module`, `diff_package_upgrade` and `analyze_package` read the

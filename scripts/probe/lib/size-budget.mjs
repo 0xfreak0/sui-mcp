@@ -36,6 +36,7 @@ export const TOOL_BUDGETS = {
   // Rows fill about 35k, and failed and lookalike rows survive past it.
   get_transaction_history: 45_000,
   build_timeline: 45_000,
+ analyze_launch: 50_000,
 };
 
 /** Whole answers by design. */

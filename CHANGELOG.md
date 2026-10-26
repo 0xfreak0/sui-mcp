@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **`analyze_launch` discovers buyers and coordination on a SuiPump launch.** Given the token type and optionally the creation transaction, it reads the bonding-curve buy events to find every buyer in the first-window minutes, traces each buyer's sales and transfers over a sell window, classifies deposit destinations, and scores coordination edges among buyers. A shared destination is weighted by its classification: a likely single-account deposit scores the cluster threshold, a narrow unlabelled wallet and an unknown-deposit verdict score less. Destinations list payer and sweep digests, with the caveat that anyone can pay a deposit address. Two layers keep discovery and attribution separate: `discovered_buyers` lists every buyer with amounts and status; `clusters` reports connected components with scores and edge types. The tool reports the creator and a per-buyer reconciliation, and names no scam or rug verdict.
+
 ## 1.28.0 (2026-10-25)
 
 Every capped result can be continued: a tool that stops at a page, scan, read or time limit says so and returns the call that resumes it. `query_events` reads one object's events, `get_transaction_history` takes a time window, and `list_objects_by_type` scans objects of a type across owners. Flow graphs follow valued object handovers, `find_pools` and `analyze_token` report pool liquidity custody, and clustering reports many-to-one consolidation. Swap labels read the pools' own events, launchpad trades name their coins, and Hashi is named as a Bitcoin bridge. Chain and provider text in tool results is marked as untrusted data.

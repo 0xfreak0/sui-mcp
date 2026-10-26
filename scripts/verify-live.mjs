@@ -103,6 +103,7 @@ const CHECKS = [
   ["probe/incident-pass", "the incident tools on the Cetus and Nemo exploits, against raw chain reads"],
   ["probe/attribution-pass", "funding, clustering, multisig, event, history and holder tools, each against a raw chain read"],
   ["probe/surface-pass", "stateful, prompt, core, market and developer tools against raw chain reads, plus malformed input"],
+ ["probe/launch-pass", "a sampled SuiPump launch's creation and first buy against raw chain events"],
   ["probe/case-pass", "every case in cases/incidents, against the answers its sources and the chain give"],
   ["probe/invariant-pass", "a seeded random sample of mainnet through the tools, against rules that hold for any input"],
   ["probe/oracle-pass", "random subjects from every era: swap labels, object ends and changes, mint authority, flows and cap owners against the chain read another way"],

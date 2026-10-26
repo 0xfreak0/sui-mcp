@@ -105,6 +105,7 @@ export const OVERRIDES: Record<string, Override> = {
   decode_ptb: { meta: FULL_SIZE },
   find_funding_sources: { meta: FULL_SIZE },
   analyze_attack_tx: { title: "Analyze attack transaction", meta: FULL_SIZE },
+ analyze_launch: { title: "Analyze token launch", meta: FULL_SIZE },
   summarize_incident_losses: { meta: FULL_SIZE },
   screen_address: { meta: FULL_SIZE, structured: true },
   trace_funds: { structured: true },

@@ -6,7 +6,7 @@ sidebar:
   label: "Overview"
   order: 100
 ---
-These pages are generated from the `tools/list` response of the server started with `SUI_TOOLS=all`. The server registers 79 tools. 78 belong to one or more of the profiles `core`, `forensics`, `developer`, `market`, and `enable_tools` is always on.
+These pages are generated from the `tools/list` response of the server started with `SUI_TOOLS=all`. The server registers 80 tools. 79 belong to one or more of the profiles `core`, `forensics`, `developer`, `market`, and `enable_tools` is always on.
 
 ## Groups
 
@@ -26,7 +26,7 @@ These pages are generated from the `tools/list` response of the server started w
 | [Packages](/reference/tools/packages/) | `analyze_package`, `decompile_module`, `diff_package_upgrade`, `disassemble_module`, `get_move_function`, `get_package`, `get_package_dependency_graph` |
 | [Transaction building](/reference/tools/transaction-building/) | `build_staking`, `build_transfer`, `simulate_transaction` |
 | [Advanced](/reference/tools/advanced/) | `check_activity`, `decode_ptb`, `poll_watch`, `watch_addresses` |
-| [Incident investigation](/reference/tools/incident-investigation/) | `aggregate_events`, `analyze_attack_tx`, `analyze_multisig`, `build_timeline`, `build_wallet_edges`, `check_coin_restrictions`, `classify_deposit_address`, `delete_finding`, `export_case`, `find_flow_path`, `find_funding_source`, `find_funding_sources`, `find_shared_multisig`, `get_address_fanout`, `get_upgrade_history`, `list_findings`, `manage_labels`, `resolve_bridge_transfer`, `resolve_protocol_packages`, `sample_control_addresses`, `save_finding`, `screen_address`, `summarize_address_flows`, `summarize_incident_losses`, `trace_flow_graph`, `trace_funds`, `trace_object_history` |
+| [Incident investigation](/reference/tools/incident-investigation/) | `aggregate_events`, `analyze_attack_tx`, `analyze_launch`, `analyze_multisig`, `build_timeline`, `build_wallet_edges`, `check_coin_restrictions`, `classify_deposit_address`, `delete_finding`, `export_case`, `find_flow_path`, `find_funding_source`, `find_funding_sources`, `find_shared_multisig`, `get_address_fanout`, `get_upgrade_history`, `list_findings`, `manage_labels`, `resolve_bridge_transfer`, `resolve_protocol_packages`, `sample_control_addresses`, `save_finding`, `screen_address`, `summarize_address_flows`, `summarize_incident_losses`, `trace_flow_graph`, `trace_funds`, `trace_object_history` |
 | [Profile switching](/reference/tools/profile-switching/) | `enable_tools` |
 
 ## All tools
@@ -35,6 +35,7 @@ These pages are generated from the `tools/list` response of the server started w
 |---|---|---|---|
 | [`aggregate_events`](/reference/tools/incident-investigation/#aggregate_events) | Rank senders or event types by count or by a summed event field over a window, in one call instead of paging query_events. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
 | [`analyze_attack_tx`](/reference/tools/incident-investigation/#analyze_attack_tx) | Investigate one exploit transaction. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`analyze_launch`](/reference/tools/incident-investigation/#analyze_launch) | Discover every buyer of a SuiPump coin in its first launch window, then trace each buyer's launch funding, buys, sales and forwards across a bounded sell window. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
 | [`analyze_multisig`](/reference/tools/incident-investigation/#analyze_multisig) | Read which of a multisig wallet's committee keys sign and which never have, across its recent sent transactions rather than one. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
 | [`analyze_package`](/reference/tools/packages/#analyze_package) | Scan a Move package's API, struct shapes and heuristic risks: freeze/denylist, mint and admin authority, fund handling, randomness and hot-potato types. | [Packages](/reference/tools/packages/) | `forensics`, `developer` |
 | [`analyze_token`](/reference/tools/starting-points/#analyze_token) | Analyze a Sui coin type or symbol: metadata, current price, 24h change, supply, top holders and current pool-liquidity custody. | [Recommended starting points](/reference/tools/starting-points/) | `core` (default) |

@@ -126,6 +126,7 @@ export const GROUPS = [
       "trace_flow_graph",
       "find_flow_path",
       "analyze_attack_tx",
+   "analyze_launch",
       "summarize_incident_losses",
       "summarize_address_flows",
       "resolve_bridge_transfer",

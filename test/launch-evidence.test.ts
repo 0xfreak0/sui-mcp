@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buyerReceivedLaunchCoin, creatorPaid, launchTopup, SUI_LAUNCH_TYPE } from "../src/utils/launch-evidence.js";
+import { buyerReceivedLaunchCoin, creatorPaid, launchAccountingComplete, launchTotalsPartial, launchTopup, SUI_LAUNCH_TYPE, uniqueCreatorPayments } from "../src/utils/launch-evidence.js";
+import { scoreLaunch, type LaunchBuyer } from "../src/utils/launch-scoring.js";
 
 const creator = "0xc0";
 const buyer = "0xb1";
@@ -55,5 +56,33 @@ describe("launch payment evidence", () => {
     const tx = { sender: buyer, sponsor: null, gas: 1n, changes: [change(buyer, -10n), change("0xsession", 100n, token)] };
     expect(buyerReceivedLaunchCoin(tx, buyer, token)).toBe(false);
     expect(buyerReceivedLaunchCoin({ ...tx, changes: [change(buyer, 100n, token)] }, buyer, token)).toBe(true);
+  });
+  it("deduplicates a creator payment found through both a shared destination and buyer pair", () => {
+    const sharedDestination = "0xd11";
+    const payment = { to: sharedDestination, asset: "sui" as const, amount: 600_000_000n, digest: "creator-to-buyer" };
+    const buyerAt = (address: string): LaunchBuyer => ({
+      address, funding: [], payments: [], referrals: [], suinsNames: [],
+      transfers: [{ destination: sharedDestination, asset: "sui", amount: 2_000_000_000n, digest: `${address}-forward`, qualifies: true }]
+    });
+    const buyers = [buyerAt(buyer), buyerAt("0xb2")];
+    const destinations = [{ address: sharedDestination, kind: "wallet" as const, popularity: "narrow" as const }];
+    const input = (payments: typeof payment[]) => ({
+      creator: { address: creator, payments }, buyers, destinations, totalSupplyRaw: 1_000_000_000n
+    });
+    expect(scoreLaunch(input([payment, payment])).pairs.some(pair => pair.signals.some(signal => signal.type === "creator_linked_destination"))).toBe(true);
+    const unique = uniqueCreatorPayments([[payment], [payment], [{ ...payment, asset: "token" as const }]]);
+    expect(unique).toHaveLength(2);
+    expect(uniqueCreatorPayments([[payment], [payment]])).toEqual([payment]);
+    const result = scoreLaunch(input([unique[0]]));
+    expect(result.pairs.find(pair => pair.a === creator || pair.b === creator)).toBeUndefined();
+    expect(result.destinations.find(row => row.address === sharedDestination)?.affiliation).toBe("buyer_shared");
+  });
+
+  it("marks unread pool swaps as partial even when window balances reconcile", () => {
+    expect(launchAccountingComplete(true, true, 0)).toBe(true);
+    expect(launchAccountingComplete(true, true, 1)).toBe(false);
+    expect(launchAccountingComplete(true, false, 0)).toBe(false);
+    expect(launchTotalsPartial([{ raw: { unread_pool_events: 0 } }])).toBe(false);
+    expect(launchTotalsPartial([{ raw: { unread_pool_events: 0 } }, { raw: { unread_pool_events: 1 } }])).toBe(true);
   });
 });

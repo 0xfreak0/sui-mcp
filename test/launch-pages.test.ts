@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { launchCatalogLists, launchListRows, LAUNCH_PARENT_LISTS, nextLaunchPageBudget } from "../src/utils/launch-pages.js";
+import { launchCatalogLists, launchListRows, launchPaymentReadsCanAdvance, LAUNCH_PARENT_LISTS, nextLaunchPageBudget } from "../src/utils/launch-pages.js";
 import { pageAt } from "../src/utils/output-cap.js";
+import { subjectPaymentsCanAdvance } from "../src/utils/subject-payments.js";
 
 describe("full launch result pagination", () => {
   it("returns every buyer and cluster scalar record separately from its nested evidence", () => {
@@ -47,4 +48,14 @@ describe("full launch result pagination", () => {
     expect(nextLaunchPageBudget(1000, true)).toBeNull();
     expect(nextLaunchPageBudget(20, false)).toBeNull();
   });
+  it("continues only budget-stopped subject and creator payment reads", () => {
+    expect(subjectPaymentsCanAdvance(true, "next", 20, 20, false)).toBe(true);
+    expect(subjectPaymentsCanAdvance(true, "next", 19, 20, false)).toBe(false);
+    expect(subjectPaymentsCanAdvance(true, "next", 20, 20, true)).toBe(false);
+    expect(subjectPaymentsCanAdvance(true, null, 20, 20, false)).toBe(false);
+    expect(launchPaymentReadsCanAdvance(true, [{ canAdvance: false }])).toBe(true);
+    expect(launchPaymentReadsCanAdvance(false, [{ canAdvance: true }])).toBe(true);
+    expect(launchPaymentReadsCanAdvance(false, [{ canAdvance: false }])).toBe(false);
+    expect(nextLaunchPageBudget(20, launchPaymentReadsCanAdvance(false, [{ canAdvance: true }]))).toBe(40);
+});
 });

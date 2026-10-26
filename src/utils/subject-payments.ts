@@ -81,7 +81,14 @@ export interface SubjectPaymentScan {
   incomplete_pairs: Array<{ payer: string; payee: string }>;
   /** Inputs left out because they are not valid addresses. */
   invalid: string[];
+ /** An unfinished pair stopped at the page budget with an advancing cursor. */
+ can_advance: boolean;
   requests: number;
+}
+
+/** A null/stalled cursor or failed read cannot be improved by raising the page budget. */
+export function subjectPaymentsCanAdvance(more: boolean, cursor: string | null, pages: number, maxPages: number, readFailed: boolean): boolean {
+ return more && cursor !== null && pages >= maxPages && !readFailed;
 }
 
 /**
@@ -130,6 +137,7 @@ export async function findSubjectPayments(subjects: string[], opts: { window?: {
   const found: Array<{ payer: string; payee: string; node: PairNode }> = [];
   const incomplete: Array<{ payer: string; payee: string }> = [];
   let requests = 0;
+ let canAdvance = false;
 
   for (let i = 0; i < pairs.length; i += PAIRS_PER_REQUEST) {
     const batch = pairs.slice(i, i + PAIRS_PER_REQUEST);
@@ -155,6 +163,7 @@ export async function findSubjectPayments(subjects: string[], opts: { window?: {
       let more = conn.pageInfo?.hasNextPage === true;
       let cursor = conn.pageInfo?.endCursor ?? null;
       let pages = 0;
+   let readFailed = false;
    while (more && cursor && pages < (opts.maxPairPages ?? MAX_PAIR_PAGES)) {
         requests++;
         pages++;
@@ -164,12 +173,14 @@ export async function findSubjectPayments(subjects: string[], opts: { window?: {
           after: cursor,
      ...(opts.window ? { afterCp: opts.window.afterCheckpoint, beforeCp: opts.window.beforeCheckpoint } : {}),
         }).catch(() => null);
-        if (!next) break;
+    if (!next) { readFailed = true; break; }
         for (const node of next.transactions.nodes) found.push({ ...p, node });
         more = next.transactions.pageInfo?.hasNextPage === true;
-        cursor = next.transactions.pageInfo?.endCursor ?? null;
+    const nextCursor = next.transactions.pageInfo?.endCursor ?? null;
+    cursor = nextCursor === cursor ? null : nextCursor;
       }
       if (more) incomplete.push(p);
+   if (subjectPaymentsCanAdvance(more, cursor, pages, opts.maxPairPages ?? MAX_PAIR_PAGES, readFailed)) canAdvance = true;
     }
   }
 
@@ -201,7 +212,7 @@ export async function findSubjectPayments(subjects: string[], opts: { window?: {
   }
   payments.sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""));
 
-  return { payments, pairs_checked: pairs.length, incomplete_pairs: incomplete, invalid, requests };
+ return { payments, pairs_checked: pairs.length, incomplete_pairs: incomplete, invalid, requests, can_advance: canAdvance };
 }
 
 /** Newest pages read per direction and walked address. */

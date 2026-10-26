@@ -20,9 +20,9 @@ import { sumRaw, decimalAmount, isSuiPumpReferralFee, tradeLegs, ownerForwards, 
 import { fetchEventJson } from "../utils/event-json.js";
 import { scoreLaunch, type LaunchBuyer, type LaunchDestination, type LaunchFunding, type LaunchPayment, type LaunchTransfer } from "../utils/launch-scoring.js";
 import { netGas, type GqlGasSummary } from "../utils/trace-read.js";
-import { buyerReceivedLaunchCoin, creatorPaid, launchTopup, SUI_LAUNCH_TYPE } from "../utils/launch-evidence.js";
+import { buyerReceivedLaunchCoin, creatorPaid, launchAccountingComplete, launchTopup, launchTotalsPartial, uniqueCreatorPayments, SUI_LAUNCH_TYPE } from "../utils/launch-evidence.js";
 import { DEFAULT_NETWORK, getNetwork } from "../config.js";
-import { LAUNCH_PARENT_LISTS, launchCatalogLists, launchListRows, nextLaunchPageBudget } from "../utils/launch-pages.js";
+import { LAUNCH_PARENT_LISTS, launchCatalogLists, launchListRows, launchPaymentReadsCanAdvance, nextLaunchPageBudget } from "../utils/launch-pages.js";
 import { launchTokenUsd } from "../utils/launch-price.js";
 
 const SUI = "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
@@ -257,7 +257,7 @@ export function registerLaunchTools(server: McpServer) {
      creator_payments: creatorPay.payments, creator_payment_complete: creatorPay.complete, creator_payment_can_advance: creatorPay.canAdvance,
     });
    }
-   const scores = scoreLaunch({ creator: { address: origin.creator, payments: [...destinations.flatMap(d => d.creator_payments), ...creatorDirect] }, buyers: ledgers.map(l => ({ address: l.address, funding: l.buyer_ownership_unverified.length ? [] : l.launch_funding, transfers: l.buyer_ownership_unverified.length ? [] : l.transfers, payments: l.buyer_ownership_unverified.length ? [] : l.payments, referrals: l.buyer_ownership_unverified.length ? [] : l.referrals, suinsNames: [] } satisfies LaunchBuyer)), destinations, totalSupplyRaw: origin.token.total_supply_raw ? BigInt(origin.token.total_supply_raw) : 0n });
+   const scores = scoreLaunch({ creator: { address: origin.creator, payments: uniqueCreatorPayments([...destinations.map(d => d.creator_payments), creatorDirect]) }, buyers: ledgers.map(l => ({ address: l.address, funding: l.buyer_ownership_unverified.length ? [] : l.launch_funding, transfers: l.buyer_ownership_unverified.length ? [] : l.transfers, payments: l.buyer_ownership_unverified.length ? [] : l.payments, referrals: l.buyer_ownership_unverified.length ? [] : l.referrals, suinsNames: [] } satisfies LaunchBuyer)), destinations, totalSupplyRaw: origin.token.total_supply_raw ? BigInt(origin.token.total_supply_raw) : 0n });
    const status = new Map(scores.buyers.map(b => [b.address, b]));
    const coreAddresses = new Set(scores.buyers.filter(b => b.status === "core").map(b => b.address));
    const fundingBounds = await resolveWindow(fundingFrom, sellingTo);
@@ -277,7 +277,7 @@ export function registerLaunchTools(server: McpServer) {
     });
     const account = a.account;
     const abs = (n: bigint) => n < 0n ? -n : n;
-    const reconciled = l.complete && account.complete
+    const reconciled = l.complete && account.complete && a.unread_pool_events === 0
      && abs(account.suiResidual) <= MIST
      && (account.tokenExpectedDelta === 0n
       ? account.tokenResidual === 0n : abs(account.tokenResidual) * 1_000n <= a.trades.tokensIn);
@@ -311,7 +311,7 @@ export function registerLaunchTools(server: McpServer) {
      launch_funding: l.launch_funding.map(f => ({ source: f.source, amount_sui: decimalAmount(f.amountMist, 9), digest: f.digest, timestamp: new Date(f.at).toISOString(), source_status: f.sourceStatus, transaction_recipient_count: f.transactionRecipientCount ?? null, transaction_strength: f.transactionStrength ?? null })),
      launch_topup_present: l.launch_topup_present, first_funding_ever: l.first_funding_ever,
      coverage: {
-      complete: l.complete && (!coreAddresses.has(l.address) || earlier?.complete === true),
+       complete: launchAccountingComplete(l.complete, !coreAddresses.has(l.address) || earlier?.complete === true, a.unread_pool_events),
       transactions: l.history.length, reads: l.history_reads, next_cursor: l.history_next_cursor,
        buyer_ownership_unverified: l.buyer_ownership_unverified,
       opening_balance_complete: coreAddresses.has(l.address) ? earlier?.complete === true : null,
@@ -342,6 +342,7 @@ export function registerLaunchTools(server: McpServer) {
      curve_proceeds_gross: decimalAmount(total(r => r.curveProceeds), 9),
      pool_proceeds_gross: { venue: pool?.venue ?? null, sui: decimalAmount(total(r => r.poolProceeds), 9) },
      ...(pool?.venue === "Cetus" ? { cetus_proceeds_gross: decimalAmount(total(r => r.poolProceeds), 9) } : {}),
+     partial: launchTotalsPartial(rows),
     };
    };
    const totals = {
@@ -355,6 +356,7 @@ export function registerLaunchTools(server: McpServer) {
     || !!poolDiscovery && !poolDiscovery.complete && poolDiscovery.next_cursor !== null
     || ledgers.some(l => !l.complete && l.history_next_cursor !== null)
     || [...earlyHistories.values()].some(read => read && !read.complete && read.next_cursor !== null)
+    || launchPaymentReadsCanAdvance(direct.can_advance, creatorRecipientReads)
     || destinations.some(d => d.classification_can_advance || d.creator_payment_can_advance));
    const nextCall = advancePages !== null ? {
     tool: "analyze_launch", args: {
@@ -405,6 +407,9 @@ export function registerLaunchTools(server: McpServer) {
       creator_payment_complete: d.creator_payment_complete, creator_payment_can_advance: d.creator_payment_can_advance,
      })),
      creator_recipient_payments_complete: creatorRecipientComplete,
+     subject_payments_complete: direct.incomplete_pairs.length === 0,
+     subject_payments_can_advance: direct.can_advance,
+     creator_recipient_payments_can_advance: creatorRecipientReads.some(read => read.canAdvance),
      ...(!complete && nextCall ? { next_call: nextCall } : {}),
     },
     evidence_tiers: { flows: "chain-derived", deposit_classification: "heuristic", clusters: "heuristic" },

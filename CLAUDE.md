@@ -5149,6 +5149,11 @@ among them. Rules a change is likely to break:
   when it is a SuiPump referral fee the curve paid, and never when the
   destination is the creator. The creator is also a subject of the
   direct-payment scan, so a payment between it and a buyer is `direct`.
+- **One creator payment is one scoring event.** A buyer can also be a
+  shared destination, so the creator→buyer subject-payment scan and the
+  creator→destination history walk can return the same transaction. Deduplicate
+  by destination, digest and coin before summing toward the direct-payment
+  floor; two reads of 0.6 SUI do not make a 1.2 SUI payment.
 - **Evidence tiers use the repo vocabulary.** `chain-derived` for flows, amounts,
   destinations, sweeps and creator; `heuristic` for clusters and affiliation;
   `indexer-attested` where a third party supplies it. Never `chain_proven`,
@@ -5186,6 +5191,10 @@ among them. Rules a change is likely to break:
   coin order. The pool reader matches event packages to the pool lineage,
   not router echoes; an unread lineage or undecodable event makes pool
   coverage incomplete instead of producing a zero-swap conclusion.
+  A buyer with unread pool swap events has incomplete coverage and an
+  unreconciled reading even when its observed balance changes happen to
+  balance. Totals containing that buyer are `partial`, since the unread
+  event may change the sale proceeds or gross buys.
   An earlier balance outside the bounded window is unknown. Name a window
   delta as such and keep `sui_leftover` null until a historical balance read
   establishes the opening amount; that read ends one checkpoint after the
@@ -5205,6 +5214,11 @@ among them. Rules a change is likely to break:
   (`discovered_buyers`, `clusters`, `destinations`), each child evidence list
   and the list-descriptor catalog itself; no parent status or coverage may
   disappear behind a nested-list cap. The default view uses `capPayload`.
+  Subject-pair follow-ups and creator-recipient payment reads are both part
+  of that budget: a pair stopped with `hasNextPage` and an advancing cursor,
+  or a creator read stopped at its page cap, yields `coverage.next_call`.
+  A failed request or missing/stalled cursor remains incomplete with no
+  retry-by-budget claim.
 - **Launchpad scope is one adapter table.** SuiPump is implemented through an
   adapter table keyed by the curated launchpad lineage (event types, coin field,
   buy/sell, referral field). An unsupported coin returns an error naming the

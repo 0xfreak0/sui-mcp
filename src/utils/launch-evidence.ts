@@ -1,5 +1,6 @@
 import { isSponsorGasChange } from "./sponsor-gas.js";
 import type { LaunchChange } from "./launch-accounting.js";
+import type { LaunchPayment } from "./launch-scoring.js";
 
 export const SUI_LAUNCH_TYPE = "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
 
@@ -44,4 +45,23 @@ export function creatorPaid(tx: PaymentTransaction, creator: string, destination
 /** The event's buyer is a signing key; a session buy can leave its tokens in an object. */
 export function buyerReceivedLaunchCoin(tx: PaymentTransaction, buyer: string, coin: string): boolean {
   return balance(tx, buyer, coin) > 0n;
+}
+
+/** A shared destination can also be a buyer, read by both creator-payment walks. */
+export function uniqueCreatorPayments(groups: readonly (readonly LaunchPayment[])[]): LaunchPayment[] {
+  const seen = new Set<string>();
+  return groups.flatMap(group => group.filter(payment => {
+    const key = JSON.stringify([payment.to, payment.digest, payment.asset]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }));
+}
+
+export function launchAccountingComplete(historyComplete: boolean, openingComplete: boolean, unreadPoolEvents: number): boolean {
+  return historyComplete && openingComplete && unreadPoolEvents === 0;
+}
+
+export function launchTotalsPartial(rows: readonly { raw: { unread_pool_events: number } }[]): boolean {
+  return rows.some(row => row.raw.unread_pool_events > 0);
 }

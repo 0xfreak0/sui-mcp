@@ -24,3 +24,8 @@ export function launchCatalogLists(result: Record<string, unknown>, paths: Itera
 export function nextLaunchPageBudget(pages: number, boundedRead: boolean): number | null {
   return boundedRead && pages < 1000 ? Math.min(1000, pages * 2) : null;
 }
+
+/** Only a page-budget stop is resumable; a read failure stays incomplete without a misleading next call. */
+export function launchPaymentReadsCanAdvance(subjectCanAdvance: boolean, creatorReads: readonly { canAdvance: boolean }[]): boolean {
+  return subjectCanAdvance || creatorReads.some(read => read.canAdvance);
+}

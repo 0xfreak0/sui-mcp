@@ -5096,6 +5096,10 @@ among them. Rules a change is likely to break:
   `resolveEventTypeFilter`: an event's type carries the defining package, so one
   filter covers every version. Report the defining package and lineage in
   `coverage`.
+- **The buyer list is not the core cluster.** Rank every discovered signer by
+  initial tokens, report its percentage of the token's total supply and an
+  `initial_buy_rank`, and keep exactly one core, micro-cluster or unclustered
+  status on each row. Ranking never decides clustering.
 - **Pairwise scoring, not component sums.** Score each pair of nodes, keep the
   pairs at or above the threshold, and take connected components over those
   pairs. A component sum grows with component size and means nothing. The
@@ -5111,14 +5115,19 @@ among them. Rules a change is likely to break:
   only if it passes the popularity check. A funding burst or shared funding
   transaction from a hub scores 0 and is reported as a `hub_mediated`
   observation. Do not invent a second rule that lets a hub's batch count.
-- **A shared destination is weighted by its classification.** "≥2 buyers → same
-  destination" scores only for a measured narrow destination. A `likely` deposit
-  address (`readDepositPattern` / `decideDepositVerdict`, one exchange account)
-  scores 6, the cluster threshold, on its own; a narrow unlabelled wallet that
-  passed the popularity filter and a deposit with verdict `unknown` each score
-  +3. It is never a labelled exchange hot wallet, a pool, a package, a shared
-  object, a router or fee collector, a burn address (`isUnspendableAddress`),
-  or an address with `Popularity.unmeasured`. Narrow is read on both sides:
+- **A shared deposit address needs a bounded depositor set.** Two buyers
+  paying the same `likely` deposit address score 6, the pair threshold, only
+  when the classification window and historical balance reconstruction are
+  complete and no more than 50 distinct addresses funded the deposit. Such
+  payments reach one exchange account, but the account holder remains unknown
+  and a stranger can pay its address. A narrow unlabelled wallet and an
+  `unknown` deposit each score +3; a likely deposit with incomplete coverage
+  or over 50 depositors falls back to +3 only when separately proven narrow.
+  A `likely` verdict alone cannot establish a bounded cohort.
+- **A shared destination must be an eligible counterparty.** Never use a
+  labelled exchange hot wallet, pool, package, shared object, router, fee
+  collector, burn address (`isUnspendableAddress`) or an address with
+  `Popularity.unmeasured`. Narrow is read on both sides:
   `probeRecipients` counts whom it pays and `probeLaunchPayers` whom it is
   paid by, both against `DEFAULT_POPULARITY_LIMIT`. A trading bot's fee
   wallet pays a few addresses and is paid by hundreds, so an outflow probe
@@ -5127,6 +5136,12 @@ among them. Rules a change is likely to break:
   the digests of payments into it and of its sweep out, with the caveat that
   anyone can pay a deposit address: a payment from the creator does not name
   the account holder.
+- **A live token price does not prove an old payment cleared a USD floor.**
+  Launch-token forwards use the curve's reserves or the graduated pool's
+  sqrt price at the payment's checkpoint and a historical SUI quote. When
+  either state or quote is unavailable, the dust verdict stays `unpriced`
+  and scores zero rather than quietly treating the payment as dust or
+  using today's price. SUI payments retain their raw-unit floor.
 - **The creator-affiliation window is not the sell window.** A direct
   creator → destination payment is looked up over the destination's history
   (bounded, with a continuation) and reported with its date. It links the
@@ -5153,6 +5168,11 @@ among them. Rules a change is likely to break:
   coin. The difference is `sui_outside_trade`, reported and never subtracted.
   Withholding such buys dropped 7 of 12 buyers and two thirds of the initial
   SUI on a random launch.
+- **A buy event names its signer, not necessarily the token's owner.** A
+  session buy can credit a session object rather than the signer. If the
+  signer has no positive token change in the buy transaction, its buyer
+  ownership is unverified: name the digests in buyer coverage, withhold its
+  pairwise signals and do not call its reconciliation complete.
 - **A forward is capped at what the owner moved, after its trades.**
   `ownerForwards` caps each coin at the owner's debit less gas it paid plus its
   trade legs' proceeds less their cost. Capping at the bare net debit skips a
@@ -5162,8 +5182,10 @@ among them. Rules a change is likely to break:
   closing balance.** `accountBuyer` sets SUI received in other senders'
   transactions, event trade legs (curve and pool, `tradeLegs`), forwards and
   all gas the owner paid against complete on-chain SUI and token deltas. A
-  pool swap's direction is `atob` against the pool's coin order
-  (`readPoolCoinIsA`); unread, its swaps are not counted and coverage says so.
+  pool swap's direction comes from that venue's event against the pool's
+  coin order. The pool reader matches event packages to the pool lineage,
+  not router echoes; an unread lineage or undecodable event makes pool
+  coverage incomplete instead of producing a zero-swap conclusion.
   An earlier balance outside the bounded window is unknown. Name a window
   delta as such and keep `sui_leftover` null until a historical balance read
   establishes the opening amount; that read ends one checkpoint after the
@@ -5174,11 +5196,15 @@ among them. Rules a change is likely to break:
   curve buy after the window or a pool buy, is in `later_buys` with
   `after_first_sale`, and counts in `gross_buys` only. Totals give both, for
   `discovered` and `core` buyers apart, summed in raw units.
-- **Every walk is bounded, resumable and sized.** Per-buyer history walks,
-  destination classification and discovery pages carry a budget and a
-  `next_call` that retains all original arguments and the network. A walk cut
-  short sets `coverage.complete = false` per buyer. Long lists go through
-  `capPayload` with `omitted.next_call`.
+- **Continuation calls must advance a real bound.** Buyer history, early
+  balance and destination reads retain their original arguments and network;
+  `coverage.next_call` raises `max_pages` only when a cursor or explicit page
+  budget is responsible for incompleteness, never when a read failed, a
+  balance anchor excluded part of the window, or `max_pages` reached its
+  maximum. A full view over the response limit pages every parent record
+  (`discovered_buyers`, `clusters`, `destinations`), each child evidence list
+  and the list-descriptor catalog itself; no parent status or coverage may
+  disappear behind a nested-list cap. The default view uses `capPayload`.
 - **Launchpad scope is one adapter table.** SuiPump is implemented through an
   adapter table keyed by the curated launchpad lineage (event types, coin field,
   buy/sell, referral field). An unsupported coin returns an error naming the

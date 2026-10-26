@@ -59,7 +59,7 @@ describe("launch pairwise scoring", () => {
     topup(a, 0, "targeted");
     topup(b, 1, "targeted");
     topup(c, 2, "targeted");
-    const data = input([a, b, c, d, e, f, g], [wallet(STUDIO), { ...wallet(DEPOSIT, "unmeasured"), depositVerdict: "likely" }]);
+    const data = input([a, b, c, d, e, f, g], [wallet(STUDIO), { ...wallet(DEPOSIT, "unmeasured"), depositVerdict: "likely", classificationComplete: true, distinctDepositors: 4 }]);
     data.creator.payments.push({
       to: STUDIO, asset: "token", amount: 5_000_000n,
       digest: "historical-creator-studio"
@@ -185,8 +185,9 @@ describe("launch pairwise scoring", () => {
     const buyers = [buyer("0xa1"), buyer("0xa2"), buyer("0xa3")];
     const destinations = [wallet("0xdd1", "unmeasured"), wallet("0xdd2", "provisional"),
     wallet("0xdd3", "popular"), { ...wallet("0xdd4"), labelCategory: "cex" as const },
-    { ...wallet("0xdd5"), kind: "object" as const }, { ...wallet("0xdd6"), depositVerdict: "likely" as const },
-    { ...wallet("0xdd8"), depositVerdict: "likely" as const, exchangeHotWallet: true }];
+    { ...wallet("0xdd5"), kind: "object" as const },
+    { ...wallet("0xdd6"), depositVerdict: "likely" as const, classificationComplete: true, distinctDepositors: 4 },
+    { ...wallet("0xdd8"), depositVerdict: "likely" as const, classificationComplete: true, distinctDepositors: 4, exchangeHotWallet: true }];
     for (const [i, b] of buyers.entries()) {
       for (const destination of destinations) transfer(b, destination.address);
       transfer(b, "0xdd7"); // No classification is not a narrow verdict.
@@ -207,6 +208,7 @@ describe("launch pairwise scoring", () => {
     transfer(b, DEPOSIT);
     const likely = {
       ...wallet(DEPOSIT, "unmeasured"), depositVerdict: "likely" as const,
+      classificationComplete: true, distinctDepositors: 4,
       sweeps: [{ digest: "joint-sweep" }]
     };
     const result = scoreLaunch(input([a, b], [likely]));
@@ -223,6 +225,98 @@ describe("launch pairwise scoring", () => {
 
     expect(pair(unknown, a.address, b.address)?.score).toBe(3);
   });
+
+  it("reserves six points for a complete likely deposit with at most 50 distinct depositors", () => {
+    const a = buyer("0xa1");
+    const b = buyer("0xa2");
+    transfer(a, DEPOSIT);
+    transfer(b, DEPOSIT);
+    const base = { ...wallet(DEPOSIT, "unmeasured"), depositVerdict: "likely" as const };
+    for (const count of [4, 50]) {
+      const result = scoreLaunch(input([a, b], [{ ...base, classificationComplete: true, distinctDepositors: count }]));
+      expect(pair(result, a.address, b.address)?.signals).toEqual([
+        expect.objectContaining({ type: "shared_deposit_address", weight: 6 }),
+      ]);
+      expect(result.clusters).toHaveLength(1);
+    }
+    for (const destination of [
+      { ...base, classificationComplete: true, distinctDepositors: 51 },
+      { ...base, classificationComplete: false, distinctDepositors: 4 },
+      { ...base, classificationComplete: true, distinctDepositors: null },
+    ]) {
+      const unmeasured = scoreLaunch(input([a, b], [destination]));
+      expect(unmeasured.pairs).toEqual([]);
+      expect(unmeasured.clusters).toEqual([]);
+      expect(unmeasured.observations).toEqual([
+        expect.objectContaining({ type: "destination_ineligible", via: DEPOSIT }),
+      ]);
+      const measured = scoreLaunch(input([a, b], [{ ...destination, popularity: "narrow" }]));
+      expect(pair(measured, a.address, b.address)?.signals).toEqual([
+        expect.objectContaining({ type: "shared_destination", weight: 3 }),
+      ]);
+      expect(measured.clusters).toEqual([]);
+    }
+  });
+
+  it("keeps an inferred per-user exchange deposit eligible without treating a hot wallet as a deposit", () => {
+    const a = buyer("0xa1");
+    const b = buyer("0xa2");
+    transfer(a, DEPOSIT);
+    transfer(b, DEPOSIT);
+    const classified = {
+      ...wallet(DEPOSIT, "unmeasured"), labelCategory: "cex" as const, exchangeHotWallet: false,
+      depositVerdict: "likely" as const, classificationComplete: true, distinctDepositors: 4,
+    };
+    const perUser = scoreLaunch(input([a, b], [classified]));
+    expect(pair(perUser, a.address, b.address)?.signals).toEqual([
+      expect.objectContaining({ type: "shared_deposit_address", weight: 6 }),
+    ]);
+    const incomplete = scoreLaunch(input([a, b], [{
+      ...classified, popularity: "narrow", classificationComplete: false,
+    }]));
+    expect(pair(incomplete, a.address, b.address)?.signals).toEqual([
+      expect.objectContaining({ type: "shared_destination", weight: 3 }),
+    ]);
+    expect(incomplete.clusters).toEqual([]);
+    const unconfirmed = scoreLaunch(input([a, b], [{
+      ...classified, popularity: "narrow", depositVerdict: "unknown",
+    }]));
+    expect(pair(unconfirmed, a.address, b.address)?.signals).toEqual([
+      expect.objectContaining({ type: "shared_destination", weight: 3 }),
+    ]);
+    const unmarked = scoreLaunch(input([a, b], [{
+      ...classified, popularity: "narrow", classificationComplete: false, exchangeHotWallet: undefined,
+    }]));
+    expect(unmarked.pairs).toEqual([]);
+    const hotWallet = scoreLaunch(input([a, b], [{ ...classified, exchangeHotWallet: true }]));
+    expect(hotWallet.pairs).toEqual([]);
+    expect(hotWallet.destinations).toEqual([
+      { address: DEPOSIT, eligible: false, affiliation: "none" },
+    ]);
+    expect(hotWallet.observations).toEqual([
+      expect.objectContaining({ type: "destination_ineligible", via: DEPOSIT }),
+    ]);
+  });
+
+  it("does not score unknown token valuation as a qualifying transfer or as known dust", () => {
+    const a = buyer("0xa1");
+    const b = buyer("0xa2");
+    transfer(a, STUDIO, "token");
+    transfer(b, STUDIO, "token", false);
+    let result = scoreLaunch(input([a, b], [wallet(STUDIO)]));
+    expect(result.pairs).toEqual([]);
+    expect(result.observations).toEqual([]);
+    b.transfers[0].qualifies = "unpriced";
+    result = scoreLaunch(input([a, b], [wallet(STUDIO)]));
+    expect(result.pairs).toEqual([]);
+    expect(result.clusters).toEqual([]);
+    expect(result.observations).toEqual([
+      expect.objectContaining({
+        type: "transfer_unpriced", addresses: [b.address], via: STUDIO,
+        digests: [`transfer-${b.address}-${STUDIO}`]
+      }),
+    ]);
+  });
   it("keeps an unrelated qualified buyer pair as a micro-cluster even when it shares a likely deposit", () => {
     const a = buyer("0xa1");
     const b = buyer("0xa2");
@@ -230,6 +324,7 @@ describe("launch pairwise scoring", () => {
     transfer(b, DEPOSIT);
     const result = scoreLaunch(input([a, b], [{
       ...wallet(DEPOSIT, "unmeasured"), depositVerdict: "likely",
+      classificationComplete: true, distinctDepositors: 4,
       sweeps: [{ digest: "joint-sweep" }],
     }]));
     expect(result.clusters[0]).toMatchObject({ members: [a.address, b.address], score: 6, status: "micro_cluster" });

@@ -186,6 +186,35 @@ it("binds venue and audit continuations without treating decoded data as a call"
     expect(payload.events[0].parsed.next_call.args).not.toHaveProperty("network");
 });
 
+it("binds launch catalog, row-page and incomplete coverage calls only at declared paths", () => {
+  const call = (args: Args = {}): { tool: string; args: Args } =>
+    ({ tool: "analyze_launch", args: { coin_type: "0x2::example::COIN", ...args } });
+  const catalog = {
+    lists: [{ path: "discovered_buyers.0.sales", next_call: call({ detail: "full", list_path: "discovered_buyers.0.sales", offset: 0 }) }],
+    coverage: {
+      complete: false,
+      next_call: call({ max_pages: 40, detail: "full" }),
+      buyers: [{ address: OWNER, next_call: call() }],
+    },
+    discovered_buyers: [{ sales: [{ next_call: call() }] }],
+  };
+  expect(bindContinuationNetwork(catalog, "testnet")).toBe(true);
+  expect(catalog.lists[0].next_call.args.network).toBe("testnet");
+  expect(catalog.coverage.next_call.args.network).toBe("testnet");
+  expect(catalog.coverage.buyers[0].next_call.args).not.toHaveProperty("network");
+  expect(catalog.discovered_buyers[0].sales[0].next_call.args).not.toHaveProperty("network");
+
+  const page = {
+    rows: [{ parsed: { next_call: call() } }],
+    rows_page: { next_call: call({ detail: "full", list_path: "discovered_buyers.0.sales", offset: 20 }) },
+    coverage: { complete: false, next_call: call({ max_pages: 40, detail: "full" }) },
+  };
+  expect(bindContinuationNetwork(page, "devnet")).toBe(true);
+  expect(page.rows_page.next_call.args).toMatchObject({ offset: 20, network: "devnet" });
+  expect(page.coverage.next_call.args).toMatchObject({ max_pages: 40, network: "devnet" });
+  expect(page.rows[0].parsed.next_call.args).not.toHaveProperty("network");
+});
+
 describe("continuations stay on the originating chain", () => {
   it.each([
     { tool: "decode_ptb", args: { digest: DIGEST }, path: "commands_omitted.next_call", next: "decode_ptb" },

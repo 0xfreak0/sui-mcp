@@ -32,8 +32,8 @@ export interface LaunchTransfer {
  asset: "sui" | "token";
  amount: bigint;
  digest: string;
- /** Result of the caller's coin-aware dust-floor check. */
- qualifies: boolean;
+ /** Explicitly distinguish an unpriced/unknown dust floor from a known failed floor. */
+ qualifies: boolean | "unpriced";
 }
 
 export interface LaunchBuyer {
@@ -53,8 +53,12 @@ export interface LaunchDestination {
  kind: "wallet" | "object" | "package" | "shared" | "other";
  popularity: "narrow" | "popular" | "unmeasured" | "provisional";
  depositVerdict?: "likely" | "unknown" | "not-deposit";
+ /** The classified window must cover the requested period before a likely deposit can score six. */
+ classificationComplete?: boolean;
+ /** Distinct senders of deposits in that classified window; null means unread. */
+ distinctDepositors?: number | null;
  labelCategory?: "cex" | "bridge" | "protocol" | "other" | null;
- /** A labelled exchange hot wallet never qualifies as a single-account deposit. */
+ /** True for a direct exchange hot-wallet label; false for an inferred per-user deposit label. */
  exchangeHotWallet?: boolean;
  /** Full-balance sweeps of this deposit address, for on-chain follow-up. */
  sweeps?: Array<{ digest: string }>;
@@ -103,7 +107,7 @@ export interface LaunchCluster {
 }
 
 export interface LaunchObservation {
- type: "hub_mediated" | "funding_unmeasured" | "destination_ineligible" | "non_targeted_funding_tx" | "funding_below_floor";
+ type: "hub_mediated" | "funding_unmeasured" | "destination_ineligible" | "non_targeted_funding_tx" | "funding_below_floor" | "transfer_unpriced";
  addresses: string[];
  via: string;
  digests: string[];
@@ -129,12 +133,17 @@ export interface LaunchScoringResult {
  sub_threshold_payments: LaunchSubThresholdPayment[];
 }
 
+function strongDeposit(d: LaunchDestination | undefined): boolean {
+ return d?.depositVerdict === "likely" && d.classificationComplete === true
+  && d.distinctDepositors != null && d.distinctDepositors <= 50;
+}
+
 function destinationEligible(d: LaunchDestination | undefined): boolean {
  // A burn address is nobody: two buyers burning coins there share no party.
  if (!d || isUnspendableAddress(d.address) || d.kind !== "wallet" || d.exchangeHotWallet
   || d.labelCategory === "bridge" || d.labelCategory === "protocol") return false;
- if (d.depositVerdict === "likely") return true;
- return d.popularity === "narrow" && d.labelCategory !== "cex";
+ if (strongDeposit(d)) return true;
+ return d.popularity === "narrow" && (d.labelCategory !== "cex" || d.exchangeHotWallet === false);
 }
 
 function ordered(a: string, b: string): [string, string] {
@@ -177,11 +186,18 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
   }
  }
 
- // A destination must be a measured narrow wallet or a likely single-account
- // deposit. Unknown and provisional classifications fail closed.
+ // A destination must be a measured narrow wallet or a complete, small likely
+ // deposit classification. Incomplete deposits use only the narrow fallback.
  const toDestination = new Map<string, Map<string, LaunchTransfer[]>>();
  for (const b of input.buyers) {
   for (const t of b.transfers) {
+   if (t.qualifies === "unpriced") {
+    observations.push({
+     type: "transfer_unpriced", addresses: [b.address], via: t.destination,
+     digests: [t.digest], reason: "Coin price or dust floor is unknown; the transfer cannot establish a qualifying destination."
+    });
+    continue;
+   }
    if (!t.qualifies || t.amount <= 0n) continue;
    const byBuyer = toDestination.get(t.destination) ?? new Map<string, LaunchTransfer[]>();
    const transfers = byBuyer.get(b.address) ?? [];
@@ -230,7 +246,7 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
    for (let j = i + 1; j < buyers.length; j++) {
     const transfers = [...byBuyer.get(buyers[i])!, ...byBuyer.get(buyers[j])!];
     const assets = new Set(transfers.map((t) => t.asset));
-    const deposit = destinationByAddress.get(address)?.depositVerdict === "likely";
+    const deposit = strongDeposit(destinationByAddress.get(address));
     add(buyers[i], buyers[j], {
      type: deposit ? "shared_deposit_address" : "shared_destination",
      weight: deposit ? LAUNCH_PAIR_THRESHOLD : 3, via: address,

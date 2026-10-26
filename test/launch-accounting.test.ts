@@ -1,7 +1,7 @@
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { describe, expect, it } from "vitest";
-import { accountBuy, accountBuyer, ownerForwards, tradeLegs, separateRebuys, sumRaw, isSuiPumpReferralFee, reconcileLaunchWindow, type LaunchLedgerTx, type LaunchPool } from "../src/utils/launch-accounting.js";
-import { payersIn } from "../src/utils/launch-read.js";
+import { accountBuy, accountBuyer, launchPoolSwap, ownerForwards, tradeLegs, separateRebuys, sumRaw, isSuiPumpReferralFee, reconcileLaunchWindow, type LaunchLedgerTx, type LaunchPool } from "../src/utils/launch-accounting.js";
+import { payersIn, poolBuysIn } from "../src/utils/launch-read.js";
 
 const sui = "0x2::sui::SUI";
 const SUI = 1_000_000_000n;
@@ -89,7 +89,7 @@ describe("launch event-first accounting", () => {
     const funder = normalizeSuiAddress("0xf0");
     const collector = normalizeSuiAddress("0xfee");
     const deposit = normalizeSuiAddress("0xde9");
-    const pool: LaunchPool = { id: normalizeSuiAddress("0x9001"), coinIsA: true, isPoolSwap: (type) => type.endsWith("::pool::SwapEvent") };
+    const pool: LaunchPool = { id: normalizeSuiAddress("0x9001"), type: `0xcd::pool::Pool<${coin},${SUIT}>`, venue: "Bluefin", coinIsA: true };
     const tx = (digest: string, minute: number, sender: string, gas: bigint, changes: Array<[string, string, bigint]>, events: LaunchLedgerTx["events"] = []): LaunchLedgerTx => ({
       digest, sender, sponsor: null, gas, status: "SUCCESS", timestamp: new Date(Date.UTC(2026, 0, 1, 0, minute)).toISOString(), events,
       changes: changes.map(([address, coin_type, amount]) => ({ address, coin_type, amount })),
@@ -108,7 +108,7 @@ describe("launch event-first accounting", () => {
       tx("pool-rebuy", 90, owner, 10_000_000n, [[owner, SUIT, -5_010_000_000n], [owner, coin, 50n]], [swap(false, 5n * SUI, 50n)]),
     ];
     const windowBuys = [accountBuy({ digest: "window-buy", timestamp: history[1].timestamp, buyer: owner, curve_id: curve, sui_in: String(40n * SUI), tokens_out: "1000" }, history[1].changes, history[1].gas)];
-    const forwards = history.filter((row) => row.sender === owner).flatMap((row) => ownerForwards(row, owner, SUIT, coin, tradeLegs(row.events, owner, curve, pool, true)));
+    const forwards = history.filter((row) => row.sender === owner).flatMap((row) => ownerForwards(row, owner, SUIT, coin, tradeLegs(row.events, owner, curve, pool, true, coin)));
 
     it("records a fee beside a buy and a forward beside a sale at the amounts credited", () => {
       expect(forwards).toEqual([
@@ -126,7 +126,7 @@ describe("launch event-first accounting", () => {
       expect(result.initialTokens).toBe(1_000n);
       expect(result.later.map((b) => [b.digest, b.venue, b.sui, b.after_first_sale])).toEqual([
         ["later-curve-buy", "SuiPump", 10n * SUI, false],
-        ["pool-rebuy", "Cetus", 5n * SUI, true],
+        ["pool-rebuy", "Bluefin", 5n * SUI, true],
       ]);
       expect(result.grossSui).toBe(55n * SUI);
       expect(result.grossTokens).toBe(1_250n);
@@ -134,10 +134,113 @@ describe("launch event-first accounting", () => {
       expect(result.debit).toBe(40_510_000_000n);
       expect(result.account).toMatchObject({ suiResidual: 0n, tokenResidual: 0n, inflowSui: 100n * SUI });
     });
+    it("discovers a pool first buy, and keeps a later curve buy gross before its first sale", () => {
+      const first = tx("pool-first", 1, owner, 1_000_000n, [[owner, SUIT, -3n * SUI - 1_000_000n], [owner, coin, 90n]], [swap(false, 3n * SUI, 90n)]);
+      const laterCurve = tx("curve-late", 30, owner, 1_000_000n, [[owner, SUIT, -2n * SUI - 1_000_000n], [owner, coin, 30n]], [curveBuy(2n * SUI, 30n)]);
+      const discovered = poolBuysIn([first], pool, coin);
+      expect(discovered.unread_swap_events).toBe(0);
+      expect(discovered.rows).toMatchObject([{ digest: "pool-first", buyer: owner, venue: "Bluefin", buyer_basis: "transaction_signer_unverified", sui_in: String(3n * SUI) }]);
+      const firstBuy = accountBuy(discovered.rows[0], first.changes, first.gas);
+      const result = accountBuyer({ owner, suiType: SUIT, coinType: coin, curve, pool, history: [first, laterCurve], windowBuys: [firstBuy], forwardedSui: 0n, forwardedTokens: 0n });
+      expect(result.initial.map((b) => b.digest)).toEqual(["pool-first"]);
+      expect(result.initialSui).toBe(3n * SUI);
+      expect(result.later).toMatchObject([{ digest: "curve-late", venue: "SuiPump", sui: 2n * SUI, after_first_sale: false }]);
+      expect(result.grossSui).toBe(5n * SUI);
+      expect(result.buyer_attribution_unverified).toContain("pool-first");
+    });
+    it("reports a pool event it cannot decode instead of treating its missing trade as zero", () => {
+      const unknown = tx("unread-swap", 2, owner, 1_000_000n, [[owner, coin, 10n]], [{ type: "0xcd::pool::SwapEvent", data: { pool: pool.id, amount_in: "10", amount_out: "20" } }]);
+      expect(poolBuysIn([unknown], pool, coin)).toMatchObject({ rows: [], unread_swap_events: 1 });
+      expect(tradeLegs(unknown.events, owner, curve, pool, true, coin).unreadPoolSwaps).toBe(1);
+    });
+    it("ignores a router's echo of the pool trade without doubling its volume", () => {
+      const own = { ...pool, eventPackages: [normalizeSuiAddress("0xcd")] };
+      const real = swap(false, SUI, 20n);
+      const echo = { ...real, type: "0xef::router::SwapEvent" };
+      const traded = tx("one-pool-swap", 3, owner, 1_000_000n, [], [real, echo]);
+      expect(poolBuysIn([traded], own, coin)).toMatchObject({ rows: [{ sui_in: String(SUI), tokens_out: "20" }], unread_swap_events: 0 });
+      expect(tradeLegs(traded.events, owner, curve, own, true, coin).pool.suiIn).toBe(SUI);
+    });
+
+
+
+    it("keeps a pool buy before the first sale initial, and curve rebuys after the sale separate", () => {
+      const poolBuy = tx("pool-before-sale", 2, owner, 1_000_000n, [[owner, SUIT, -4n * SUI - 1_000_000n], [owner, coin, 80n]], [swap(false, 4n * SUI, 80n)]);
+      const sale = tx("curve-sale", 10, owner, 1_000_000n, [[owner, SUIT, 6n * SUI - 1_000_000n], [owner, coin, -40n]], [{ type: "0xab::bonding_curve::TokensSold", data: { curve_id: curve, seller: owner, tokens_in: "40", sui_out: String(6n * SUI) } }]);
+      const rebuy = tx("curve-after-sale", 11, owner, 1_000_000n, [[owner, SUIT, -2n * SUI - 1_000_000n], [owner, coin, 20n]], [curveBuy(2n * SUI, 20n)]);
+      const window = poolBuysIn([poolBuy], pool, coin).rows.map(e => accountBuy(e, poolBuy.changes, poolBuy.gas));
+      const result = accountBuyer({ owner, suiType: SUIT, coinType: coin, curve, pool, history: [poolBuy, sale, rebuy], windowBuys: window, forwardedSui: 0n, forwardedTokens: 0n });
+      expect(result.initial.map(b => b.digest)).toEqual(["pool-before-sale"]);
+      expect(result.later).toMatchObject([{ digest: "curve-after-sale", venue: "SuiPump", after_first_sale: true }]);
+      expect(result.curveProceeds).toBe(6n * SUI);
+    });
+    it("moves a buy found in the initial window after an earlier sale into later without double-counting", () => {
+      const sale = tx("early-sale", 1, owner, 1_000_000n, [[owner, SUIT, 5n * SUI - 1_000_000n], [owner, coin, -40n]], [swap(true, 40n, 5n * SUI)]);
+      const rebuy = tx("window-rebuy", 2, owner, 1_000_000n, [[owner, SUIT, -2n * SUI - 1_000_000n], [owner, coin, 50n]], [curveBuy(2n * SUI, 50n)]);
+      const window = [accountBuy({ digest: rebuy.digest, timestamp: rebuy.timestamp, buyer: owner, curve_id: curve, sui_in: String(2n * SUI), tokens_out: "50" }, rebuy.changes, rebuy.gas)];
+      const result = accountBuyer({ owner, suiType: SUIT, coinType: coin, curve, pool, history: [sale, rebuy], windowBuys: window, forwardedSui: 0n, forwardedTokens: 0n });
+      expect(result.initial).toEqual([]);
+      expect(result.later).toMatchObject([{ digest: "window-rebuy", after_first_sale: true }]);
+      expect(result.grossSui).toBe(2n * SUI);
+      expect(result.poolProceeds).toBe(5n * SUI);
+    });
+
+    it("does not hide a second buy in a discovery transaction", () => {
+      const mixed = tx("two-buys", 4, owner, 1_000_000n, [[owner, SUIT, -3n * SUI - 1_000_000n], [owner, coin, 60n]], [curveBuy(SUI, 20n), curveBuy(2n * SUI, 40n)]);
+      const firstBuy = accountBuy({ digest: mixed.digest, timestamp: mixed.timestamp, buyer: owner, curve_id: curve, sui_in: String(SUI), tokens_out: "20" }, mixed.changes, mixed.gas);
+      const result = accountBuyer({ owner, suiType: SUIT, coinType: coin, curve, pool, history: [mixed], windowBuys: [firstBuy], forwardedSui: 0n, forwardedTokens: 0n });
+      expect(result.initialSui).toBe(SUI);
+      expect(result.later).toMatchObject([{ digest: "two-buys", sui: 2n * SUI, tokens: 40n }]);
+      expect(result.grossSui).toBe(3n * SUI);
+    });
+
+
+    it("reads non-Cetus sale amounts and the reversed coin order by venue", () => {
+      const reversed: LaunchPool = { ...pool, type: `0xcd::pool::Pool<${SUIT},${coin}>`, coinIsA: false };
+      const ownSale = { type: "0xcd::pool::SwapEvent", data: { pool: pool.id, atob: false, amount_in: "90", amount_out: String(7n * SUI) } };
+      expect(launchPoolSwap(ownSale, reversed, coin)).toEqual({ side: "sell", tokens: 90n, sui: 7n * SUI });
+      const sale = tx("bluefin-sale", 3, owner, 1_000_000n, [[owner, SUIT, 7n * SUI - 1_000_000n], [owner, coin, -90n]], [ownSale]);
+      const result = accountBuyer({ owner, suiType: SUIT, coinType: coin, curve, pool: reversed, history: [sale], windowBuys: [], forwardedSui: 0n, forwardedTokens: 0n });
+      expect(result.poolProceeds).toBe(7n * SUI);
+      expect(result.sales.map(({ tx }) => tx.digest)).toEqual(["bluefin-sale"]);
+      expect(result.unread_pool_events).toBe(0);
+    });
+    it("reads a venue's typed single-coin amount arrays without a Cetus direction flag", () => {
+      const aftermath: LaunchPool = { ...pool, venue: "Aftermath" };
+      const sale = { type: "0xcd::events::SwapEventV2", data: { pool_id: pool.id, types_in: [coin], amounts_in: ["120"], types_out: [SUIT], amounts_out: [String(8n * SUI)] } };
+      expect(launchPoolSwap(sale, aftermath, coin)).toEqual({ side: "sell", tokens: 120n, sui: 8n * SUI });
+    });
+    it("accepts an older swap event defining package only in the pool's lineage", () => {
+      const lineage: LaunchPool = { ...pool, eventPackages: [normalizeSuiAddress("0xab"), normalizeSuiAddress("0xcd")] };
+      const oldSwap = { type: "0xab::pool::SwapEvent", data: { pool: pool.id, atob: false, amount_in: String(SUI), amount_out: "10" } };
+      expect(launchPoolSwap(oldSwap, lineage, coin)).toEqual({ side: "buy", sui: SUI, tokens: 10n });
+      expect(launchPoolSwap({ ...oldSwap, type: "0xef::pool::SwapEvent" }, lineage, coin)).toBeNull();
+    });
+    it("marks unknown venue lineage and skips no matching pool swap silently", () => {
+      const unknown = tx("unknown-version", 4, owner, 1_000_000n, [], [{ type: "0xab::pool::SwapEvent", data: { pool: pool.id, atob: false, amount_in: String(SUI), amount_out: "10" } }]);
+      expect(poolBuysIn([unknown], pool, coin)).toMatchObject({ rows: [], unread_swap_events: 1 });
+      const result = accountBuyer({ owner, suiType: SUIT, coinType: coin, curve, pool, history: [unknown], windowBuys: [], forwardedSui: 0n, forwardedTokens: 0n });
+      expect(result).toMatchObject({ pool_lineage_unverified: true, unread_pool_events: 1 });
+    });
+
+
+
+
+    it("exposes session-event signer ambiguity instead of claiming the token owner", () => {
+      const session = normalizeSuiAddress("0x51");
+      const holder = normalizeSuiAddress("0x52");
+      const sessionEvent = { digest: "session-buy", timestamp: new Date(Date.UTC(2026, 0, 1, 0, 3)).toISOString(), buyer: session, buyer_basis: "event_signer_unverified" as const, curve_id: curve, sui_in: String(SUI), tokens_out: "100" };
+      const buy = tx("session-buy", 3, session, 1_000_000n, [[session, SUIT, -SUI - 1_000_000n], [holder, coin, 100n]], [{ type: "0xab::bonding_curve::TokensPurchased", data: { curve_id: curve, buyer: session, sui_in: String(SUI), tokens_out: "100" } }]);
+      const result = accountBuyer({ owner: session, suiType: SUIT, coinType: coin, curve, pool, history: [buy], windowBuys: [accountBuy(sessionEvent, buy.changes, buy.gas)], forwardedSui: 0n, forwardedTokens: 0n });
+      expect(result.initial[0].buyer_basis).toBe("event_signer_unverified");
+      expect(result.buyer_attribution_unverified).toEqual(["session-buy"]);
+      expect(buy.changes.find(c => c.coin_type === coin)?.address).toBe(holder);
+    });
+
 
     it("forwards a send-all at the credit when the storage rebate exceeds gas, and reconciles exactly", () => {
       const sendAll = tx("send-all", 120, owner, -901_000n, [[owner, SUIT, -1_234_567_000_000n], [deposit, SUIT, 1_234_567_901_000n]]);
-      expect(ownerForwards(sendAll, owner, SUIT, coin, tradeLegs([], owner, curve, pool, true)))
+      expect(ownerForwards(sendAll, owner, SUIT, coin, tradeLegs([], owner, curve, pool, true, coin)))
         .toEqual([{ destination: deposit, coin_type: SUIT, amount: 1_234_567_901_000n }]);
       const funded = tx("fund-big", 100, funder, 1_000n, [[owner, SUIT, 1_234_567_000_000n]]);
       expect(reconcileLaunchWindow({
@@ -149,7 +252,7 @@ describe("launch event-first accounting", () => {
     it("keeps a stranger's credit in the owner's PTB off its forwards", () => {
       const stranger = normalizeSuiAddress("0x5e1");
       const mixed = tx("mixed", 150, owner, 1_000_000n, [[owner, SUIT, -1_001_000_000n], [stranger, SUIT, 5n * SUI]]);
-      expect(ownerForwards(mixed, owner, SUIT, coin, tradeLegs([], owner, curve, pool, true)))
+      expect(ownerForwards(mixed, owner, SUIT, coin, tradeLegs([], owner, curve, pool, true, coin)))
         .toEqual([{ destination: stranger, coin_type: SUIT, amount: SUI }]);
     });
   });

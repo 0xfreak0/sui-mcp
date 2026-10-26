@@ -9,7 +9,7 @@ sidebar:
 |---|---|
 | [`aggregate_events`](#aggregate_events) | Rank senders or event types by count or by a summed event field over a window, in one call instead of paging query_events. |
 | [`analyze_attack_tx`](#analyze_attack_tx) | Investigate one exploit transaction. |
-| [`analyze_launch`](#analyze_launch) | Discover every buyer of a SuiPump coin in its first launch window, then trace each buyer's launch funding, buys, sales and forwards across a bounded sell window. |
+| [`analyze_launch`](#analyze_launch) | Discover SuiPump buy-event signers from the coin type alone, including graduated-pool trades, and account for their launch funding, initial and later buys, sales and forwards. |
 | [`analyze_multisig`](#analyze_multisig) | Read which of a multisig wallet's committee keys sign and which never have, across its recent sent transactions rather than one. |
 | [`build_timeline`](#build_timeline) | Reconstruct an incident across up to 10 wallets or objects as one decoded timeline, deduplicated and ordered by checkpoint. |
 | [`build_wallet_edges`](#build_wallet_edges) | Find possible shared operators when a fund trace reaches fresh wallets. |
@@ -93,7 +93,7 @@ sidebar:
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-(Incident investigation) Discover every buyer of a SuiPump coin in its first launch window, then trace each buyer's launch funding, buys, sales and forwards across a bounded sell window. Event amounts exclude gas; later buys are separate. Reports pairwise coordination leads and qualified destination affiliation with evidence tiers, never an account-holder or misconduct verdict. A partial scan reports coverage and a complete next_call. Start with only the exact coin type; creation_tx is an optional diagnostic cross-check.
+(Incident investigation) Discover SuiPump buy-event signers from the coin type alone, including graduated-pool trades, and account for their launch funding, initial and later buys, sales and forwards. Buyers are ranked by initial tokens and percentage of supply, each with status and reconciliation. Scores each pair, including the creator, with evidence tiers; a shared likely deposit qualifies by itself only with a complete scan and at most 50 distinct depositors. A signer whose purchase did not credit its own token balance is unverified and not scored. Event amounts exclude gas; gas-inclusive debits are separate. A partial scan reports coverage, with next_call only when its read bound can advance. Full results page parent buyer/cluster/destination records and child evidence via path and offset arguments. No account-holder or misconduct verdict. Start with the exact coin type; creation_tx optionally cross-checks it.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -101,10 +101,10 @@ sidebar:
 | `creation_tx` | string | no | Optional creation digest to cross-check discovery from coin type |
 | `window_minutes` | integer (1 to 1440) | no | Minutes from creation for initial buyer discovery (default 10) |
 | `sell_window_days` | integer (1 to 30) | no | Days from creation to trace every buyer's sales and forwards (default 7) |
-| `max_pages` | integer (1 to 1000) | no | Max pages per discovery and buyer history walk (default 20); raise via next_call when incomplete |
-| `detail` | `summary` \| `full` | no | Full returns all data if small, otherwise lists consecutive pages by list_path and offset |
-| `list_path` | string | no | List path named in omitted.next_call or a full-view catalog, for example discovered_buyers.0.sales |
-| `offset` | integer (at least 0) | no | Index of the first row in list_path (default 0) |
+| `max_pages` | integer (1 to 1000) | no | Discovery, buyer, destination and creator-payment page budget (default 20); coverage.next_call raises it only when an unfinished bound can advance |
+| `detail` | `summary` \| `full` | no | Full returns all data if small, otherwise lists consecutive pages by path and offset |
+| `list_path` | string | no | Full-view list path from the catalog (including parent lists and the catalog itself), for example discovered_buyers.0.sales |
+| `offset` | integer (at least 0) | no | Index of the first row in the selected list (default 0) |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## analyze_multisig

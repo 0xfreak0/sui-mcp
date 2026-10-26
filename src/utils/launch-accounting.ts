@@ -1,4 +1,7 @@
-import { normalizeSuiAddress } from "@mysten/sui/utils";
+import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
+import { poolOfEvent, readSwap } from "./attack-analysis.js";
+import { readPoolSwap } from "./pool-swap-events.js";
+import { lookupProtocol } from "../protocols/registry.js";
 import { isSponsorGasChange } from "./sponsor-gas.js";
 
 export interface LaunchEvent {
@@ -9,6 +12,9 @@ export interface LaunchEvent {
  sui_in: string;
  tokens_out: string;
  referral?: string | null;
+ /** Curve session and pool events name a signing key, not necessarily the token owner. */
+ buyer_basis?: "event_signer_unverified" | "transaction_signer_unverified";
+ venue?: string;
 }
 
 export interface LaunchChange {
@@ -33,6 +39,8 @@ export interface LaunchBuy {
  sui_outside_trade: bigint | null;
  /** The debit differs from the event's `sui_in` plus gas. The event amount still counts. */
  debit_differs: boolean;
+ buyer_basis?: LaunchEvent["buyer_basis"];
+ venue?: string;
 }
 /** Referral credits are paid by the curve during buys AND sells, not by the PTB sender. */
 export function isSuiPumpReferralFee(
@@ -63,6 +71,8 @@ export function accountBuy(event: LaunchEvent, changes: LaunchChange[], gas: big
   timestamp: event.timestamp,
   sui_in: sui,
   tokens_out: tokens,
+  buyer_basis: event.buyer_basis,
+  venue: event.venue,
   referral: event.referral ? normalizeSuiAddress(event.referral) : null,
   buy_sui_debit_incl_gas: debit,
   sui_outside_trade: outside,
@@ -93,42 +103,76 @@ export interface TradeLegs {
 const ZERO_LEGS: TradeLegs = { suiIn: 0n, suiOut: 0n, tokensIn: 0n, tokensOut: 0n };
 const digits = (value: unknown): bigint => typeof value === "string" && /^\d+$/.test(value) ? BigInt(value) : 0n;
 
-/**
- * Read the owner's trades of one launch from a transaction's events. Curve
- * events name their buyer or seller; a pool swap event names no trader, so it
- * counts only when `sentByOwner`. A swap's direction comes from `atob` and
- * whether the launch coin is the pool's coin A; with that order unknown, the
- * swap is left out rather than guessed.
- */
+/** Only a swap type defined by this pool's venue can establish its trade. */
+export function isLaunchPoolEvent(type: string, pool: LaunchPool): boolean {
+ if (!/::\w*swap\w*/i.test(type)) return false;
+ const eventPackage = normalizeSuiAddress(type.split("::")[0]);
+ if (pool.eventPackages) return pool.eventPackages.includes(eventPackage);
+ const poolPackage = normalizeSuiAddress(pool.type.split("::")[0]);
+ return eventPackage === poolPackage || lookupProtocol(eventPackage)?.name === pool.venue;
+}
+
+/** A pool swap names a pool and a direction, not a trader. */
+export function launchPoolSwap(event: { type: string; data: Record<string, unknown> }, pool: LaunchPool, coinType: string): { side: "buy" | "sell"; sui: bigint; tokens: bigint } | null {
+ if (!isLaunchPoolEvent(event.type, pool)) return null;
+ const targets = { shared: new Map<string, string | null>([[pool.id, pool.type]]), others: new Map<string, string | null>() };
+ const swap = readPoolSwap({ type: event.type, json: event.data }, 0, targets);
+ if (!swap || swap.pool !== pool.id) return null;
+ const parsed = readSwap({ index: 0, type: event.type, json: event.data }, targets, { flash: true });
+ const amountIn = parsed?.amount_in ?? (Array.isArray(event.data.amounts_in) && event.data.amounts_in.length === 1 ? event.data.amounts_in[0] : null);
+ const amountOut = parsed?.amount_out ?? (Array.isArray(event.data.amounts_out) && event.data.amounts_out.length === 1 ? event.data.amounts_out[0] : null);
+ if (typeof amountIn !== "string" || typeof amountOut !== "string" || !/^[1-9]\d*$/.test(amountIn) || !/^[1-9]\d*$/.test(amountOut)) return null;
+ const coin = normalizeStructTag(coinType);
+ const sui = normalizeStructTag("0x2::sui::SUI");
+ if (swap.coinIn === sui && swap.coinOut === coin) return { side: "buy", sui: BigInt(amountIn), tokens: BigInt(amountOut) };
+ if (swap.coinIn === coin && swap.coinOut === sui) return { side: "sell", sui: BigInt(amountOut), tokens: BigInt(amountIn) };
+ return null;
+}
+
+/** Curve events name their trader; pool swaps count for a signing owner only. */
 export function tradeLegs(
  events: Array<{ type: string; data: Record<string, unknown> }>,
  owner: string,
  curve: string,
  pool: LaunchPool | null,
  sentByOwner: boolean,
+ coinType: string,
 ): OwnerTrades {
  const curveLegs = { ...ZERO_LEGS };
  const poolLegs = { ...ZERO_LEGS };
- for (const { type, data } of events) {
+ let unreadPoolSwaps = 0;
+ for (const event of events) {
+  const { type, data } = event;
   if (data.curve_id === curve && type.endsWith("::bonding_curve::TokensPurchased") && typeof data.buyer === "string" && normalizeSuiAddress(data.buyer) === owner) {
    curveLegs.suiIn += digits(data.sui_in);
    curveLegs.tokensIn += digits(data.tokens_out);
   } else if (data.curve_id === curve && type.endsWith("::bonding_curve::TokensSold") && typeof data.seller === "string" && normalizeSuiAddress(data.seller) === owner) {
    curveLegs.tokensOut += digits(data.tokens_in);
    curveLegs.suiOut += digits(data.sui_out);
-  } else if (sentByOwner && pool && pool.coinIsA !== null && data.pool === pool.id && pool.isPoolSwap(type) && typeof data.atob === "boolean") {
-   const sale = data.atob === pool.coinIsA;
-   if (sale) { poolLegs.tokensOut += digits(data.amount_in); poolLegs.suiOut += digits(data.amount_out); }
-   else { poolLegs.suiIn += digits(data.amount_in); poolLegs.tokensIn += digits(data.amount_out); }
+  } else if (sentByOwner && pool && type.toLowerCase().includes("swap") && poolOfEvent(data, new Map<string, string | null>([[pool.id, pool.type]])) === pool.id) {
+   if (!isLaunchPoolEvent(type, pool)) { if (!pool.eventPackages) unreadPoolSwaps++; continue; }
+   const parsed = launchPoolSwap(event, pool, coinType);
+   if (!parsed) { unreadPoolSwaps++; continue; }
+   if (parsed.side === "sell") { poolLegs.tokensOut += parsed.tokens; poolLegs.suiOut += parsed.sui; }
+   else { poolLegs.suiIn += parsed.sui; poolLegs.tokensIn += parsed.tokens; }
   }
  }
- return { curve: curveLegs, pool: poolLegs };
+ return { curve: curveLegs, pool: poolLegs, unreadPoolSwaps };
 }
 
-export interface OwnerTrades { curve: TradeLegs; pool: TradeLegs }
+export interface OwnerTrades { curve: TradeLegs; pool: TradeLegs; unreadPoolSwaps: number }
 
-/** The graduated pool, with whether the launch coin is its coin A (null when unread). */
-export interface LaunchPool { id: string; coinIsA: boolean | null; isPoolSwap: (type: string) => boolean }
+/** Venue and coin order come from the graduated pool's on-chain type. */
+export interface LaunchPool {
+ id: string;
+ type: string;
+ venue: string;
+ coinIsA: boolean;
+ /** Defining packages of pool swap events across this pool's upgrade lineage. */
+ eventPackages?: readonly string[];
+ /** Other defining versions may be missed; do not treat zero swaps as absence. */
+ pool_lineage_unverified?: boolean;
+}
 
 export interface LaunchReconciliationTx {
  digest: string;
@@ -225,12 +269,12 @@ export function reconcileLaunchWindow(input: {
  };
 }
 
-export interface LaterBuy { digest: string; timestamp: string; venue: "SuiPump" | "Cetus"; sui: bigint; tokens: bigint; after_first_sale: boolean }
+export interface LaterBuy { digest: string; timestamp: string; venue: string; sui: bigint; tokens: bigint; after_first_sale: boolean }
 
 export interface BuyerAccount {
- /** Launch-window curve buys before the owner's first sale. */
+ /** Launch-window curve or pool buys before the first sale. */
  initial: LaunchBuy[];
- /** Every other buy of the coin in the history, curve or pool, by event. */
+ /** Other buys within the sell window, including all buys after the first sale. */
  later: LaterBuy[];
  sales: Array<{ tx: LaunchLedgerTx; trades: OwnerTrades }>;
  initialSui: bigint;
@@ -243,12 +287,17 @@ export interface BuyerAccount {
  poolProceeds: bigint;
  trades: TradeLegs;
  account: LaunchReconciliation;
+ /** An event names a signing key; it does not establish the token owner. */
+ buyer_attribution_unverified: string[];
+ unread_pool_events: number;
+ pool_lineage_unverified: boolean;
+ sale_order_unverified: string[];
 }
 
 /**
- * One buyer's launch accounting from its window history. `windowBuys` are the
- * discovery events; any other curve buy, a pool buy, or a window buy after the
- * first sale is a later buy and counts only gross. Proceeds are event amounts.
+ * `windowBuys` includes both curve and pool discovery. Match occurrences by
+ * digest, venue and amount, rather than discarding an entire transaction when
+ * it has another buy. All trades in the sell window contribute to proceeds.
  */
 export function accountBuyer(input: {
  owner: string;
@@ -262,24 +311,48 @@ export function accountBuyer(input: {
  forwardedTokens: bigint;
 }): BuyerAccount {
  const { owner, curve } = input;
- const rows = input.history.filter((tx) => tx.status === "SUCCESS").map((tx) => ({ tx, trades: tradeLegs(tx.events, owner, curve, input.pool, tx.sender === owner) }));
+ const rows = input.history.filter((tx) => tx.status === "SUCCESS").map((tx) => ({ tx, trades: tradeLegs(tx.events, owner, curve, input.pool, tx.sender === owner, input.coinType) }));
  const sales = rows.filter(({ trades }) => trades.curve.tokensOut + trades.pool.tokensOut > 0n);
  const firstSaleAt = sales.length ? Math.min(...sales.map(({ tx }) => Date.parse(tx.timestamp))) : Number.POSITIVE_INFINITY;
- const windowDigests = new Set(input.windowBuys.map((b) => b.digest));
  const split = separateRebuys(input.windowBuys, firstSaleAt);
- const laterCurve = [...split.after_first_sale, ...rows.flatMap(({ tx }) => windowDigests.has(tx.digest) ? [] : tx.events
-  .filter((e) => e.data.curve_id === curve && e.type.endsWith("::bonding_curve::TokensPurchased")
-   && typeof e.data.buyer === "string" && normalizeSuiAddress(e.data.buyer) === owner)
-  .map((e) => accountBuy({
-   digest: tx.digest, timestamp: tx.timestamp, buyer: owner, curve_id: curve,
-   sui_in: String(e.data.sui_in), tokens_out: String(e.data.tokens_out),
-   referral: typeof e.data.referral === "string" ? e.data.referral : null,
-  }, tx.changes, tx.gas)))];
- const later: LaterBuy[] = [
-  ...laterCurve.map((b) => ({ digest: b.digest, timestamp: b.timestamp, venue: "SuiPump" as const, sui: b.sui_in, tokens: b.tokens_out, after_first_sale: Date.parse(b.timestamp) > firstSaleAt })),
-  ...rows.filter(({ trades }) => trades.pool.tokensIn > 0n).map(({ tx, trades }) => ({ digest: tx.digest, timestamp: tx.timestamp, venue: "Cetus" as const, sui: trades.pool.suiIn, tokens: trades.pool.tokensIn, after_first_sale: Date.parse(tx.timestamp) > firstSaleAt })),
- ].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
- const trades: TradeLegs = { suiIn: 0n, suiOut: 0n, tokensIn: 0n, tokensOut: 0n };
+ const key = (digest: string, venue: string, sui: bigint, tokens: bigint) => `${digest}|${venue}|${sui}|${tokens}`;
+ const discovered = new Map<string, number>();
+ for (const buy of input.windowBuys) {
+  const k = key(buy.digest, buy.venue ?? "SuiPump", buy.sui_in, buy.tokens_out);
+  discovered.set(k, (discovered.get(k) ?? 0) + 1);
+ }
+ const later: LaterBuy[] = split.after_first_sale.map((b) => ({ digest: b.digest, timestamp: b.timestamp, venue: b.venue ?? "SuiPump", sui: b.sui_in, tokens: b.tokens_out, after_first_sale: true }));
+ const uncertain = new Set(input.windowBuys.filter((b) => b.buyer_basis).map((b) => b.digest));
+ for (const { tx } of rows) for (const event of tx.events) {
+  const { type, data } = event;
+  let venue: string;
+  let sui: bigint;
+  let tokens: bigint;
+  if (data.curve_id === curve && type.endsWith("::bonding_curve::TokensPurchased")) {
+   if (typeof data.buyer !== "string" || normalizeSuiAddress(data.buyer) !== owner) {
+    if (tx.sender === owner) uncertain.add(tx.digest);
+    continue;
+   }
+   venue = "SuiPump";
+   sui = digits(data.sui_in);
+   tokens = digits(data.tokens_out);
+   uncertain.add(tx.digest);
+  } else if (tx.sender === owner && input.pool && type.toLowerCase().includes("swap")) {
+   const swap = launchPoolSwap(event, input.pool, input.coinType);
+   if (!swap || swap.side !== "buy") continue;
+   venue = input.pool.venue;
+   sui = swap.sui;
+   tokens = swap.tokens;
+   uncertain.add(tx.digest);
+  } else continue;
+  if (!sui || !tokens) continue;
+  const k = key(tx.digest, venue, sui, tokens);
+  const remaining = discovered.get(k) ?? 0;
+  if (remaining) { discovered.set(k, remaining - 1); continue; }
+  later.push({ digest: tx.digest, timestamp: tx.timestamp, venue, sui, tokens, after_first_sale: Date.parse(tx.timestamp) > firstSaleAt });
+ }
+ later.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+ const trades: TradeLegs = { ...ZERO_LEGS };
  for (const row of rows) for (const venue of [row.trades.curve, row.trades.pool]) {
   trades.suiIn += venue.suiIn; trades.suiOut += venue.suiOut; trades.tokensIn += venue.tokensIn; trades.tokensOut += venue.tokensOut;
  }
@@ -294,6 +367,10 @@ export function accountBuyer(input: {
   curveProceeds: sumRaw(sales.map(({ trades: sale }) => sale.curve.suiOut)),
   poolProceeds: sumRaw(sales.map(({ trades: sale }) => sale.pool.suiOut)),
   trades,
+  buyer_attribution_unverified: [...uncertain],
+  unread_pool_events: rows.reduce((sum, row) => sum + row.trades.unreadPoolSwaps, 0),
+  pool_lineage_unverified: input.pool !== null && !input.pool.eventPackages,
+  sale_order_unverified: [...new Set([...input.windowBuys, ...later].filter((buy) => Date.parse(buy.timestamp) === firstSaleAt).map((buy) => buy.digest))],
   account: reconcileLaunchWindow({
    owner, suiType: input.suiType, tokenType: input.coinType, transactions: input.history,
    trades, forwardedSui: input.forwardedSui, forwardedTokens: input.forwardedTokens,

@@ -93,7 +93,7 @@ sidebar:
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-(Incident investigation) Discover SuiPump buyers from the exact coin type, including trades after graduation. Report every early buyer's status, event-first trades, gross proceeds, funding and reconciliation. Pairwise evidence distinguishes a direct creator payment, a creator-linked private collection wallet and buyer-only paths; shared narrow first funders score only when measured, never via a popular service. A bounded pre-launch creator payment to a likely deposit scores a separate, weaker observation, not shared ownership or exchange funding. Every historical destination payment carries its date; an incomplete scan reports coverage and a continuation where its bound can advance. detail: 'full' returns records inline when they fit, otherwise pages the selected list by offset. No account-holder or misconduct verdict.
+(Incident investigation) Discover SuiPump buyers from the exact coin type, including trades after graduation. Every early buyer has a status, initial-token-amount rank, first-buy-time rank, event-first trades, gross proceeds, funding and reconciliation; initial_buy_sui_debit_incl_gas counts the initial buys only. Pairwise evidence distinguishes creator-to-buyer funding, a buyer's payment to the creator, a creator-funded private collection wallet used by even one buyer, and buyer-only paths. Shared narrow first funders score only when measured; a subject first-funding another is a directed edge even when old. Historical creator payments include every coin as separate per-coin totals with dated transactions; a payment to a likely deposit is a weaker observation, not evidence of account ownership. Incomplete reads report coverage and a continuation only when their bounds can advance. detail: 'full' returns records inline when they fit, otherwise pages the selected list by offset. No account-holder or misconduct verdict.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -101,7 +101,7 @@ sidebar:
 | `creation_tx` | string | no | Optional creation digest to cross-check discovery from coin type |
 | `window_minutes` | integer (1 to 1440) | no | Minutes from creation for initial buyer discovery (default 10) |
 | `sell_window_days` | integer (1 to 30) | no | Days from creation to trace every buyer's sales and forwards (default 7) |
-| `max_pages` | integer (1 to 1000) | no | Discovery, buyer, pre-launch creator-payment and first-funder page budget (default 20); coverage.next_call raises a bound only when it can advance |
+| `max_pages` | integer (1 to 1000) | no | Discovery, buyer, historical creator-payment, first-funder and candidate destination read budget (default 20); coverage.next_call raises a bound only when it can advance |
 | `detail` | `summary` \| `full` | no | Full returns all data if small, otherwise lists consecutive pages by path and offset |
 | `list_path` | string | no | Full-view list path from the catalog (including parent lists and the catalog itself), for example discovered_buyers.0.sales |
 | `offset` | integer (at least 0) | no | Index of the first row in the selected list (default 0) |

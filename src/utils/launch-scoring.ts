@@ -7,7 +7,7 @@ const SUI_PAYMENT_FLOOR = 1_000_000_000n;
 
 export interface LaunchPayment {
  to: string;
- asset: "sui" | "token";
+ asset: string;
  amount: bigint;
  digest: string;
  /** Chain timestamp of the payment, if the source query supplied it. */
@@ -86,7 +86,7 @@ export interface LaunchScoringInput {
 }
 
 export type LaunchSignalType =
- | "shared_destination" | "shared_deposit_address" | "creator_linked_destination" | "creator_paid_deposit" | "direct"
+ | "shared_destination" | "shared_deposit_address" | "creator_linked_destination" | "creator_paid_deposit" | "direct" | "first_funding"
  | "funding_burst" | "shared_funding_tx" | "shared_first_funder" | "referral" | "suins";
 
 export interface LaunchSignal {
@@ -95,6 +95,11 @@ export interface LaunchSignal {
  via?: string;
  asset?: "sui" | "token" | "both";
  amount?: string;
+ /** Direct payments and first funding point from the payer/funder to the recipient. */
+ from?: string;
+ to?: string;
+ /** Both directions may qualify for one unordered pair, which still scores only three. */
+ directions?: Array<{ from: string; to: string; asset: "sui" | "token"; amount: string; digests: string[] }>;
  transactionRecipientCount?: number;
  transactionStrength?: "targeted" | "other";
  digests: string[];
@@ -122,8 +127,8 @@ export interface LaunchMemberPathEdge {
 
 export interface LaunchMemberLink {
  address: string;
- /** Only a qualifying creator payment is direct; buyer-to-buyer paths remain buyer links. */
- status: "direct" | "via_creator_linked_destination" | "buyer_link_only";
+ /** Direction is part of the signal: paying the creator is not a creator payment. */
+ status: "direct" | "paid_creator" | "via_creator_linked_destination" | "buyer_link_only";
  /** Shortest sequence of qualifying pairs from the creator (or micro-cluster root). */
  path: LaunchMemberPathEdge[];
 }
@@ -184,8 +189,12 @@ function ordered(a: string, b: string): [string, string] {
 }
 
 function paymentFloor(asset: "sui" | "token", supply: bigint): bigint {
- // At least 0.05% of supply, rounded UP in raw token units.
+ // At least 0.05% of supply, rounded UP in raw launch-token units.
  return asset === "sui" ? SUI_PAYMENT_FLOOR : (supply + 1_999n) / 2_000n;
+}
+
+function launchAsset(asset: string): asset is "sui" | "token" {
+ return asset === "sui" || asset === "token";
 }
 
 /**
@@ -244,19 +253,19 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
  const creatorDestinations = new Map<string, LaunchPayment[]>();
  const creatorTotals = new Map<string, bigint>();
  for (const p of input.creator.payments) {
-  if (p.referral || p.amount <= 0n || p.to === input.creator.address) continue;
+  if (p.referral || p.amount <= 0n || p.to === input.creator.address || !launchAsset(p.asset)) continue;
   const k = JSON.stringify([p.to, p.asset]);
   creatorTotals.set(k, (creatorTotals.get(k) ?? 0n) + p.amount);
  }
  for (const p of input.creator.payments) {
   const total = creatorTotals.get(JSON.stringify([p.to, p.asset]));
-  if (p.referral || p.amount <= 0n || total === undefined || total < paymentFloor(p.asset, input.totalSupplyRaw)) continue;
+  if (p.referral || p.amount <= 0n || !launchAsset(p.asset) || total === undefined || total < paymentFloor(p.asset, input.totalSupplyRaw)) continue;
   const payments = creatorDestinations.get(p.to) ?? [];
   payments.push(p);
   creatorDestinations.set(p.to, payments);
  }
- // Keep the historical set separate: a creator's payment to an exchange
- // deposit is evidence of a payment, not of control over its destination.
+ // Keep the historical set separate: a creator's payment in any coin to an
+ // exchange deposit is evidence of a payment, not of control over its owner.
  const priorDestinations = new Map<string, LaunchPayment[]>();
  const priorTotals = new Map<string, bigint>();
  const postlaunchPayments = new Set(input.creator.payments.map((p) => JSON.stringify([p.digest, p.to, p.asset, p.amount.toString()])));
@@ -277,7 +286,10 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
   priorDestinations.set(address, payments.filter((p) => {
    const k = JSON.stringify([p.to, p.asset]);
    const total = (priorTotals.get(k) ?? 0n) + (historicalOnly ? 0n : creatorTotals.get(k) ?? 0n);
-   return total >= paymentFloor(p.asset, input.totalSupplyRaw);
+   // An independently classified deposit establishes only a historical payment,
+   // not control. Count every positive transfer by its own coin, without using
+   // the launch token's supply as the floor of an unrelated coin.
+   return historicalOnly || (launchAsset(p.asset) && total >= paymentFloor(p.asset, input.totalSupplyRaw));
   }));
  }
  const destinations: LaunchScoringResult["destinations"] = [];
@@ -292,14 +304,14 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
   const creatorPayments = [
    ...postlaunch,
    ...(historicNarrow ? input.creator.payments.filter((p) =>
-    p.to === address && !p.referral && p.amount > 0n && !postlaunch.includes(p) &&
+    p.to === address && !p.referral && p.amount > 0n && launchAsset(p.asset) && !postlaunch.includes(p) &&
     (priorTotals.get(JSON.stringify([p.to, p.asset])) ?? 0n) +
     (creatorTotals.get(JSON.stringify([p.to, p.asset])) ?? 0n) >= paymentFloor(p.asset, input.totalSupplyRaw)) : []),
    ...(historicNarrow ? priorPayments! : []),
   ];
   destinations.push({
-   address, eligible, affiliation: shared && eligible
-    ? creatorPayments.length ? "creator_affiliated" : "buyer_shared" : "none"
+   address, eligible, affiliation: eligible && !deposit && creatorPayments.length && byBuyer?.size
+    ? "creator_affiliated" : shared && eligible ? "buyer_shared" : "none"
   });
   if (!byBuyer || !eligible) {
    if (shared && !eligible) {
@@ -312,8 +324,13 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
    continue;
   }
   if (deposit && priorPayments?.length) {
-   const amounts = new Map<LaunchPayment["asset"], bigint>();
-   for (const payment of priorPayments) amounts.set(payment.asset, (amounts.get(payment.asset) ?? 0n) + payment.amount);
+   const amounts = new Map<string, { amount: bigint; count: number }>();
+   for (const payment of priorPayments) {
+    const sum = amounts.get(payment.asset) ?? { amount: 0n, count: 0 };
+    sum.amount += payment.amount;
+    sum.count++;
+    amounts.set(payment.asset, sum);
+   }
    const chronological = [...priorPayments].sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? "") || a.digest.localeCompare(b.digest));
    const sampled = chronological.length <= 8 ? chronological : [...chronological.slice(0, 4), ...chronological.slice(-4)];
    for (const [buyer, transfers] of byBuyer) {
@@ -321,16 +338,18 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
     const assets = new Set([...transfers.map((t) => t.asset), ...amounts.keys()]);
     add(buyer, input.creator.address, {
      type: "creator_paid_deposit", weight: 3, via: address,
-     asset: assets.size === 2 ? "both" : [...assets][0],
+     ...(assets.size <= 2 && [...assets].every(launchAsset)
+      ? { asset: assets.size === 2 ? "both" as const : [...assets][0] as "sui" | "token" } : {}),
      amount: [...transfers.map((t) => `${t.amount} ${t.asset}`),
-     ...[...amounts].map(([asset, amount]) => `${amount} ${asset} in ${priorPayments.length} prior payment(s)`)].join(", "),
+     ...[...amounts].map(([asset, sum]) =>
+      `${sum.amount} ${asset} in ${sum.count} qualifying positive payment(s)`)].join(", "),
      digests: [...new Set([...transfers.map((t) => t.digest), ...sampled.map((p) => p.digest)])].sort(),
      prior_payment_count: priorPayments.length,
-     basis: "The creator previously paid this likely single-account deposit. Digests sample earliest and latest payments; destinations[].creator_prior_payments lists every dated transfer. Anyone can pay a deposit; its account holder is unknown."
+     basis: "The creator previously paid this likely single-account deposit. Amounts are raw, grouped by coin type rather than added across coins; prior_payment_count counts qualifying positive payments per coin, not distinct transactions read. Digests sample earliest and latest payments; destinations[].creator_prior_payments lists every dated transfer. Anyone can pay a deposit; payment amounts do not prove who owns its account."
     });
    }
   }
-  if (!shared) continue;
+  if (shared) {
   const buyers = [...byBuyer.keys()].sort();
   for (let i = 0; i < buyers.length; i++) {
    for (let j = i + 1; j < buyers.length; j++) {
@@ -348,14 +367,17 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
      } : {}),
     });
    }
-   if (creatorPayments.length && buyers[i] !== input.creator.address) {
-    // Two independent facts: the buyer reached a jointly used destination,
-    // and the creator paid that same destination directly.
-    const buyerTransfers = byBuyer.get(buyers[i])!;
+   }
+  }
+  if (!deposit && creatorPayments.length) {
+   for (const [buyer, buyerTransfers] of byBuyer) {
+    if (buyer === input.creator.address) continue;
+    // One buyer and a verified creator payment to the same measured private
+    // destination suffice; no second buyer is required.
     const assets = new Set([...buyerTransfers.map((t) => t.asset), ...creatorPayments.map((p) => p.asset)]);
-    add(buyers[i], input.creator.address, {
+    add(buyer, input.creator.address, {
      type: "creator_linked_destination", weight: 6, via: address,
-     asset: assets.size === 2 ? "both" : [...assets][0],
+     asset: assets.size === 2 ? "both" : buyerTransfers[0].asset,
      amount: [...buyerTransfers.map((t) => `${t.amount} ${t.asset}`),
      ...creatorPayments.map((p) => `${p.amount} ${p.asset}`)].join(", "),
      digests: [...new Set([
@@ -366,13 +388,34 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
   }
  }
 
- // Direct buyer-to-buyer payments are aggregated by direction AND asset, so
- // several dust sends can meet a floor; opposite directions do not cancel.
+ // First-ever funding is evaluated before launch-window direct payments so a
+ // transaction appearing in both reads contributes only its first-funding edge.
+ // First-ever funding is a directed payment from a known subject to another
+ // subject, regardless of when it happened or whether that subject is popular.
+ // Shared ancestry through a third-party funder is different: it needs two
+ // independently measured narrow verdicts below. A recorded funding digest
+ // cannot also earn direct-payment or launch-top-up points for the same pair.
+ const firstEntries = [{ address: input.creator.address, funding: input.creator.firstFunding },
+ ...input.buyers.map((b) => ({ address: b.address, funding: b.firstFunding }))];
+ const firstFundingDirectDigests = new Map<string, Set<string>>();
+ for (const { address, funding: first } of firstEntries) {
+  if (!first?.funder || !allAddresses.has(first.funder) || first.funder === address || isUnspendableAddress(first.funder)) continue;
+  const pairKey = key(first.funder, address);
+  const digests = firstFundingDirectDigests.get(pairKey) ?? new Set<string>();
+  if (first.digest) digests.add(first.digest);
+  firstFundingDirectDigests.set(pairKey, digests);
+  add(first.funder, address, {
+   type: "first_funding", weight: 3, from: first.funder, to: address,
+   digests: first.digest ? [first.digest] : [],
+   basis: "The funder is itself a launch subject and first-funded this recipient, at any date. This direct edge does not infer a relationship through a third-party hub."
+  });
+ }
  type PaymentGroup = { from: string; to: string; asset: "sui" | "token"; amount: bigint; digests: Set<string> };
  const grouped = new Map<string, PaymentGroup>();
  for (const b of input.buyers) {
   for (const p of b.payments) {
-   if (p.referral || !allAddresses.has(p.to) || p.to === b.address || p.amount <= 0n) continue;
+   if (p.referral || !launchAsset(p.asset) || !allAddresses.has(p.to) || p.to === b.address || p.amount <= 0n
+    || firstFundingDirectDigests.get(key(b.address, p.to))?.has(p.digest)) continue;
    const k = JSON.stringify([b.address, p.to, p.asset]);
    const group = grouped.get(k) ?? { from: b.address, to: p.to, asset: p.asset, amount: 0n, digests: new Set<string>() };
    group.amount += p.amount;
@@ -381,7 +424,8 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
   }
  }
  for (const p of input.creator.payments) {
-  if (p.referral || !buyerAddresses.has(p.to) || p.amount <= 0n) continue;
+  if (p.referral || !launchAsset(p.asset) || !buyerAddresses.has(p.to) || p.amount <= 0n
+   || firstFundingDirectDigests.get(key(input.creator.address, p.to))?.has(p.digest)) continue;
   const k = JSON.stringify([input.creator.address, p.to, p.asset]);
   const group = grouped.get(k) ?? { from: input.creator.address, to: p.to, asset: p.asset, amount: 0n, digests: new Set<string>() };
   group.amount += p.amount;
@@ -403,16 +447,20 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
   const p = flows[0];
   add(p.from, p.to, {
    type: "direct", weight: 3,
+   ...(flows.every((f) => f.from === p.from && f.to === p.to) ? { from: p.from, to: p.to } : {}),
+   directions: flows.map((f) => ({
+    from: f.from, to: f.to, asset: f.asset,
+    amount: f.amount.toString(), digests: [...f.digests].sort()
+   })),
    amount: flows.map((f) => `${f.amount} ${f.asset}`).join(", "),
    digests: [...new Set(flows.flatMap((f) => [...f.digests]))].sort()
   });
  }
- // First-ever funding is independent of top-ups in the launch window. A
- // matching source scores once per pair only if BOTH origins were fully
- // measured as narrow; a hub or partial verdict remains an observation.
+ // Shared first funders are third-party ancestry, not direct funding. They
+ // score only when both origins are measured narrow; a hub or partial
+ // verdict stays an observation even if the first transfers were on one date.
  const firstBySource = new Map<string, Array<{ address: string; funding: LaunchFirstFunding }>>();
- for (const entry of [{ address: input.creator.address, funding: input.creator.firstFunding },
- ...input.buyers.map((b) => ({ address: b.address, funding: b.firstFunding }))]) {
+ for (const entry of firstEntries) {
   if (!entry.funding?.funder || isUnspendableAddress(entry.funding.funder)) continue;
   const group = firstBySource.get(entry.funding.funder) ?? [];
   group.push({ address: entry.address, funding: entry.funding });
@@ -487,7 +535,8 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
  }
  for (const [k, digests] of burstPairs) {
   const [a, b] = JSON.parse(k) as [string, string];
-  add(a, b, { type: "funding_burst", weight: 2, digests: [...digests].sort() });
+  const independent = [...digests].filter((digest) => !firstFundingDirectDigests.get(k)?.has(digest));
+  if (independent.length) add(a, b, { type: "funding_burst", weight: 2, digests: independent.sort() });
  }
  const sharedTxPairs = new Map<string, LaunchSignal>();
  for (const [digest, entries] of byTx) {
@@ -504,6 +553,7 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
   for (let i = 0; i < buyers.length; i++) {
    for (let j = i + 1; j < buyers.length; j++) {
     const k = key(buyers[i], buyers[j]);
+    if (firstFundingDirectDigests.get(k)?.has(digest)) continue;
     const signal = sharedTxPairs.get(k) ?? {
      type: "shared_funding_tx", weight: 2, via: entries[0].payment.source,
      amount: "", transactionRecipientCount: entries[0].payment.transactionRecipientCount,
@@ -594,8 +644,15 @@ export function scoreLaunch(input: LaunchScoringInput): LaunchScoringResult {
   cluster.member_links = cluster.members.map((address) => {
    const creatorPair = cluster.edges.find((edge) =>
     (edge.a === input.creator.address && edge.b === address) || (edge.b === input.creator.address && edge.a === address));
-   const status = address === input.creator.address || creatorPair?.signals.some((s) => s.type === "direct")
-    ? "direct" : creatorPair?.signals.some((s) => s.type === "creator_linked_destination")
+   const status = address === input.creator.address || creatorPair?.signals.some((s) =>
+    s.type === "first_funding" && s.from === input.creator.address && s.to === address
+    || s.type === "direct" && s.directions?.some((direction) =>
+     direction.from === input.creator.address && direction.to === address))
+    ? "direct" : creatorPair?.signals.some((s) =>
+     s.type === "first_funding" && s.from === address && s.to === input.creator.address
+     || s.type === "direct" && s.directions?.some((direction) =>
+      direction.from === address && direction.to === input.creator.address))
+     ? "paid_creator" : creatorPair?.signals.some((s) => s.type === "creator_linked_destination")
      ? "via_creator_linked_destination" : "buyer_link_only";
    return { address, status, path: paths.get(address)! };
   });

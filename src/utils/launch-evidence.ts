@@ -42,6 +42,26 @@ export function creatorPaid(tx: PaymentTransaction, creator: string, destination
   return spent >= received ? received : 0n;
 }
 
+/** Read every coin the creator demonstrably paid the destination, without summing unlike units. */
+export function creatorPaidCoins(tx: PaymentTransaction, creator: string, destination: string): Map<string, bigint> {
+  const paid = new Map<string, bigint>();
+  for (const change of tx.changes) {
+    if (change.address !== destination || change.amount <= 0n || paid.has(change.coin_type)) continue;
+    const amount = creatorPaid(tx, creator, destination, change.coin_type);
+    if (amount > 0n) paid.set(change.coin_type, amount);
+  }
+  return paid;
+}
+
+export function creatorPaymentTotals(payments: readonly LaunchPayment[]): Array<{ asset: string; amount: bigint; count: number }> {
+  const totals = new Map<string, { amount: bigint; count: number }>();
+  for (const payment of payments) {
+    const previous = totals.get(payment.asset) ?? { amount: 0n, count: 0 };
+    totals.set(payment.asset, { amount: previous.amount + payment.amount, count: previous.count + 1 });
+  }
+  return [...totals].map(([asset, total]) => ({ asset, ...total }));
+}
+
 /** The event's buyer is a signing key; a session buy can leave its tokens in an object. */
 export function buyerReceivedLaunchCoin(tx: PaymentTransaction, buyer: string, coin: string): boolean {
   return balance(tx, buyer, coin) > 0n;

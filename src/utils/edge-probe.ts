@@ -219,8 +219,12 @@ export class Budget {
  * ------------------------------------------------------------------ */
 
 /** Oldest-first: the first funding of a wallet is by definition its earliest. */
-const EARLIEST_QUERY = `query ($addr: SuiAddress!, $first: Int!) {
-  transactions(filter: { affectedAddress: $addr }, first: $first) {
+const BOUNDED_CHECKPOINT_ARGS = ", $afterCheckpoint: UInt53!, $beforeCheckpoint: UInt53!";
+const BOUNDED_CHECKPOINT_FILTER = ", afterCheckpoint: $afterCheckpoint, beforeCheckpoint: $beforeCheckpoint";
+
+function earliestQuery(bounded: boolean): string {
+  return `query ($addr: SuiAddress!, $first: Int!${bounded ? BOUNDED_CHECKPOINT_ARGS : ""}) {
+  transactions(filter: { affectedAddress: $addr${bounded ? BOUNDED_CHECKPOINT_FILTER : ""} }, first: $first) {
     nodes {
       digest
       sender { address }
@@ -232,6 +236,9 @@ const EARLIEST_QUERY = `query ($addr: SuiAddress!, $first: Int!) {
     }
   }
 }`;
+}
+const EARLIEST_QUERY = earliestQuery(false);
+const EARLIEST_BOUNDED_QUERY = earliestQuery(true);
 
 /**
  * Recent activity, walking backwards.
@@ -253,8 +260,9 @@ const RECENT_QUERY = `query ($addr: SuiAddress!, $last: Int!, $before: String) {
 }`;
 
 /** Outbound only — who did this address pay? */
-const SENT_QUERY = `query ($addr: SuiAddress!, $last: Int!, $before: String) {
-  transactions(filter: { sentAddress: $addr }, last: $last, before: $before) {
+function sentQuery(bounded: boolean): string {
+  return `query ($addr: SuiAddress!, $last: Int!, $before: String${bounded ? BOUNDED_CHECKPOINT_ARGS : ""}) {
+  transactions(filter: { sentAddress: $addr${bounded ? BOUNDED_CHECKPOINT_FILTER : ""} }, last: $last, before: $before) {
     nodes {
       digest
       sender { address }
@@ -264,6 +272,9 @@ const SENT_QUERY = `query ($addr: SuiAddress!, $last: Int!, $before: String) {
     pageInfo { hasPreviousPage startCursor }
   }
 }`;
+}
+const SENT_QUERY = sentQuery(false);
+const SENT_BOUNDED_QUERY = sentQuery(true);
 
 /** Oldest and newest collector pages expose both old and recent sweeps. */
 const CONSOLIDATION_QUERY = `query ($addr: SuiAddress!, $oldest: Boolean!) {
@@ -396,7 +407,7 @@ const MAX_SHAPE_READS = 3;
  * {@link MAX_SHAPE_READS}. When a read fails the coin stays skipped, and if
  * its skip still precedes the final pick it is listed in `originUnread`.
  */
-export async function assessFunding(txs: FundingTx[], address: string): Promise<FundingJudgement> {
+export async function assessFunding(txs: FundingTx[], address: string, beforeCheckpoint?: number): Promise<FundingJudgement> {
   const { valueUsd, pricesUnavailable } = await fundingValuer(txs, address);
   const first = pickFundingTx(txs, address, { valueUsd });
   const largest = new Map<string, bigint>();
@@ -444,7 +455,7 @@ export async function assessFunding(txs: FundingTx[], address: string): Promise<
       continue;
     }
     shapeReads++;
-    const read = await readSendShape(tx, s.funder, s.coinType);
+    const read = await readSendShape(tx, s.funder, s.coinType, beforeCheckpoint);
     reads += read.reads;
     if (!read.shape) {
       unread.add(s.coinType);
@@ -485,7 +496,7 @@ const SENT_IN_WINDOW_QUERY = `query ($filter: TransactionFilter) {
  * attribution or seed profiling: `isTargetedSend` rejects every truncated
  * shape, so a lower-bound recipient count cannot establish a targeted grant.
  */
-async function readSendShape(tx: FundingTx, funder: string, coinType: string): Promise<{ shape?: SendShape; reads: number }> {
+async function readSendShape(tx: FundingTx, funder: string, coinType: string, beforeCheckpoint?: number): Promise<{ shape?: SendShape; reads: number }> {
   const paid = new Map<string, bigint>();
   const add = (owner: string, amount: bigint) => paid.set(owner, (paid.get(owner) ?? 0n) + amount);
   for (const c of tx.changes) {
@@ -513,7 +524,7 @@ async function readSendShape(tx: FundingTx, funder: string, coinType: string): P
         nodes: Array<{ digest: string; effects?: { balanceChanges: GqlConnection<GqlBalanceChangeNode> } | null }>;
       } | null;
     }>(SENT_IN_WINDOW_QUERY, {
-      filter: { sentAddress: funder, afterCheckpoint: Math.max(0, cp - SEND_BURST_CHECKPOINTS - 1), beforeCheckpoint: cp + SEND_BURST_CHECKPOINTS + 1 },
+      filter: { sentAddress: funder, afterCheckpoint: Math.max(0, cp - SEND_BURST_CHECKPOINTS - 1), beforeCheckpoint: Math.min(beforeCheckpoint ?? Infinity, cp + SEND_BURST_CHECKPOINTS + 1) },
     });
     if (!page?.transactions) return { reads: 1 };
     truncated = page.transactions.pageInfo?.hasNextPage === true;
@@ -559,13 +570,16 @@ export interface FirstFunderLookup {
  * is involved: that is decided by a live price, and a price moves, lapses or
  * fails to load. So a pick is written only when every inflow up to it was
  * SUI, judged by the SUI floor alone. Anything else is recomputed per call.
+ * A `beforeCheckpoint` bound excludes its checkpoint and later ones, and
+ * bypasses the unbounded cache in both directions.
  *
  * This is the expensive half of expansion: verifying sibling candidates is one
  * lookup each, and investigations revisit the same neighbourhood repeatedly.
  */
-export async function firstFunderOf(address: string, budget: Budget): Promise<FirstFunderLookup | null> {
+export async function firstFunderOf(address: string, budget: Budget, beforeCheckpoint?: number): Promise<FirstFunderLookup | null> {
   const account = currentSuiAccount(address);
-  const cached = getCachedFirstFunder(account);
+  // The store holds an unbounded answer; it may be a payment made after this snapshot.
+  const cached = beforeCheckpoint === undefined ? getCachedFirstFunder(account) : null;
   if (cached) {
     return {
       funder: parseAccountId(cached.funder_account, currentSuiChain()).address,
@@ -576,10 +590,12 @@ export async function firstFunderOf(address: string, budget: Budget): Promise<Fi
   }
   if (!budget.take()) return null;
   try {
-    const data = await gqlQuery<{ transactions: { nodes: RawEarliest[] } }>(EARLIEST_QUERY, {
-      addr: address,
-      first: 12,
-    });
+    const args: { addr: string; first: number; afterCheckpoint?: number; beforeCheckpoint?: number } = { addr: address, first: 12 };
+    if (beforeCheckpoint !== undefined) {
+      args.afterCheckpoint = 0;
+      args.beforeCheckpoint = beforeCheckpoint;
+    }
+    const data = await gqlQuery<{ transactions: { nodes: RawEarliest[] } }>(beforeCheckpoint === undefined ? EARLIEST_QUERY : EARLIEST_BOUNDED_QUERY, args);
     // The subject's own inflow can sort past the first 50 balance changes of
     // a batch payout; complete the lists before picking the funding.
     const completed = await completeTxConnections(
@@ -593,7 +609,7 @@ export async function firstFunderOf(address: string, budget: Budget): Promise<Fi
     // Judged the way `find_funding_source` judges the same candidates, so an
     // unpriced or sub-floor transfer cannot pass as funding here while that
     // tool skips it as dust.
-    const { assessment, pricesUnavailable, reads, originUnread } = await assessFunding(txs, address);
+    const { assessment, pricesUnavailable, reads, originUnread } = await assessFunding(txs, address, beforeCheckpoint);
     budget.charge(reads);
     const picked = assessment.funding;
     if (!picked || picked.funder === "unknown") return { funder: null, digest: null, pricesUnavailable, originUnread };
@@ -601,7 +617,7 @@ export async function firstFunderOf(address: string, budget: Budget): Promise<Fi
     const priceFree = txs
       .slice(0, pickedAt + 1)
       .every((t) => t.changes.every((c) => c.address !== address || BigInt(c.amount) <= 0n || isSuiCoinType(c.coinType)));
-    if (priceFree) saveFirstFunder(account, currentSuiAccount(picked.funder), picked.digest);
+    if (priceFree && beforeCheckpoint === undefined) saveFirstFunder(account, currentSuiAccount(picked.funder), picked.digest);
     return { funder: picked.funder, digest: picked.digest, pricesUnavailable, originUnread };
   } catch {
     return null;
@@ -696,12 +712,14 @@ export type UnmeasuredReason = "budget" | "read_failed";
  * A payment counts only when it clears the floors `pickFundingTx` applies
  * ({@link clearsDustFloor}); recipients paid only below them are counted
  * apart in `belowFloor`. When no price can be read, a non-SUI payment counts,
- * the same fallback funding applies.
+ * the same fallback funding applies. When `beforeCheckpoint` is provided,
+ * the entire scan is restricted to checkpoints before it.
  */
 export async function probeRecipients(
   address: string,
   limit: number,
   budget: Budget,
+  beforeCheckpoint?: number,
 ): Promise<Popularity> {
   const members = new Map<string, string>();
   const belowFloor = new Set<string>();
@@ -723,7 +741,12 @@ export async function probeRecipients(
     if (!budget.take()) break;
     let page: RecentPage;
     try {
-      page = await gqlQuery<RecentPage>(SENT_QUERY, { addr: address, last: PAGE, before: cursor });
+      const args: { addr: string; last: number; before?: string; afterCheckpoint?: number; beforeCheckpoint?: number } = { addr: address, last: PAGE, before: cursor };
+      if (beforeCheckpoint !== undefined) {
+        args.afterCheckpoint = 0;
+        args.beforeCheckpoint = beforeCheckpoint;
+      }
+      page = await gqlQuery<RecentPage>(beforeCheckpoint === undefined ? SENT_QUERY : SENT_BOUNDED_QUERY, args);
     } catch {
       readFailed = true;
       break;

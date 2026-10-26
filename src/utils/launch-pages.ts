@@ -25,6 +25,11 @@ export function nextLaunchPageBudget(pages: number, boundedRead: boolean): numbe
   return boundedRead && pages < 1000 ? Math.min(1000, pages * 2) : null;
 }
 
+/** First-funder lookups and their popularity probes stop growing at 1,000 reads. */
+export function launchFirstFundingCanAdvance(pages: number, lookupStopped: boolean, popularityStopped: boolean): boolean {
+  return pages < 100 && (lookupStopped || popularityStopped);
+}
+
 /** Only a page-budget stop is resumable; a read failure stays incomplete without a misleading next call. */
 export function launchPaymentReadsCanAdvance(subjectCanAdvance: boolean, creatorReads: readonly { canAdvance: boolean }[]): boolean {
   return subjectCanAdvance || creatorReads.some(read => read.canAdvance);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buyerReceivedLaunchCoin, creatorPaid, launchAccountingComplete, launchTotalsPartial, launchTopup, SUI_LAUNCH_TYPE, uniqueCreatorPayments } from "../src/utils/launch-evidence.js";
+import { buyerReceivedLaunchCoin, creatorPaid, creatorPaidCoins, creatorPaymentTotals, launchAccountingComplete, launchTotalsPartial, launchTopup, SUI_LAUNCH_TYPE, uniqueCreatorPayments } from "../src/utils/launch-evidence.js";
 import { scoreLaunch, type LaunchBuyer } from "../src/utils/launch-scoring.js";
 
 const creator = "0xc0";
@@ -49,6 +49,29 @@ describe("launch payment evidence", () => {
         change(creator, -15n), change(destination, 10n)
       ]
     }, creator, destination, SUI_LAUNCH_TYPE)).toBe(10n);
+  });
+  it("reads and totals every credited coin independently without inventing creator payments", () => {
+    const usdc = "0xc01::usdc::USDC";
+    const testCoin = "0xc02::test::TEST";
+    const tx = {
+      sender: creator, sponsor, gas: 12n, changes: [
+        change(creator, -3_000_000_012n), change(destination, 3_000_000_000n),
+        change(creator, -7_000_000n, usdc), change(destination, 7_000_000n, usdc),
+        change(destination, 5n, testCoin), change(sponsor, 12n),
+      ]
+    };
+    expect([...creatorPaidCoins(tx, creator, destination)]).toEqual([
+      [SUI_LAUNCH_TYPE, 3_000_000_000n], [usdc, 7_000_000n]
+    ]);
+    expect([...creatorPaidCoins({ ...tx, sender: buyer }, creator, destination)]).toEqual([]);
+    expect(creatorPaymentTotals([
+      { to: destination, asset: "sui", amount: 3_000_000_000n, digest: "p1" },
+      { to: destination, asset: usdc, amount: 7_000_000n, digest: "p1" },
+      { to: destination, asset: usdc, amount: 8_000_000n, digest: "p2" },
+    ])).toEqual([
+      { asset: "sui", amount: 3_000_000_000n, count: 1 },
+      { asset: usdc, amount: 15_000_000n, count: 2 }
+    ]);
   });
 
   it("flags session-signing keys that did not receive the event's tokens", () => {

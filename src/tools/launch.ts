@@ -18,17 +18,16 @@ import { errorResult } from "../utils/errors.js";
 import { readLaunchEvents, readLaunchPoolBuys, readLaunchPool, readLaunchHistory, readEarlyLaunchHistory, readLaunchOrigin, probeLaunchPayers, matchBuy, type LaunchTx, type LaunchScan } from "../utils/launch-read.js";
 import { sumRaw, decimalAmount, isSuiPumpReferralFee, tradeLegs, ownerForwards, accountBuyer, type BuyerAccount, type LaunchBuy, type LaunchPool } from "../utils/launch-accounting.js";
 import { fetchEventJson } from "../utils/event-json.js";
-import { scoreLaunch, type LaunchBuyer, type LaunchDestination, type LaunchFirstFunding, type LaunchFunding, type LaunchMemberPathEdge, type LaunchPayment, type LaunchTransfer } from "../utils/launch-scoring.js";
+import { scoreLaunch, type LaunchBuyer, type LaunchDestination, type LaunchFirstFunding, type LaunchFunding, type LaunchMemberPathEdge, type LaunchPayment, type LaunchSignal, type LaunchTransfer } from "../utils/launch-scoring.js";
 import { netGas, type GqlGasSummary } from "../utils/trace-read.js";
-import { buyerReceivedLaunchCoin, creatorPaid, launchAccountingComplete, launchTopup, launchTotalsPartial, uniqueCreatorPayments, SUI_LAUNCH_TYPE } from "../utils/launch-evidence.js";
+import { buyerReceivedLaunchCoin, creatorPaid, creatorPaidCoins, creatorPaymentTotals, launchAccountingComplete, launchTopup, launchTotalsPartial, uniqueCreatorPayments, SUI_LAUNCH_TYPE } from "../utils/launch-evidence.js";
 import { DEFAULT_NETWORK, getNetwork } from "../config.js";
-import { LAUNCH_PARENT_LISTS, launchCatalogLists, launchListRows, launchPaymentReadsCanAdvance, nextLaunchPageBudget } from "../utils/launch-pages.js";
+import { LAUNCH_PARENT_LISTS, launchCatalogLists, launchListRows, launchPaymentReadsCanAdvance, launchFirstFundingCanAdvance, nextLaunchPageBudget } from "../utils/launch-pages.js";
 import { launchTokenUsd } from "../utils/launch-price.js";
 
 const SUI = "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
 const MIST = 1_000_000_000n;
 const DESTINATION_MIN_SUI = 100n * MIST;
-const DESTINATION_MIN_TOKENS = 1_000_000n;
 const FUNDING_RECIPIENTS = `query($digest:String!){transaction(digest:$digest){effects{balanceChanges(first:50){nodes{coinType{repr} amount owner{address}}pageInfo{hasNextPage}}}}}`;
 const AFFILIATION_QUERY = `query($creator:SuiAddress!,$destination:SuiAddress!,$afterCp:UInt53!,$beforeCp:UInt53!,$after:String){transactions(filter:{sentAddress:$creator,affectedAddress:$destination,afterCheckpoint:$afterCp,beforeCheckpoint:$beforeCp},first:50,after:$after){nodes{digest sender{address} gasInput{gasSponsor{address}} effects{timestamp gasEffects{gasSummary{computationCost storageCost storageRebate}} ${BALANCE_CHANGES_SELECTION} ${EVENTS_SELECTION}}}pageInfo{hasNextPage endCursor}}}`;
 const PRIOR_AFFILIATION_QUERY = `query($creator:SuiAddress!,$destination:SuiAddress!,$afterCp:UInt53!,$beforeCp:UInt53!,$before:String){transactions(filter:{sentAddress:$creator,affectedAddress:$destination,afterCheckpoint:$afterCp,beforeCheckpoint:$beforeCp},last:50,before:$before){nodes{digest sender{address} gasInput{gasSponsor{address}} effects{timestamp gasEffects{gasSummary{computationCost storageCost storageRebate}} ${BALANCE_CHANGES_SELECTION} ${EVENTS_SELECTION}}}pageInfo{hasPreviousPage startCursor}}}`;
@@ -41,7 +40,7 @@ interface KindRead { object: { __typename: string; asMovePackage?: unknown; asMo
 interface BuyerLedger { address: string; first_buy_at: string; buys: LaunchBuy[]; first_funding_ever: FirstFunderLookup | null; launch_funding: LaunchFunding[]; launch_topup_present: boolean; transfers: LaunchTransfer[]; payments: LaunchPayment[]; referrals: string[]; history: LaunchTx[]; complete: boolean; buyer_ownership_unverified: string[]; history_reads: number; history_next_cursor: string | null }
 
 /** A first funder is evidence for scoring only if the funder is measured narrow. */
-async function classifyFirstFunding(read: FirstFunderLookup | null, budget: Budget, cache: Map<string, LaunchFirstFunding["status"]>): Promise<LaunchFirstFunding> {
+async function classifyFirstFunding(read: FirstFunderLookup | null, budget: Budget, cache: Map<string, LaunchFirstFunding["status"]>, beforeCheckpoint: number): Promise<LaunchFirstFunding> {
  if (!read) return { funder: null, digest: null, status: "unmeasured" };
  if (!read.funder) return { funder: null, digest: null, status: read.originUnread.length || read.pricesUnavailable ? "unmeasured" : "no_qualifying_inflow" };
  const funder = read.funder;
@@ -50,7 +49,7 @@ async function classifyFirstFunding(read: FirstFunderLookup | null, budget: Budg
   const label = getLabel(funder);
   if (label?.category === "cex" || label?.category === "bridge" || label?.category === "protocol") status = "hub";
   else {
-   const measured = await probeRecipients(funder, DEFAULT_POPULARITY_LIMIT, budget).catch(() => null);
+   const measured = await probeRecipients(funder, DEFAULT_POPULARITY_LIMIT, budget, beforeCheckpoint).catch(() => null);
    status = measured?.popular ? "hub" : measured?.unmeasured || !measured ? "unmeasured" : measured.complete ? "narrow" : "provisional";
   }
   cache.set(funder, status);
@@ -73,16 +72,18 @@ async function paymentCount(digest: string, cache: Map<string, number | null>): 
   cache.set(digest, count); return count;
  } catch { cache.set(digest, null); return null; }
 }
-async function creatorPayments(creator: string, destination: string, fromCheckpoint: number, toCheckpoint: number, coin: string, maxPages: number, prior = false): Promise<{ payments: LaunchPayment[]; complete: boolean; reads: number; canAdvance: boolean }> {
+async function creatorPayments(creator: string, destination: string, fromCheckpoint: number, toCheckpoint: number, coin: string, maxPages: number, prior = false): Promise<{ payments: LaunchPayment[]; complete: boolean; reads: number; transactionsRead: number; canAdvance: boolean }> {
  const payments: LaunchPayment[] = [];
  let cursor: string | undefined;
  let complete = false;
  let balancesComplete = true;
  let reads = 0;
+ let transactionsRead = 0;
  let stalled = false;
  for (; reads < maxPages; reads++) {
   const page = (await gqlQuery<AffiliationRead>(prior ? PRIOR_AFFILIATION_QUERY : AFFILIATION_QUERY,
    { creator, destination, afterCp: fromCheckpoint, beforeCp: toCheckpoint, [prior ? "before" : "after"]: cursor })).transactions;
+  transactionsRead += page.nodes.length;
   const changes = await completeTxConnections(page.nodes.map(node => ({ digest: node.digest, balanceChanges: node.effects.balanceChanges })));
   const events = await Promise.all(page.nodes.map(async node => node.effects.events?.pageInfo?.hasNextPage
    ? await fetchEventJson(node.digest)
@@ -95,9 +96,16 @@ async function creatorPayments(creator: string, destination: string, fromCheckpo
    const changeRows = changes[index].balanceChanges.flatMap(change => change.owner?.address && change.coinType?.repr && change.amount != null
     ? [{ address: change.owner.address, coin_type: change.coinType.repr, amount: BigInt(change.amount) }] : []);
    const tx = { sender: node.sender?.address ?? null, sponsor: node.gasInput?.gasSponsor?.address ?? null, gas: gasText === null ? null : BigInt(gasText), changes: changeRows };
-   for (const asset of ["sui", "token"] as const) {
-    const paid = creatorPaid(tx, creator, destination, asset === "sui" ? SUI_LAUNCH_TYPE : coin);
-    if (paid > 0n) payments.push({ to: destination, asset, amount: paid, digest: node.digest, timestamp: node.effects.timestamp, referral: isSuiPumpReferralFee(decoded, destination) });
+   const paidCoins = prior ? creatorPaidCoins(tx, creator, destination) : new Map<string, bigint>([
+    [SUI_LAUNCH_TYPE, creatorPaid(tx, creator, destination, SUI_LAUNCH_TYPE)],
+    [coin, creatorPaid(tx, creator, destination, coin)]
+   ]);
+   for (const [coinType, paid] of paidCoins) {
+    if (paid > 0n) payments.push({
+     to: destination, asset: coinType === SUI_LAUNCH_TYPE ? "sui" : coinType === coin ? "token" : coinType,
+     amount: paid, digest: node.digest, timestamp: node.effects.timestamp,
+     referral: isSuiPumpReferralFee(decoded, destination)
+    });
    }
   }
   if (!(prior ? page.pageInfo.hasPreviousPage : page.pageInfo.hasNextPage)) { complete = true; break; }
@@ -105,7 +113,7 @@ async function creatorPayments(creator: string, destination: string, fromCheckpo
   if (!next || next === cursor) { stalled = true; break; }
   cursor = next;
  }
- return { payments, complete: complete && balancesComplete, reads: Math.min(maxPages, reads + 1), canAdvance: !stalled && !complete && balancesComplete && !!cursor && reads >= maxPages };
+ return { payments, complete: complete && balancesComplete, reads: Math.min(maxPages, reads + 1), transactionsRead, canAdvance: !stalled && !complete && balancesComplete && !!cursor && reads >= maxPages };
 }
 
 function amountOf(tx: Pick<LaunchTx, "changes">, owner: string, coin: string): bigint {
@@ -113,12 +121,12 @@ function amountOf(tx: Pick<LaunchTx, "changes">, owner: string, coin: string): b
 }
 
 export function registerLaunchTools(server: McpServer) {
- server.tool("analyze_launch", "(Incident investigation) Discover SuiPump buyers from the exact coin type, including trades after graduation. Report every early buyer's status, event-first trades, gross proceeds, funding and reconciliation. Pairwise evidence distinguishes a direct creator payment, a creator-linked private collection wallet and buyer-only paths; shared narrow first funders score only when measured, never via a popular service. A bounded pre-launch creator payment to a likely deposit scores a separate, weaker observation, not shared ownership or exchange funding. Every historical destination payment carries its date; an incomplete scan reports coverage and a continuation where its bound can advance. detail: 'full' returns records inline when they fit, otherwise pages the selected list by offset. No account-holder or misconduct verdict.", {
+ server.tool("analyze_launch", "(Incident investigation) Discover SuiPump buyers from the exact coin type, including trades after graduation. Every early buyer has a status, initial-token-amount rank, first-buy-time rank, event-first trades, gross proceeds, funding and reconciliation; initial_buy_sui_debit_incl_gas counts the initial buys only. Pairwise evidence distinguishes creator-to-buyer funding, a buyer's payment to the creator, a creator-funded private collection wallet used by even one buyer, and buyer-only paths. Shared narrow first funders score only when measured; a subject first-funding another is a directed edge even when old. Historical creator payments include every coin as separate per-coin totals with dated transactions; a payment to a likely deposit is a weaker observation, not evidence of account ownership. Incomplete reads report coverage and a continuation only when their bounds can advance. detail: 'full' returns records inline when they fit, otherwise pages the selected list by offset. No account-holder or misconduct verdict.", {
   coin_type: coinTypeArg().describe("Exact SuiPump coin type, not a symbol"),
   creation_tx: z.string().optional().describe("Optional creation digest to cross-check discovery from coin type"),
   window_minutes: numArg().int().min(1).max(1440).optional().describe("Minutes from creation for initial buyer discovery (default 10)"),
   sell_window_days: numArg().int().min(1).max(30).optional().describe("Days from creation to trace every buyer's sales and forwards (default 7)"),
-  max_pages: numArg().int().min(1).max(1000).optional().describe("Discovery, buyer, pre-launch creator-payment and first-funder page budget (default 20); coverage.next_call raises a bound only when it can advance"),
+  max_pages: numArg().int().min(1).max(1000).optional().describe("Discovery, buyer, historical creator-payment, first-funder and candidate destination read budget (default 20); coverage.next_call raises a bound only when it can advance"),
   detail: z.enum(["summary", "full"]).optional().describe("Full returns all data if small, otherwise lists consecutive pages by path and offset"),
   list_path: z.string().optional().describe("Full-view list path from the catalog (including parent lists and the catalog itself), for example discovered_buyers.0.sales"),
   offset: numArg().int().min(0).optional().describe("Index of the first row in the selected list (default 0)"),
@@ -190,7 +198,7 @@ export function registerLaunchTools(server: McpServer) {
       const source = topup.source;
        if (!popularity.has(source)) {
         const label = getLabel(source);
-        const probe = label?.category === "cex" ? null : await probeRecipients(source, DEFAULT_POPULARITY_LIMIT, budget);
+        const probe = label?.category === "cex" ? null : await probeRecipients(source, DEFAULT_POPULARITY_LIMIT, budget, directBefore);
         popularity.set(source, label?.category === "cex" || probe?.popular ? "hub" : probe?.unmeasured ? "unmeasured" : probe?.complete ? "narrow" : "provisional");
        }
        const recipients = await paymentCount(tx.digest, recipientCounts);
@@ -205,14 +213,14 @@ export function registerLaunchTools(server: McpServer) {
       transfers.push({ destination: forward.destination, asset: forward.coin_type === SUI ? "sui" : "token", amount: forward.amount, digest: tx.digest, qualifies: floor ?? "unpriced" });
      }
     }
-    const firstFunding = await firstFunderOf(buyer, firstFundingBudget);
+    const firstFunding = await firstFunderOf(buyer, firstFundingBudget, directBefore);
     ledgers.push({ address: buyer, first_buy_at: first, buys: buyerEvents, first_funding_ever: firstFunding, launch_funding: funding, launch_topup_present: funding.length > 0, transfers, payments, referrals, history: history.rows, complete: history.complete && buyerEvents.length === initialEvents.length && buyerOwnershipUnverified.length === 0, buyer_ownership_unverified: buyerOwnershipUnverified, history_reads: history.reads, history_next_cursor: history.next_cursor });
    }
-   const creatorFirstFundingRead = await firstFunderOf(origin.creator, firstFundingBudget);
-   const creatorFirstFunding = await classifyFirstFunding(creatorFirstFundingRead, firstFunderPopularityBudget, firstFunderStatuses);
+   const creatorFirstFundingRead = await firstFunderOf(origin.creator, firstFundingBudget, directBefore);
+   const creatorFirstFunding = await classifyFirstFunding(creatorFirstFundingRead, firstFunderPopularityBudget, firstFunderStatuses, directBefore);
    const buyerFirstFunding = new Map<string, LaunchFirstFunding>();
    for (const ledger of ledgers) buyerFirstFunding.set(ledger.address,
-    await classifyFirstFunding(ledger.first_funding_ever, firstFunderPopularityBudget, firstFunderStatuses));
+    await classifyFirstFunding(ledger.first_funding_ever, firstFunderPopularityBudget, firstFunderStatuses, directBefore));
    // The creator is a subject too: a payment between it and a buyer is direct.
    const direct = await findSubjectPayments([...grouped.keys(), origin.creator], { window: { afterCheckpoint: directAfter, beforeCheckpoint: directBefore }, maxPairPages: pages });
    const eventByDigest = new Map<string, { type: string; data: Record<string, unknown> }[] | null>(
@@ -246,28 +254,29 @@ export function registerLaunchTools(server: McpServer) {
    const creatorRecipientComplete = creatorRecipientReads.every(read => read.complete);
    const outgoing = new Map<string, LaunchTransfer[]>();
    for (const ledger of ledgers) for (const transfer of ledger.transfers) { const old = outgoing.get(transfer.destination) ?? []; old.push(transfer); outgoing.set(transfer.destination, old); }
-   const destinations: Array<LaunchDestination & { deposit_verdict: string; sweeps: Array<{ digest: string }>; sweep_to: string | null; classification_complete: boolean; classification_can_advance: boolean; creator_payments: LaunchPayment[]; creator_payment_complete: boolean; creator_payment_can_advance: boolean; creator_prior_payments: LaunchPayment[]; creator_prior_complete: boolean; creator_prior_can_advance: boolean; creator_prior_reads: number; inflow_payers: number | null }> = [];
+   const destinations: Array<LaunchDestination & { deposit_verdict: string; sweeps: Array<{ digest: string }>; sweep_to: string | null; classification_complete: boolean; classification_can_advance: boolean; creator_payments: LaunchPayment[]; creator_payment_complete: boolean; creator_payment_can_advance: boolean; creator_prior_payments: LaunchPayment[]; creator_prior_complete: boolean; creator_prior_can_advance: boolean; creator_prior_reads: number; creator_prior_transactions_read: number; creator_first_funded: boolean | null; creator_first_funding_digest: string | null; creator_first_funding_unavailable: boolean; inflow_payers: number | null }> = [];
    const inflowBudget = new Budget(200);
-   for (const [dest, flows] of outgoing) {
-    const tokens = sumRaw(flows.filter(x => x.asset === "token").map(x => x.amount));
-    const sui = sumRaw(flows.filter(x => x.asset === "sui").map(x => x.amount));
-    const tokenThreshold = DESTINATION_MIN_TOKENS * BigInt(10 ** scale);
-    const buyersAtDestination = new Set(ledgers.filter(l => l.transfers.some(x => x.destination === dest)).map(l => l.address)).size;
-    if (sui < DESTINATION_MIN_SUI && tokens < tokenThreshold && buyersAtDestination < 2) continue;
+   const destinationCandidates = [...outgoing].filter(([, flows]) => flows.some(flow => flow.qualifies === true && flow.amount > 0n));
+   const destinationScanLimit = Math.min(1000, pages * 2);
+   const destinationsRemaining = destinationCandidates.length > destinationScanLimit;
+   for (const [dest, flows] of destinationCandidates.slice(0, destinationScanLimit)) {
+    const sui = sumRaw(flows.filter(x => x.qualifies === true && x.asset === "sui").map(x => x.amount));
     const depositPages = Math.ceil(pages / DATA_PAGES);
     const [kindRead, classification, creatorPay, creatorPrior] = await Promise.all([
      gqlQuery<KindRead>(KIND_QUERY, { id: dest }).catch(() => null),
      sui >= DESTINATION_MIN_SUI ? classifyDepositAddress(dest, { from: origin.created_at, to: sellingTo, last: 50 * depositPages, maxBalanceTransactions: 100 * depositPages, maxBalanceReads: 20 * depositPages }).catch(() => null) : Promise.resolve(null),
-     buyersAtDestination >= 2 && dest !== origin.creator ? creatorPayments(origin.creator, dest, origin.created_checkpoint - 1, affiliationEnd, coin, pages).catch(() => ({ payments: [] as LaunchPayment[], complete: false, reads: 0, canAdvance: false })) : Promise.resolve({ payments: [], complete: true, reads: 0, canAdvance: false }),
-     dest !== origin.creator ? creatorPayments(origin.creator, dest, 0, origin.created_checkpoint, coin, pages, true).catch(() => ({ payments: [] as LaunchPayment[], complete: false, reads: 0, canAdvance: false })) : Promise.resolve({ payments: [], complete: true, reads: 0, canAdvance: false }),
+     dest !== origin.creator ? creatorPayments(origin.creator, dest, origin.created_checkpoint - 1, affiliationEnd, coin, pages).catch(() => ({ payments: [] as LaunchPayment[], complete: false, reads: 0, transactionsRead: 0, canAdvance: false })) : Promise.resolve({ payments: [], complete: true, reads: 0, transactionsRead: 0, canAdvance: false }),
+     dest !== origin.creator ? creatorPayments(origin.creator, dest, 0, origin.created_checkpoint, coin, pages, true).catch(() => ({ payments: [] as LaunchPayment[], complete: false, reads: 0, transactionsRead: 0, canAdvance: false })) : Promise.resolve({ payments: [], complete: true, reads: 0, transactionsRead: 0, canAdvance: false }),
     ]);
     const label = getLabel(dest);
     const kind = namedKind(kindRead);
-    const measured = kind === "wallet" && (!label?.category || label.source === "inferred") ? await probeRecipients(dest, DEFAULT_POPULARITY_LIMIT, budget).catch(() => null) : null;
+    const destinationFirstFunding = kind === "wallet" && (creatorPay.payments.length > 0 || creatorPrior.payments.length > 0)
+     ? await firstFunderOf(dest, firstFundingBudget, directBefore) : undefined;
+    const measured = kind === "wallet" && (!label?.category || label.source === "inferred") ? await probeRecipients(dest, DEFAULT_POPULARITY_LIMIT, budget, directBefore).catch(() => null) : null;
     const outflow = measured?.popular ? "popular" as const : measured?.complete && !measured.unmeasured ? "narrow" as const : "unmeasured" as const;
     // Narrow on what it pays is half the test: a collector many unrelated
     // traders pay (a bot's fee wallet) pays few. Read who pays it as well.
-    const inflow = outflow === "narrow" ? await probeLaunchPayers(dest, coin, DEFAULT_POPULARITY_LIMIT, () => inflowBudget.take()) : null;
+    const inflow = outflow === "narrow" ? await probeLaunchPayers(dest, coin, DEFAULT_POPULARITY_LIMIT, () => inflowBudget.take(), directBefore) : null;
     const windowComplete = classification?.window?.complete === true;
     const reconstruction = classification?.balance_reconstruction;
     const classificationComplete = sui < DESTINATION_MIN_SUI || windowComplete && reconstruction?.complete !== false;
@@ -287,8 +296,16 @@ export function registerLaunchTools(server: McpServer) {
      creator_payments: creatorPay.payments, creator_payment_complete: creatorPay.complete, creator_payment_can_advance: creatorPay.canAdvance,
      creator_prior_payments: creatorPrior.payments, creator_prior_complete: creatorPrior.complete,
      creator_prior_can_advance: creatorPrior.canAdvance, creator_prior_reads: creatorPrior.reads,
+     creator_prior_transactions_read: creatorPrior.transactionsRead ?? 0,
+     creator_first_funded: destinationFirstFunding ? destinationFirstFunding.funder === origin.creator : null,
+     creator_first_funding_digest: destinationFirstFunding?.funder === origin.creator ? destinationFirstFunding.digest : null,
+     creator_first_funding_unavailable: destinationFirstFunding === null,
     });
    }
+   const priorCoinTypes = new Set(destinations.flatMap(d => d.creator_prior_payments.map(p =>
+    p.asset === "sui" ? SUI_LAUNCH_TYPE : p.asset === "token" ? coin : p.asset)));
+   await prefetchCoinScale(priorCoinTypes);
+   const paymentCoinType = (asset: string): string => asset === "sui" ? SUI_LAUNCH_TYPE : asset === "token" ? coin : asset;
    const scores = scoreLaunch({
     creator: {
      address: origin.creator, firstFunding: creatorFirstFunding,
@@ -317,8 +334,8 @@ export function registerLaunchTools(server: McpServer) {
    for (const address of groupedAddresses) {
     const first = address === origin.creator ? creatorFirstFunding : buyerFirstFunding.get(address);
     if (!first?.funder || funderRoots.has(first.funder)) continue;
-    const read = await firstFunderOf(first.funder, firstFundingBudget);
-    const status = await classifyFirstFunding(read, firstFunderPopularityBudget, firstFunderStatuses);
+    const read = await firstFunderOf(first.funder, firstFundingBudget, directBefore);
+    const status = await classifyFirstFunding(read, firstFunderPopularityBudget, firstFunderStatuses, directBefore);
     funderRoots.set(first.funder, { address: first.funder, first_funding_ever: read, funder_status: status.status });
    }
    const fundingBounds = await resolveWindow(fundingFrom, sellingTo);
@@ -360,7 +377,7 @@ export function registerLaunchTools(server: McpServer) {
       initial_supply_pct: supplyRaw > 0n ? Number(a.initialTokens * 100_000_000n / supplyRaw) / 1_000_000 : null,
       initial_buys: { sui: decimalAmount(a.initialSui, 9), tokens: decimalAmount(a.initialTokens, scale) },
       gross_buys: { sui: decimalAmount(a.grossSui, 9), tokens: decimalAmount(a.grossTokens, scale) },
-      buy_sui_debit_incl_gas: decimalAmount(a.debit, 9),
+      initial_buy_sui_debit_incl_gas: decimalAmount(a.debit, 9),
       buy_events: l.buys.map(b => ({ digest: b.digest, timestamp: b.timestamp, sui_in: decimalAmount(b.sui_in, 9), tokens_out: decimalAmount(b.tokens_out, scale), referral: b.referral, sui_outside_trade: b.sui_outside_trade === null ? null : decimalAmount(b.sui_outside_trade, 9) })),
       later_buys: a.later.map(b => ({ digest: b.digest, timestamp: b.timestamp, venue: b.venue, sui: decimalAmount(b.sui, 9), tokens: decimalAmount(b.tokens, scale), after_first_sale: b.after_first_sale })),
       curve_proceeds_gross: decimalAmount(a.curveProceeds, 9),
@@ -402,13 +419,17 @@ export function registerLaunchTools(server: McpServer) {
     };
    }).sort((left, right) => left.raw.initialTokens > right.raw.initialTokens ? -1
     : left.raw.initialTokens < right.raw.initialTokens ? 1 : left.row.address.localeCompare(right.row.address));
-   const resultBuyers = ledgerRows.map((item, index) => ({ ...item.row, initial_buy_rank: index + 1 }));
+   const timeRank = new Map([...ledgerRows].sort((a, b) => a.row.first_buy_at.localeCompare(b.row.first_buy_at)
+    || a.row.address.localeCompare(b.row.address)).map((entry, index) => [entry.row.address, index + 1]));
+   const resultBuyers = ledgerRows.map((item, index) => ({
+    ...item.row, initial_token_rank: index + 1, initial_time_rank: timeRank.get(item.row.address)!
+   }));
    const sumBuyers = (rows: typeof ledgerRows) => {
     const total = (pick: (raw: BuyerAccount) => bigint) => sumRaw(rows.map(r => pick(r.raw)));
     return {
      initial_buys: { sui: decimalAmount(total(r => r.initialSui), 9), tokens: decimalAmount(total(r => r.initialTokens), scale) },
      gross_buys: { sui: decimalAmount(total(r => r.grossSui), 9), tokens: decimalAmount(total(r => r.grossTokens), scale) },
-     buy_sui_debit_incl_gas: decimalAmount(total(r => r.debit), 9),
+     initial_buy_sui_debit_incl_gas: decimalAmount(total(r => r.debit), 9),
      curve_proceeds_gross: decimalAmount(total(r => r.curveProceeds), 9),
      pool_proceeds_gross: { venue: pool?.venue ?? null, sui: decimalAmount(total(r => r.poolProceeds), 9) },
      ...(pool?.venue === "Cetus" ? { cetus_proceeds_gross: decimalAmount(total(r => r.poolProceeds), 9) } : {}),
@@ -418,25 +439,28 @@ export function registerLaunchTools(server: McpServer) {
    const totals = {
     discovered: sumBuyers(ledgerRows),
     core: sumBuyers(ledgerRows.filter(r => r.row.status === "core")),
-    core_creator_linked: sumBuyers(ledgerRows.filter(r => r.row.status === "core" && r.row.creator_relation?.status !== "buyer_link_only")),
+    core_creator_linked: sumBuyers(ledgerRows.filter(r => r.row.status === "core"
+     && (r.row.creator_relation?.status === "direct" || r.row.creator_relation?.status === "via_creator_linked_destination"))),
+    core_paid_creator: sumBuyers(ledgerRows.filter(r => r.row.status === "core" && r.row.creator_relation?.status === "paid_creator")),
     core_buyer_link_only: sumBuyers(ledgerRows.filter(r => r.row.status === "core" && r.row.creator_relation?.status === "buyer_link_only")),
-    basis: "discovered sums every buyer found in the launch window; core sums only buyers in a core cluster; core_creator_linked counts qualified direct creator or creator-linked private-destination edges, while core_buyer_link_only is connected through buyers without its own creator edge. Initial buys are event amounts before the first sale; gross buys include later purchases that may reuse proceeds. Proceeds are gross event amounts, not profit; buy_sui_debit_incl_gas includes launch-window buy gas and fee legs.",
+    basis: "discovered sums every buyer found in the launch window; core sums only buyers in a core cluster. core_creator_linked counts creator-originating direct payments or first funding and private-destination edges; core_paid_creator is a buyer-originating payment or first funding to the creator; core_buyer_link_only is connected through buyers without its own creator edge. Initial buys are event amounts before the first sale; gross buys include later purchases that may reuse proceeds. Proceeds are gross event amounts, not profit; initial_buy_sui_debit_incl_gas includes gas and fee legs from initial buys only.",
    };
    const firstFundingComplete = !firstFundingBudget.truncated && !firstFunderPopularityBudget.truncated
     && creatorFirstFunding.status !== "unmeasured"
     && [...buyerFirstFunding.values()].every(read => read.status !== "unmeasured")
     && [...funderRoots.values()].every(root => root.funder_status !== "unmeasured");
-   const complete = discovery.complete && (!poolId || poolDiscovery?.complete === true)
+   const complete = !destinationsRemaining && discovery.complete && (!poolId || poolDiscovery?.complete === true)
     && direct.incomplete_pairs.length === 0 && creatorRecipientComplete && firstFundingComplete
     && resultBuyers.every(b => b.coverage.complete)
-    && destinations.every(d => d.classification_complete && d.creator_payment_complete && d.creator_prior_complete);
+    && destinations.every(d => d.classification_complete && d.creator_payment_complete && d.creator_prior_complete && !d.creator_first_funding_unavailable);
    const advancePages = nextLaunchPageBudget(pages, !discovery.complete && discovery.next_cursor !== null
     || !!poolDiscovery && !poolDiscovery.complete && poolDiscovery.next_cursor !== null
     || ledgers.some(l => !l.complete && l.history_next_cursor !== null)
     || [...earlyHistories.values()].some(read => read && !read.complete && read.next_cursor !== null)
     || launchPaymentReadsCanAdvance(direct.can_advance, creatorRecipientReads)
+    || destinationsRemaining && destinationScanLimit < 1000
     || destinations.some(d => d.classification_can_advance || d.creator_payment_can_advance || d.creator_prior_can_advance)
-    || firstFundingBudget.truncated || firstFunderPopularityBudget.truncated);
+    || launchFirstFundingCanAdvance(pages, firstFundingBudget.truncated, firstFunderPopularityBudget.truncated));
    const nextCall = advancePages !== null ? {
     tool: "analyze_launch", args: {
      coin_type: coin, ...(creation_tx ? { creation_tx } : {}),
@@ -456,24 +480,39 @@ export function registerLaunchTools(server: McpServer) {
      first_funder_root: creatorFirstFunding.funder ? funderRoots.get(creatorFirstFunding.funder) ?? null : null,
     },
     discovered_buyers: resultBuyers,
-    destinations: destinations.map(d => ({
+    destinations: destinations.map(d => {
+     const priorTotals = creatorPaymentTotals(d.creator_prior_payments);
+     return {
      address: d.address, deposit_verdict: d.deposit_verdict, sweep_to: d.sweep_to, sweeps: d.sweeps,
      eligible: scoredDestinations.get(d.address)?.eligible ?? false,
      affiliation: scoredDestinations.get(d.address)?.affiliation ?? "none",
+      creator_first_funded: d.creator_first_funded,
+      creator_first_funding_digest: d.creator_first_funding_digest,
+      ...(d.creator_first_funding_unavailable ? { creator_first_funding_unavailable: true } : {}),
      creator_payments: d.creator_payments.map(p => ({
       digest: p.digest, timestamp: p.timestamp ?? null, asset: p.asset,
       amount: decimalAmount(p.amount, p.asset === "sui" ? 9 : scale),
      })),
+      creator_prior_coins_read: priorTotals.map(total => paymentCoinType(total.asset)),
+      creator_prior_totals: priorTotals.map(total => ({
+       coin_type: paymentCoinType(total.asset), count: total.count, amount_raw: total.amount.toString(),
+       amount: decimalAmount(total.amount, coinScale(paymentCoinType(total.asset)).decimals),
+       decimals_source: coinScale(paymentCoinType(total.asset)).source,
+      })),
      creator_prior_payments: d.creator_prior_payments.map(p => ({
-      digest: p.digest, timestamp: p.timestamp ?? null, asset: p.asset,
-      amount: decimalAmount(p.amount, p.asset === "sui" ? 9 : scale),
+       digest: p.digest, timestamp: p.timestamp ?? null, asset: p.asset, coin_type: paymentCoinType(p.asset),
+       amount_raw: p.amount.toString(),
+       amount: decimalAmount(p.amount, coinScale(paymentCoinType(p.asset)).decimals),
+       decimals_source: coinScale(paymentCoinType(p.asset)).source,
      })),
      classification_complete: d.classification_complete, classification_can_advance: d.classification_can_advance,
      creator_payment_complete: d.creator_payment_complete, creator_payment_can_advance: d.creator_payment_can_advance,
      creator_prior_complete: d.creator_prior_complete, creator_prior_can_advance: d.creator_prior_can_advance,
      creator_prior_reads: d.creator_prior_reads,
+      creator_prior_transactions_read: d.creator_prior_transactions_read,
      distinct_depositors: d.distinctDepositors, inflow_payers: d.inflow_payers,
-    })),
+     };
+    }),
     buyer_index: resultBuyers.map(({ address, status, cluster_id, creator_relation, coverage }) => ({
      address, status, cluster_id, creator_relation: creator_relation?.status ?? null,
      complete: coverage.complete,
@@ -481,6 +520,7 @@ export function registerLaunchTools(server: McpServer) {
     destination_index: destinations.map(d => ({
      address: d.address, deposit_verdict: d.deposit_verdict,
      affiliation: scoredDestinations.get(d.address)?.affiliation ?? "none",
+     creator_first_funded: d.creator_first_funded,
     })),
     clusters: scores.clusters.map(cluster => ({
      ...cluster,
@@ -499,6 +539,7 @@ export function registerLaunchTools(server: McpServer) {
       }
       : { complete: false, pool_unread: poolId } : null,
      defining_package: origin.defining_package, versions_scanned: origin.versions,
+     destination_scan: { candidates: destinationCandidates.length, read: destinations.length, budget: destinationScanLimit, complete: !destinationsRemaining },
      buyers: resultBuyers.map(b => ({ address: b.address, ...b.coverage })),
      destinations: destinations.map(d => ({
       address: d.address, classification_complete: d.classification_complete,
@@ -506,10 +547,12 @@ export function registerLaunchTools(server: McpServer) {
       creator_payment_complete: d.creator_payment_complete, creator_payment_can_advance: d.creator_payment_can_advance,
       creator_prior_complete: d.creator_prior_complete, creator_prior_can_advance: d.creator_prior_can_advance,
       creator_prior_reads: d.creator_prior_reads,
+      creator_prior_transactions_read: d.creator_prior_transactions_read,
      })),
      creator_prior_window: { from_checkpoint_exclusive: 0, before_checkpoint_exclusive: origin.created_checkpoint, order: "newest" },
      first_funding: {
-      complete: firstFundingComplete, lookup_budget_exhausted: firstFundingBudget.truncated,
+      complete: firstFundingComplete, from_checkpoint_exclusive: 0, before_checkpoint_exclusive: directBefore,
+      lookup_budget_exhausted: firstFundingBudget.truncated,
       popularity_budget_exhausted: firstFunderPopularityBudget.truncated, roots_read: funderRoots.size
      },
      creator_recipient_payments_complete: creatorRecipientComplete,
@@ -530,29 +573,60 @@ export function registerLaunchTools(server: McpServer) {
     }
    };
    const caps: Record<string, { budget: number; brief?: (row: never) => unknown; rank?: (a: never, b: never) => number; next_call?: { tool: string; args: Record<string, unknown> } }> = {
-    pairs: { budget: 1_200, brief: (row) => { const pair = row as { a: string; b: string; score: number }; return { a: pair.a, b: pair.b, score: pair.score }; } },
-    below_threshold: { budget: 500, brief: (row) => { const pair = row as { a: string; b: string; score: number }; return { a: pair.a, b: pair.b, score: pair.score }; } },
     sub_threshold_payments: { budget: 500, brief: (row) => { const payment = row as { from: string; to: string; asset: string }; return { from: payment.from, to: payment.to, asset: payment.asset }; } },
     observations: { budget: 700, brief: (row) => { const observation = row as { type: string; via?: string }; return { type: observation.type, via: observation.via }; } },
-    discovered_buyers: {
+   };
+   const signalCaps = (path: string, signals: LaunchSignal[]) => {
+    for (let i = 0; i < signals.length; i++) {
+     const signal = signals[i];
+     for (let j = 0; j < (signal.directions?.length ?? 0); j++) {
+      if ((signal.directions?.[j].digests.length ?? 0) > 10)
+       caps[`${path}.signals.${i}.directions.${j}.digests`] = { budget: 500 };
+     }
+     if (signal.digests.length > 10) caps[`${path}.signals.${i}.digests`] = { budget: 500 };
+     if ((signal.sweep_digests?.length ?? 0) > 10) caps[`${path}.signals.${i}.sweep_digests`] = { budget: 500 };
+    }
+   };
+   for (const [path, rows, budget] of [["pairs", scores.pairs, 1_200], ["below_threshold", scores.below_threshold, 500]] as const) {
+    rows.forEach((pair, index) => signalCaps(`${path}.${index}`, pair.signals));
+    caps[path] = { budget, brief: (row) => { const pair = row as { a: string; b: string; score: number }; return { a: pair.a, b: pair.b, score: pair.score }; } };
+   }
+   for (let i = 0; i < resultBuyers.length; i++) {
+    for (const [field, budget] of [["forwarded", 750], ["sales", 500], ["launch_funding", 650], ["buy_events", 550], ["later_buys", 550]] as const) caps[`discovered_buyers.${i}.${field}`] = { budget, brief: (row) => { const item = row as { digest?: string; destination?: string }; return { digest: item.digest, ...(item.destination ? { destination: item.destination } : {}) }; } };
+   }
+   caps.discovered_buyers = {
      budget: 10_000,
      rank: (a, b) => {
       const priority = (row: typeof resultBuyers[number]) => (row.status === "core" ? 2 : 0) + (!row.coverage.complete ? 1 : 0);
       return priority(b as typeof resultBuyers[number]) - priority(a as typeof resultBuyers[number]);
      },
      brief: (row) => { const buyer = row as { address: string; status: string; cluster_id: number | null }; return { address: buyer.address, status: buyer.status, cluster_id: buyer.cluster_id }; },
-    },
    };
-   for (let i = 0; i < resultBuyers.length; i++) {
-    for (const [field, budget] of [["forwarded", 750], ["sales", 500], ["launch_funding", 650], ["buy_events", 550], ["later_buys", 550]] as const) caps[`discovered_buyers.${i}.${field}`] = { budget, brief: (row) => { const item = row as { digest?: string; destination?: string }; return { digest: item.digest, ...(item.destination ? { destination: item.destination } : {}) }; } };
-   }
    for (let i = 0; i < destinations.length; i++) {
     caps[`destinations.${i}.creator_payments`] = { budget: 800, brief: (row) => { const payment = row as { digest: string }; return { digest: payment.digest }; } };
     caps[`destinations.${i}.creator_prior_payments`] = { budget: 800, brief: (row) => { const payment = row as { digest: string }; return { digest: payment.digest }; } };
     caps[`destinations.${i}.sweeps`] = { budget: 1_000, brief: (row) => { const sweep = row as { digest?: string }; return { digest: sweep.digest }; } };
    }
    caps.destinations = { budget: 6_500, rank: (a, b) => { const left = a as { affiliation: string; deposit_verdict: string; sweeps: unknown[] }; const right = b as typeof left; const priority = (d: typeof left) => (d.affiliation === "creator_affiliated" ? 4 : 0) + (d.deposit_verdict === "likely" ? 3 : 0) + (d.sweeps.length ? 2 : 0); return priority(right) - priority(left); }, brief: (row) => { const d = row as { address: string; affiliation: string; deposit_verdict: string }; return { address: d.address, affiliation: d.affiliation, deposit_verdict: d.deposit_verdict }; } };
-   for (let i = 0; i < scores.clusters.length; i++) caps[`clusters.${i}.edges`] = { budget: 12_000, brief: (row) => { const edge = row as { a: string; b: string; score: number }; return { a: edge.a, b: edge.b, score: edge.score }; } };
+   // Every destination's compact status remains in destination_index;
+   // retain incomplete coverage first and page the complete detail by path.
+   caps["coverage.destinations"] = {
+    budget: 850,
+    rank: (a, b) => {
+     const priority = (row: typeof result.coverage.destinations[number]) =>
+      Number(!row.classification_complete || !row.creator_payment_complete || !row.creator_prior_complete);
+     return priority(b as typeof result.coverage.destinations[number])
+      - priority(a as typeof result.coverage.destinations[number]);
+    },
+    brief: (row) => {
+     const item = row as { address: string; creator_prior_complete: boolean; classification_complete: boolean };
+     return { address: item.address, creator_prior_complete: item.creator_prior_complete, classification_complete: item.classification_complete };
+    },
+   };
+   for (let i = 0; i < scores.clusters.length; i++) {
+    scores.clusters[i].edges.forEach((edge, index) => signalCaps(`clusters.${i}.edges.${index}`, edge.signals));
+    caps[`clusters.${i}.edges`] = { budget: 12_000, brief: (row) => { const edge = row as { a: string; b: string; score: number }; return { a: edge.a, b: edge.b, score: edge.score }; } };
+   }
    const childPaths = new Set(Object.keys(caps));
    const pagePaths = new Set([...childPaths, ...LAUNCH_PARENT_LISTS, "lists"]);
    const listCall = (path: string, at: number) => ({

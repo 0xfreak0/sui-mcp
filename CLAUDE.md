@@ -5216,10 +5216,10 @@ among them. Rules a change is likely to break:
   window's exclusive lower bound, or the boundary checkpoint is in neither.
 - **Rebuys are separate from initial buys.** SUI is fungible, so "funded by
   proceeds" is unprovable. `initial_buys` are launch-window curve buys before
-  the buyer's first sale. Every other buy of the coin in the sell window, a
-  curve buy after the window or a pool buy, is in `later_buys` with
-  `after_first_sale`, and counts in `gross_buys` only. Totals give both, for
-  `discovered` and `core` buyers apart, summed in raw units.
+  the buyer's first sale. Buys of the same coin after its first sale go in
+  `buys_after_first_sale`; a buy after the launch window but before the
+  buyer's first sale goes in `later_buys`. Both count in `gross_buys` only,
+  for discovered and core buyers separately, summed in raw units.
 - **Continuation calls must advance a real bound.** Buyer history, early
   balance and destination reads retain their original arguments and network;
   `coverage.next_call` raises `max_pages` only when a cursor or explicit page

@@ -363,6 +363,16 @@ export function registerLaunchTools(server: McpServer) {
     const opening = earlier?.complete ? sumRaw(earlier.rows.map(tx => amountOf(tx, l.address, SUI))) : null;
     const closing = reconciled && opening !== null ? opening + account.suiObservedDelta : null;
     const windowRead = l.complete && account.complete;
+    const laterBuys: Record<"later_buys" | "buys_after_first_sale",
+     Array<{ digest: string; timestamp: string; venue: string; sui: number; tokens: number }>> = {
+     later_buys: [], buys_after_first_sale: [],
+    };
+    for (const buy of a.later) {
+     laterBuys[buy.after_first_sale ? "buys_after_first_sale" : "later_buys"].push({
+      digest: buy.digest, timestamp: buy.timestamp, venue: buy.venue,
+      sui: decimalAmount(buy.sui, 9), tokens: decimalAmount(buy.tokens, scale),
+     });
+    }
     return {
      raw: a, row: {
      address: l.address, status: status.get(l.address)?.status ?? "unclustered",
@@ -379,7 +389,7 @@ export function registerLaunchTools(server: McpServer) {
       gross_buys: { sui: decimalAmount(a.grossSui, 9), tokens: decimalAmount(a.grossTokens, scale) },
       initial_buy_sui_debit_incl_gas: decimalAmount(a.debit, 9),
       buy_events: l.buys.map(b => ({ digest: b.digest, timestamp: b.timestamp, sui_in: decimalAmount(b.sui_in, 9), tokens_out: decimalAmount(b.tokens_out, scale), referral: b.referral, sui_outside_trade: b.sui_outside_trade === null ? null : decimalAmount(b.sui_outside_trade, 9) })),
-      later_buys: a.later.map(b => ({ digest: b.digest, timestamp: b.timestamp, venue: b.venue, sui: decimalAmount(b.sui, 9), tokens: decimalAmount(b.tokens, scale), after_first_sale: b.after_first_sale })),
+      ...laterBuys,
       curve_proceeds_gross: decimalAmount(a.curveProceeds, 9),
       pool_proceeds_gross: { venue: pool?.venue ?? null, sui: decimalAmount(a.poolProceeds, 9) },
       ...(pool?.venue === "Cetus" ? { cetus_proceeds_gross: decimalAmount(a.poolProceeds, 9) } : {}),
@@ -592,7 +602,7 @@ export function registerLaunchTools(server: McpServer) {
     caps[path] = { budget, brief: (row) => { const pair = row as { a: string; b: string; score: number }; return { a: pair.a, b: pair.b, score: pair.score }; } };
    }
    for (let i = 0; i < resultBuyers.length; i++) {
-    for (const [field, budget] of [["forwarded", 750], ["sales", 500], ["launch_funding", 650], ["buy_events", 550], ["later_buys", 550]] as const) caps[`discovered_buyers.${i}.${field}`] = { budget, brief: (row) => { const item = row as { digest?: string; destination?: string }; return { digest: item.digest, ...(item.destination ? { destination: item.destination } : {}) }; } };
+    for (const [field, budget] of [["forwarded", 750], ["sales", 500], ["launch_funding", 650], ["buy_events", 550], ["later_buys", 550], ["buys_after_first_sale", 550]] as const) caps[`discovered_buyers.${i}.${field}`] = { budget, brief: (row) => { const item = row as { digest?: string; destination?: string }; return { digest: item.digest, ...(item.destination ? { destination: item.destination } : {}) }; } };
    }
    caps.discovered_buyers = {
      budget: 10_000,

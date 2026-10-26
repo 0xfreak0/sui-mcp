@@ -49,6 +49,9 @@ const PAIR_SELECTION =
 const MORE_PAIR_QUERY = `query ($payer: SuiAddress!, $payee: SuiAddress!, $after: String) {
   transactions(filter: { sentAddress: $payer, affectedAddress: $payee }, first: 50, after: $after) { ${PAIR_SELECTION} }
 }`;
+const MORE_PAIR_WINDOW_QUERY = `query ($payer: SuiAddress!, $payee: SuiAddress!, $after: String, $afterCp: UInt53!, $beforeCp: UInt53!) {
+  transactions(filter: { sentAddress: $payer, affectedAddress: $payee, afterCheckpoint: $afterCp, beforeCheckpoint: $beforeCp }, first: 50, after: $after) { ${PAIR_SELECTION} }
+}`;
 
 interface PairNode {
   digest: string;
@@ -78,7 +81,14 @@ export interface SubjectPaymentScan {
   incomplete_pairs: Array<{ payer: string; payee: string }>;
   /** Inputs left out because they are not valid addresses. */
   invalid: string[];
+ /** An unfinished pair stopped at the page budget with an advancing cursor. */
+ can_advance: boolean;
   requests: number;
+}
+
+/** A null/stalled cursor or failed read cannot be improved by raising the page budget. */
+export function subjectPaymentsCanAdvance(more: boolean, cursor: string | null, pages: number, maxPages: number, readFailed: boolean): boolean {
+ return more && cursor !== null && pages >= maxPages && !readFailed;
 }
 
 /**
@@ -112,7 +122,7 @@ export function paymentInTx(
  * Invalid addresses are left out of the batched documents and reported: one
  * unparseable address makes the service return no data for the whole document.
  */
-export async function findSubjectPayments(subjects: string[]): Promise<SubjectPaymentScan> {
+export async function findSubjectPayments(subjects: string[], opts: { window?: { afterCheckpoint: number; beforeCheckpoint: number }; maxPairPages?: number } = {}): Promise<SubjectPaymentScan> {
   const invalid: string[] = [];
   const valid: string[] = [];
   for (const s of subjects) {
@@ -127,6 +137,7 @@ export async function findSubjectPayments(subjects: string[]): Promise<SubjectPa
   const found: Array<{ payer: string; payee: string; node: PairNode }> = [];
   const incomplete: Array<{ payer: string; payee: string }> = [];
   let requests = 0;
+ let canAdvance = false;
 
   for (let i = 0; i < pairs.length; i += PAIRS_PER_REQUEST) {
     const batch = pairs.slice(i, i + PAIRS_PER_REQUEST);
@@ -135,7 +146,7 @@ export async function findSubjectPayments(subjects: string[]): Promise<SubjectPa
       batch
         .map(
           (p, j) =>
-            `p${j}:transactions(filter:{sentAddress:"${p.payer}",affectedAddress:"${p.payee}"},first:${FIRST_PAGE}){${PAIR_SELECTION}}`,
+      `p${j}:transactions(filter:{sentAddress:"${p.payer}",affectedAddress:"${p.payee}"${opts.window ? `,afterCheckpoint:${opts.window.afterCheckpoint},beforeCheckpoint:${opts.window.beforeCheckpoint}` : ""}},first:${FIRST_PAGE}){${PAIR_SELECTION}}`,
         )
         .join("") +
       "}";
@@ -152,20 +163,24 @@ export async function findSubjectPayments(subjects: string[]): Promise<SubjectPa
       let more = conn.pageInfo?.hasNextPage === true;
       let cursor = conn.pageInfo?.endCursor ?? null;
       let pages = 0;
-      while (more && cursor && pages < MAX_PAIR_PAGES) {
+   let readFailed = false;
+   while (more && cursor && pages < (opts.maxPairPages ?? MAX_PAIR_PAGES)) {
         requests++;
         pages++;
-        const next = await gqlQuery<{ transactions: PairConnection }>(MORE_PAIR_QUERY, {
+    const next = await gqlQuery<{ transactions: PairConnection }>(opts.window ? MORE_PAIR_WINDOW_QUERY : MORE_PAIR_QUERY, {
           payer: p.payer,
           payee: p.payee,
           after: cursor,
+     ...(opts.window ? { afterCp: opts.window.afterCheckpoint, beforeCp: opts.window.beforeCheckpoint } : {}),
         }).catch(() => null);
-        if (!next) break;
+    if (!next) { readFailed = true; break; }
         for (const node of next.transactions.nodes) found.push({ ...p, node });
         more = next.transactions.pageInfo?.hasNextPage === true;
-        cursor = next.transactions.pageInfo?.endCursor ?? null;
+    const nextCursor = next.transactions.pageInfo?.endCursor ?? null;
+    cursor = nextCursor === cursor ? null : nextCursor;
       }
       if (more) incomplete.push(p);
+   if (subjectPaymentsCanAdvance(more, cursor, pages, opts.maxPairPages ?? MAX_PAIR_PAGES, readFailed)) canAdvance = true;
     }
   }
 
@@ -185,7 +200,10 @@ export async function findSubjectPayments(subjects: string[]): Promise<SubjectPa
         .map((c) => ({ address: c.owner!.address, amount: c.amount!, coinType: c.coinType!.repr })),
     );
     if (payment) {
-      if (completed[k].balanceChangesTruncated) payment.balance_changes_incomplete = true;
+   if (completed[k].balanceChangesTruncated) {
+    payment.balance_changes_incomplete = true;
+    incomplete.push({ payer: f.payer, payee: f.payee });
+   }
       payments.push(payment);
     } else if (completed[k].balanceChangesTruncated) {
       // The payee's credit may sit in the rows that could not be read.
@@ -194,7 +212,7 @@ export async function findSubjectPayments(subjects: string[]): Promise<SubjectPa
   }
   payments.sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""));
 
-  return { payments, pairs_checked: pairs.length, incomplete_pairs: incomplete, invalid, requests };
+ return { payments, pairs_checked: pairs.length, incomplete_pairs: incomplete, invalid, requests, can_advance: canAdvance };
 }
 
 /** Newest pages read per direction and walked address. */

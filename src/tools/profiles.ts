@@ -80,6 +80,7 @@ export const PROFILES = {
     // first question asked of any address that turns up in a case.
     "classify_deposit_address",
     "screen_address",
+  "analyze_launch",
     "build_wallet_edges",
     // Multisig work is investigation work: whether a treasury is really run by
     // seven people or two, and whether known wallets share a committee that

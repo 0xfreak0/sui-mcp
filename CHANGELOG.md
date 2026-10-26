@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **`analyze_launch` discovers and accounts for SuiPump buyers.** Given the exact coin type, it follows buy events across package versions and the graduated pool, including pool-first buyers, then separates initial buys from later curve and pool rebuys. Every discovered signer has a status, event-ledger reconciliation and coverage; a session signer without a token credit is flagged rather than scored. Pairwise coordination includes the creator, launch-window funding, referral leads and direct payments, with historical token-price dust checks. A shared likely deposit reaches the pair threshold only when its window and balance reconstruction are complete and at most 50 distinct addresses paid it; any account-holder claim remains unproved. Proceeds, venue, gas-inclusive debits, destination sweeps, evidence tiers and bounded continuations are reported, and full-view catalogs page both parent records and evidence lists.
+- Launch evidence deduplicates creator payments across subject and destination reads, marks incomplete discovery, buyer histories and unread pool swaps as partial accounting, and distinguishes resumable payment-page limits from failed reads.
+
 ## 1.28.0 (2026-10-25)
 
 Every capped result can be continued: a tool that stops at a page, scan, read or time limit says so and returns the call that resumes it. `query_events` reads one object's events, `get_transaction_history` takes a time window, and `list_objects_by_type` scans objects of a type across owners. Flow graphs follow valued object handovers, `find_pools` and `analyze_token` report pool liquidity custody, and clustering reports many-to-one consolidation. Swap labels read the pools' own events, launchpad trades name their coins, and Hashi is named as a Bitcoin bridge. Chain and provider text in tool results is marked as untrusted data.

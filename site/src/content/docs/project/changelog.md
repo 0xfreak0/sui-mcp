@@ -5,9 +5,15 @@ description: Every sui-mcp release, newest first, with a summary and links to it
 sidebar:
   order: 3
 ---
-The current release is 1.28.0. Each release below links to its full entry in [CHANGELOG.md](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md), which lists what was added, changed and fixed, and to its GitHub release.
+The current release is 1.29.0. Each release below links to its full entry in [CHANGELOG.md](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md), which lists what was added, changed and fixed, and to its GitHub release.
 
 Published versions are on npm as [`sui-analytics-mcp`](https://www.npmjs.com/package/sui-analytics-mcp). To check that an installed tarball was built by the project's CI, see [Verifying a release](/concepts/security/#verifying-a-release).
+
+## 1.29.0 (2026-10-27)
+
+`analyze_launch` analyses a SuiPump launch from its coin type: every early buyer, their buys, sales and forwards over the sell window, where the proceeds went, and which buyers coordinate with each other or with the creator, with each member's route to the creator. It reads the creator's history with each destination before the launch, and first funders. Shipped data is refreshed.
+
+[Full entry](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md#1290-2026-10-27) · [GitHub release](https://github.com/0xfreak0/sui-mcp/releases/tag/v1.29.0)
 
 ## 1.28.0 (2026-10-25)
 

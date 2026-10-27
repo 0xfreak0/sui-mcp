@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.29.0 (2026-10-27)
+
+`analyze_launch` analyses a SuiPump launch from its coin type: every early buyer, their buys, sales and forwards over the sell window, where the proceeds went, and which buyers coordinate with each other or with the creator, with each member's route to the creator. It reads the creator's history with each destination before the launch, and first funders. Shipped data is refreshed.
 
 ### Added
 - **`analyze_launch` discovers and accounts for SuiPump buyers.** Given the exact coin type, it follows buy events across package versions and the graduated pool, including pool-first buyers, then separates initial buys from later curve and pool rebuys. Every discovered signer has a status, event-ledger reconciliation and coverage; a session signer without a token credit is flagged rather than scored. Pairwise coordination includes the creator, launch-window funding, referral leads and direct payments, with historical token-price dust checks. A shared likely deposit reaches the pair threshold only when its window and balance reconstruction are complete and at most 50 distinct addresses paid it; any account-holder claim remains unproved. Proceeds, venue, gas-inclusive debits, destination sweeps, evidence tiers and bounded continuations are reported, and full-view catalogs page both parent records and evidence lists.

@@ -13,6 +13,9 @@
 - Buys after the first sale are listed as `buys_after_first_sale`; postwindow buys before the first sale remain under `later_buys`. Neither is counted as an initial buy, and the two lists never duplicate a trade.
 - A tentative first funder scores no origin edge while an earlier inflow is unread; destinations state why `creator_first_funded` is unknown. Funding bursts require three independent participants after a first-funding transaction is excluded.
 
+### Data
+- **Data refresh.** `disclosed-labels.json` labels +30 −19 ~99, sources ~1 (OKX's proof-of-reserves list); `validator-labels.json` labels −2, sources ~1; `sanctions.json` by_currency ~1, total_digital_currency_addresses updated; `guardians-blocklist.json` coins +13, counts ~3, object_type_packages +1; `coins.json` coins +2.
+
 ## 1.28.0 (2026-10-25)
 
 Every capped result can be continued: a tool that stops at a page, scan, read or time limit says so and returns the call that resumes it. `query_events` reads one object's events, `get_transaction_history` takes a time window, and `list_objects_by_type` scans objects of a type across owners. Flow graphs follow valued object handovers, `find_pools` and `analyze_token` report pool liquidity custody, and clustering reports many-to-one consolidation. Swap labels read the pools' own events, launchpad trades name their coins, and Hashi is named as a Bitcoin bridge. Chain and provider text in tool results is marked as untrusted data.

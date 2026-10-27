@@ -555,6 +555,12 @@
       "decimals": 6
     },
     {
+      "coin_type": "0x577a8addf60a34d4c705914ad066a3b28c3fc40d365ed0d9dfc408f29b4725d3::blast::BLAST",
+      "symbol": "BLAST",
+      "name": "BLAST",
+      "decimals": 9
+    },
+    {
       "coin_type": "0x57e93adcecd97fc8b30fc6f124be185f292b648e324773d8fbe6650e8274790f::aida::AIDA",
       "symbol": "AIDA",
       "name": "Aida",
@@ -1308,6 +1314,12 @@
       "coin_type": "0xc1a35b6a9771e6eb69e3b36e921a3a373e6d33e6f863dab6949ed3c2d1228f73::neonet::NEONET",
       "symbol": "NEONET",
       "name": "NeoNet AI by SuiAI",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xc355eec877678040e55e58f3ac985e8a1b42205d5e9025e9711d1dfb3540639e::suipump::SUIPUMP",
+      "symbol": "JEAN",
+      "name": "Jean sui",
       "decimals": 6
     },
     {

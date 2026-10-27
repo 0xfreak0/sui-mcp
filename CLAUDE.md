@@ -5098,8 +5098,9 @@ among them. Rules a change is likely to break:
   `coverage`.
 - **The buyer list is not the core cluster.** Rank every discovered signer by
   initial tokens, report its percentage of the token's total supply and an
-  `initial_buy_rank`, and keep exactly one core, micro-cluster or unclustered
-  status on each row. Ranking never decides clustering.
+  `initial_token_rank`, and report `initial_time_rank` by first buy time as a
+  separate ordering. Keep exactly one core, micro-cluster or unclustered
+  status on each row. Neither ranking decides clustering.
 - **Pairwise scoring, not component sums.** Score each pair of nodes, keep the
   pairs at or above the threshold, and take connected components over those
   pairs. A component sum grows with component size and means nothing. The
@@ -5142,13 +5143,22 @@ among them. Rules a change is likely to break:
   either state or quote is unavailable, the dust verdict stays `unpriced`
   and scores zero rather than quietly treating the payment as dust or
   using today's price. SUI payments retain their raw-unit floor.
-- **The creator-affiliation window is not the sell window.** A direct
-  creator → destination payment is looked up over the destination's history
-  (bounded, with a continuation) and reported with its date. It links the
-  destination only when its sum per coin clears the direct-payment floor, never
-  when it is a SuiPump referral fee the curve paid, and never when the
-  destination is the creator. The creator is also a subject of the
-  direct-payment scan, so a payment between it and a buyer is `direct`.
+- **The creator-affiliation window is not the sell window.** Inspect every
+  buyer destination that received a payment above the dust floor, not only
+  destinations shared by buyers or above a large-value threshold: a private
+  wallet used by one buyer can have been first funded by the creator months
+  earlier. A direct creator → destination payment is looked up over the
+  destination's history (bounded, with a continuation) and reported with its
+  date. The same bounded first-funder read reports
+  `creator_first_funded: true` when it identifies the creator. A narrow,
+  popularity-checked, non-deposit destination whose creator payment sum per
+  coin clears the direct-payment floor is `creator_affiliated` and gives its
+  sole buyer a six-point `creator_linked_destination` edge. A `likely` deposit
+  gives only the three-point `creator_paid_deposit` lead, even when the
+  creator first funded it: an account holder is not established by payment.
+  A SuiPump referral fee and a payment to the creator never create a
+  destination link. The creator is also a subject of the direct-payment
+  scan, so a payment between it and a buyer is `direct`.
 - **One creator payment is one scoring event.** A buyer can also be a
   shared destination, so the creator→buyer subject-payment scan and the
   creator→destination history walk can return the same transaction. Deduplicate
@@ -5170,9 +5180,10 @@ among them. Rules a change is likely to break:
 - **Event amounts always count.** Event `sui_in` is the buy amount whatever the
   transaction's debit: snipers pay gas above 0.01 SUI, trading bots take a fee
   leg in the buy PTB, and some buys are paid with SUI swapped in from another
-  coin. The difference is `sui_outside_trade`, reported and never subtracted.
   Withholding such buys dropped 7 of 12 buyers and two thirds of the initial
-  SUI on a random launch.
+  SUI on a random launch. `initial_buy_sui_debit_incl_gas` is only the net
+  transaction debit for initial buys; `initial_buys.sui` counts the event
+  `sui_in` and remains the trade amount.
 - **A buy event names its signer, not necessarily the token's owner.** A
   session buy can credit a session object rather than the signer. If the
   signer has no positive token change in the buy transaction, its buyer
@@ -5205,10 +5216,10 @@ among them. Rules a change is likely to break:
   window's exclusive lower bound, or the boundary checkpoint is in neither.
 - **Rebuys are separate from initial buys.** SUI is fungible, so "funded by
   proceeds" is unprovable. `initial_buys` are launch-window curve buys before
-  the buyer's first sale. Every other buy of the coin in the sell window, a
-  curve buy after the window or a pool buy, is in `later_buys` with
-  `after_first_sale`, and counts in `gross_buys` only. Totals give both, for
-  `discovered` and `core` buyers apart, summed in raw units.
+  the buyer's first sale. Buys of the same coin after its first sale go in
+  `buys_after_first_sale`; a buy after the launch window but before the
+  buyer's first sale goes in `later_buys`. Both count in `gross_buys` only,
+  for discovered and core buyers separately, summed in raw units.
 - **Continuation calls must advance a real bound.** Buyer history, early
   balance and destination reads retain their original arguments and network;
   `coverage.next_call` raises `max_pages` only when a cursor or explicit page
@@ -5218,17 +5229,132 @@ among them. Rules a change is likely to break:
   (`discovered_buyers`, `clusters`, `destinations`), each child evidence list
   and the list-descriptor catalog itself; no parent status or coverage may
   disappear behind a nested-list cap. The default view uses `capPayload`.
+  `coverage.destination_scan` counts all qualifying payment destinations
+  against the bounded candidate read; the compact `destination_index` keeps
+  every destination and its affiliation when details are capped.
+  `coverage.destinations` pages independently via full-view `list_path`.
   Subject-pair follow-ups and creator-recipient payment reads are both part
   of that budget: a pair stopped with `hasNextPage` and an advancing cursor,
   or a creator read stopped at its page cap, yields `coverage.next_call`.
   A failed request or missing/stalled cursor remains incomplete with no
   retry-by-budget claim.
+- **Historical creator payment counts have different units.** A signal's
+  `prior_payment_count` counts qualifying positive payments per coin; a
+  transaction that paid two coins counts twice. A destination's
+  `creator_prior_transactions_read` counts distinct transaction rows queried,
+  including those that did not qualify. Never call the first number
+  transactions read.
+- **A long edge needs nested evidence paging.** A busy pair can carry more
+  than a hundred distinct payment digests. `capPayload` keeps one parent edge
+  even when it exceeds that edge list's budget. Cap the digests in each
+  signal and payment direction before `clusters.N.edges`, `pairs` or
+  `below_threshold`, and register those indexed child paths for full-view
+  paging. The edge's score, amounts and both parties stay visible; every
+  omitted digest is retrievable.
 - **Launchpad scope is one adapter table.** SuiPump is implemented through an
   adapter table keyed by the curated launchpad lineage (event types, coin field,
   buy/sell, referral field). An unsupported coin returns an error naming the
   supported launchpads.
 - **Weights are in-sample.** Every weight and threshold is tuned on one case;
   negative controls are drawn separately and never tuned after being looked at.
+- **Creator-relative membership paths distinguish direct from indirect
+  affiliation.** `clusters[].member_links` and each buyer's
+  `creator_relation` carry the shortest qualifying-edge route to the
+  creator; each path edge names its pair and `edge_types`, while
+  `clusters[].edges` holds the transaction evidence without repeating it
+  at every hop. `direct` needs a qualifying creator→buyer payment or a
+  first-ever funding whose funder is the creator. `paid_creator` means the
+  qualified payment or first funding went buyer→creator, and must never read
+  as a creator-originating transfer. The pair's `direct` signal names each
+  payer and payee; opposite directions share one three-point pair weight.
+  `via_creator_linked_destination` needs that buyer's own qualifying edge
+  through an eligible private destination the creator paid. `buyer_link_only`
+  is merely connected through other buyers. A path through a creator-linked
+  buyer does not transfer that buyer's affiliation to everyone beyond them.
+  `totals.core_creator_linked`, `totals.core_paid_creator` and
+  `totals.core_buyer_link_only` partition buyer amounts by direction and
+  relation without asserting owner identity or changing cluster membership.
+- **A shared first funder scores only when proven narrow.** Two buyers
+  sharing the same direct first funder get `shared_first_funder` (weight 3)
+  only when the funder's status is `narrow` and its popularity scan is
+  complete. A hub, unmeasured or provisional funder is rejected and reported
+  as a `hub_mediated` observation. The shared funder must be the exact same
+  address for both buyers; a funder that paid one buyer directly and another
+  through an intermediary does not qualify. This signal measures the
+  buyer's entire pre-launch funding origin, not its launch top-up, so it is
+  independent of the launch-window funding-burst and shared-funding-tx
+  signals.
+- **A subject first-funding another is directed, however old the funding
+  transaction.** Its first-funder read already establishes the recipient's
+  earliest qualifying inflow; when that funder is the creator or another
+  discovered buyer, `first_funding` scores three directly from funder to
+  recipient even if the sender is popular. This is the seed exception in
+  `build_wallet_edges`' `funding_edge`, not an endorsement of a shared
+  service. A funding digest scored this way cannot earn another three from
+  direct payment or launch top-up for the same pair. A third-party first
+  funder remains subject to the complete narrow-popularity check.
+- **First-funder certainty is separate from popularity.** `firstFunderOf`
+  may return a candidate funder despite `originUnread` or unavailable
+  prices: an earlier coin could have funded the wallet. Such a read has
+  `lookupComplete: false` and scores neither a directed `first_funding`
+  edge nor `shared_first_funder`, even if the named candidate is another
+  subject. A destination's `creator_first_funded` stays null with
+  `creator_first_funding_unavailable` naming the missing read. A complete
+  lookup with an unmeasured or popular funder still establishes direct
+  first funding, but not narrow shared ancestry.
+- **A burst must survive removal of first-funding evidence.** When a
+  subject's first-funding transaction is excluded from a pair, recompute
+  the burst within the ten-minute window: both pair members and a third
+  buyer must still have independent top-ups. One surviving payment from
+  the other member does not justify two timing points.
+- **A strong deposit the creator paid pre-launch gets its own signal, not a
+  creator-linked-destination edge.** A likely deposit address with a complete
+  classification, at most 50 distinct depositors and a qualifying creator
+  payment dated strictly before the creation transaction's checkpoint gives
+  `creator_paid_deposit` (weight 3). This signal never creates a
+  `creator_linked_destination` edge through that same deposit (weight 6
+  belongs to ordinary destinations only), and never creates a funding edge.
+  Anyone can pay a deposit address, so the signal carries a static caveat
+  that payment does not name the account holder. A normal narrow destination
+  the creator paid before creation or during the bounded launch window gives
+  `creator_linked_destination` between buyer and creator. A shared deposit the
+  creator paid only after the launch gives neither creator signal and stays a
+  buyer-only `shared_deposit_address` (weight 6).
+- **Creator first funding and prior payments are reported apart from
+  launch-window payments.** `creator.first_funding_ever`,
+  `creator.first_funder_status`, and the same fields on buyers record
+  `firstFunderOf` separately from launch top-ups. Bound these first-funder
+  and popularity reads to an exclusive checkpoint after the sell window,
+  with `afterCheckpoint: 0`, and bypass unbounded first-funder cache entries:
+  a newer funding or payout cannot change a closed launch's answer.
+  Each destination carries dated `creator_prior_payments` strictly before
+  its creation checkpoint and `creator_payments` during the launch window;
+  the first list has its own `creator_prior_complete`, advancing-cursor flag
+  and read count. The prior read considers EVERY coin credited to the
+  destination, but only when the creator signed and its debit in that exact
+  coin covers the credit. `creator_prior_totals` groups raw amounts and
+  counts by complete coin type; never add SUI to USDC or apply the launch
+  coin's supply-based floor to another type. Display each amount with
+  `decimals_source` and preserve `amount_raw` when its scale is assumed.
+  Both creator and buyer first funders carry measured statuses (`narrow`,
+  `hub`, `unmeasured`, `provisional`, `no_qualifying_inflow`). A budget stop
+  never means no funder or no creator payment. Repeated historical payments
+  are grouped per coin before scoring; at most their earliest four and
+  latest four digests appear on an edge, with `prior_payment_count` and every
+  dated record in `destinations[].creator_prior_payments`. A creator payment
+  to a likely deposit remains weak evidence even when large. In the default
+  view `buyer_index` and `destination_index` name every candidate and
+  status when detail lists are capped. Apply each
+  `discovered_buyers.N.*` cap before `discovered_buyers`, since `capPayload`
+  applies caps in insertion order and parent ranking changes list indices.
+  Follow `omitted.next_call` or `list_path` to read every underlying row.
+- **Historical event and accounting limits fence the result.** A buyer whose
+  opening balance could not be read carries `opening_balance_complete: false`
+  and the reconciliation stops at `window_reconciled`; a buyer whose pool
+  swap events were not all decoded has incomplete pool coverage and its
+  accounting is `partial`. The full result fits within 45k characters inline;
+  past that limit the catalog lists each parent record path and its
+  `list_path` argument instead of inlining.
 
 ### Reading Move bytecode
 

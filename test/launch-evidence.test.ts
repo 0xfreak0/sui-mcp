@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buyerReceivedLaunchCoin, creatorPaid, launchAccountingComplete, launchTotalsPartial, launchTopup, SUI_LAUNCH_TYPE, uniqueCreatorPayments } from "../src/utils/launch-evidence.js";
+import { buyerReceivedLaunchCoin, creatorPaid, creatorPaidCoins, creatorPaymentTotals, firstFundingUnavailableReason, launchAccountingComplete, launchTotalsPartial, launchTopup, SUI_LAUNCH_TYPE, uniqueCreatorPayments } from "../src/utils/launch-evidence.js";
 import { scoreLaunch, type LaunchBuyer } from "../src/utils/launch-scoring.js";
 
 const creator = "0xc0";
@@ -9,6 +9,16 @@ const destination = "0xd1";
 const change = (address: string, amount: bigint, coin_type = SUI_LAUNCH_TYPE) => ({ address, amount, coin_type });
 
 describe("launch payment evidence", () => {
+  it("reports an unavailable first-funding lookup even when a later SUI funder was tentatively named", () => {
+    const picked = { funder: creator, digest: "later-sui-inflow", pricesUnavailable: false, originUnread: [] as string[] };
+    expect(firstFundingUnavailableReason(picked)).toBeNull();
+    expect(firstFundingUnavailableReason({ ...picked, originUnread: ["0xc01::coin::TEST"] }))
+      .toContain("0xc01::coin::TEST");
+    expect(firstFundingUnavailableReason({ ...picked, pricesUnavailable: true }))
+      .toContain("Historical coin prices");
+    expect(firstFundingUnavailableReason(null)).toContain("lookup failed");
+  });
+
   it("never attributes a gas sponsor debit or rebate as launch funding", () => {
     expect(launchTopup({
       sender: creator, sponsor, gas: 20n, changes: [
@@ -49,6 +59,29 @@ describe("launch payment evidence", () => {
         change(creator, -15n), change(destination, 10n)
       ]
     }, creator, destination, SUI_LAUNCH_TYPE)).toBe(10n);
+  });
+  it("reads and totals every credited coin independently without inventing creator payments", () => {
+    const usdc = "0xc01::usdc::USDC";
+    const testCoin = "0xc02::test::TEST";
+    const tx = {
+      sender: creator, sponsor, gas: 12n, changes: [
+        change(creator, -3_000_000_012n), change(destination, 3_000_000_000n),
+        change(creator, -7_000_000n, usdc), change(destination, 7_000_000n, usdc),
+        change(destination, 5n, testCoin), change(sponsor, 12n),
+      ]
+    };
+    expect([...creatorPaidCoins(tx, creator, destination)]).toEqual([
+      [SUI_LAUNCH_TYPE, 3_000_000_000n], [usdc, 7_000_000n]
+    ]);
+    expect([...creatorPaidCoins({ ...tx, sender: buyer }, creator, destination)]).toEqual([]);
+    expect(creatorPaymentTotals([
+      { to: destination, asset: "sui", amount: 3_000_000_000n, digest: "p1" },
+      { to: destination, asset: usdc, amount: 7_000_000n, digest: "p1" },
+      { to: destination, asset: usdc, amount: 8_000_000n, digest: "p2" },
+    ])).toEqual([
+      { asset: "sui", amount: 3_000_000_000n, count: 1 },
+      { asset: usdc, amount: 15_000_000n, count: 2 }
+    ]);
   });
 
   it("flags session-signing keys that did not receive the event's tokens", () => {

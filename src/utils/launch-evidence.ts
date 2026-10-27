@@ -1,6 +1,15 @@
 import { isSponsorGasChange } from "./sponsor-gas.js";
 import type { LaunchChange } from "./launch-accounting.js";
 import type { LaunchPayment } from "./launch-scoring.js";
+import type { FirstFunderLookup } from "./edge-probe.js";
+
+/** A tentative pick cannot establish a first funder while earlier inflows remain unread. */
+export function firstFundingUnavailableReason(read: FirstFunderLookup | null): string | null {
+ if (!read) return "First-funder lookup failed or exhausted its read budget.";
+ if (read.originUnread.length) return `An earlier unpriced coin could not be checked for funding: ${read.originUnread.join(", ")}.`;
+ if (read.pricesUnavailable) return "Historical coin prices were unavailable during first-funder selection.";
+ return null;
+}
 
 export const SUI_LAUNCH_TYPE = "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
 
@@ -40,6 +49,26 @@ export function creatorPaid(tx: PaymentTransaction, creator: string, destination
   if (gas === null) return 0n;
   const spent = -balance(tx, creator, coin) - gas;
   return spent >= received ? received : 0n;
+}
+
+/** Read every coin the creator demonstrably paid the destination, without summing unlike units. */
+export function creatorPaidCoins(tx: PaymentTransaction, creator: string, destination: string): Map<string, bigint> {
+  const paid = new Map<string, bigint>();
+  for (const change of tx.changes) {
+    if (change.address !== destination || change.amount <= 0n || paid.has(change.coin_type)) continue;
+    const amount = creatorPaid(tx, creator, destination, change.coin_type);
+    if (amount > 0n) paid.set(change.coin_type, amount);
+  }
+  return paid;
+}
+
+export function creatorPaymentTotals(payments: readonly LaunchPayment[]): Array<{ asset: string; amount: bigint; count: number }> {
+  const totals = new Map<string, { amount: bigint; count: number }>();
+  for (const payment of payments) {
+    const previous = totals.get(payment.asset) ?? { amount: 0n, count: 0 };
+    totals.set(payment.asset, { amount: previous.amount + payment.amount, count: previous.count + 1 });
+  }
+  return [...totals].map(([asset, total]) => ({ asset, ...total }));
 }
 
 /** The event's buyer is a signing key; a session buy can leave its tokens in an object. */

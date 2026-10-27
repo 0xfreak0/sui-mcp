@@ -21,7 +21,7 @@ const TOKEN_QUERY = `query($coin:String!){coinMetadata(coinType:$coin){symbol de
 const TX_QUERY = `query($address:SuiAddress!,$afterCp:UInt53!,$beforeCp:UInt53!,$after:String){transactions(filter:{affectedAddress:$address,afterCheckpoint:$afterCp,beforeCheckpoint:$beforeCp},first:50,after:$after){nodes{digest sender{address} gasInput{gasSponsor{address}} effects{status timestamp checkpoint{sequenceNumber} gasEffects{gasSummary{computationCost storageCost storageRebate}} ${BALANCE_CHANGES_SELECTION} ${EVENTS_SELECTION}}}pageInfo{hasNextPage endCursor}}}`;
 const POOL_QUERY = `query($id:SuiAddress!){object(address:$id){asMoveObject{contents{type{repr}}}}}`;
 const POOL_TRADES_QUERY = `query($id:SuiAddress!,$afterCp:UInt53!,$beforeCp:UInt53!,$after:String){transactions(filter:{affectedObject:$id,afterCheckpoint:$afterCp,beforeCheckpoint:$beforeCp},first:50,after:$after){nodes{digest sender{address} effects{status timestamp ${EVENTS_SELECTION}}}pageInfo{hasNextPage endCursor}}}`;
-const PAYERS_QUERY = `query($address:SuiAddress!,$before:String){transactions(filter:{affectedAddress:$address},last:50,before:$before){nodes{digest sender{address} gasInput{gasSponsor{address}} effects{${BALANCE_CHANGES_SELECTION}}}pageInfo{hasPreviousPage startCursor}}}`;
+const PAYERS_QUERY = `query($address:SuiAddress!,$afterCp:UInt53!,$beforeCp:UInt53!,$before:String){transactions(filter:{affectedAddress:$address,afterCheckpoint:$afterCp,beforeCheckpoint:$beforeCp},last:50,before:$before){nodes{digest sender{address} gasInput{gasSponsor{address}} effects{${BALANCE_CHANGES_SELECTION}}}pageInfo{hasPreviousPage startCursor}}}`;
 /** Pages of an address's newest transactions read for its distinct payers. */
 const PAYER_PAGES = 20;
 
@@ -233,12 +233,12 @@ export function payersIn(rows: Array<{ sender: string | null; sponsor: string | 
  * A scan that ran out of pages or budget, or failed, is unmeasured: a
  * destination never reads narrow on an unread inflow side.
  */
-export async function probeLaunchPayers(target: string, coinType: string, limit: number, take: () => boolean): Promise<{ payers: number; verdict: "narrow" | "popular" | "unmeasured" }> {
+export async function probeLaunchPayers(target: string, coinType: string, limit: number, take: () => boolean, beforeCheckpoint: number): Promise<{ payers: number; verdict: "narrow" | "popular" | "unmeasured" }> {
   const payers = new Set<string>();
   let before: string | undefined;
   for (let page = 0; page < PAYER_PAGES; page++) {
     if (!take()) return { payers: payers.size, verdict: "unmeasured" };
-    const read = await gqlQuery<{ transactions: { nodes: TxNode[]; pageInfo: { hasPreviousPage: boolean; startCursor: string | null } } }>(PAYERS_QUERY, { address: target, before }).catch(() => null);
+    const read = await gqlQuery<{ transactions: { nodes: TxNode[]; pageInfo: { hasPreviousPage: boolean; startCursor: string | null } } }>(PAYERS_QUERY, { address: target, afterCp: 0, beforeCp: beforeCheckpoint, before }).catch(() => null);
     if (!read) return { payers: payers.size, verdict: "unmeasured" };
     const nodes = read.transactions.nodes;
     const completed = await completeTxConnections(nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })), take);

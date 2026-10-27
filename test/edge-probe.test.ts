@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createMockClient } from "./helpers/mock-grpc.js";
 import { clusterEdges, EdgeSet, EQUAL_AMOUNT_CONSOLIDATION_WEIGHT, SIGNAL_WEIGHTS } from "../src/utils/wallet-edges.js";
 
-const { mockGqlQuery, mockSaveFirstFunder, mockPrices, cohortFixture } = vi.hoisted(() => ({
+const { mockGqlQuery, mockGetCachedFirstFunder, mockSaveFirstFunder, mockPrices, cohortFixture } = vi.hoisted(() => ({
   mockGqlQuery: vi.fn(),
+  mockGetCachedFirstFunder: vi.fn(),
   mockSaveFirstFunder: vi.fn(() => true),
   mockPrices: vi.fn(),
  cohortFixture: { enabled: false },
@@ -22,7 +23,7 @@ vi.mock("../src/clients/graphql.js", () => ({
 // The store is off by default, but mocking it keeps the test independent of
 // whether the developer running it happens to have SUI_STORE_PATH set.
 vi.mock("../src/utils/store.js", () => ({
-  getCachedFirstFunder: () => null,
+  getCachedFirstFunder: mockGetCachedFirstFunder,
   saveFirstFunder: mockSaveFirstFunder,
   loadLabels: () => [],
 }));
@@ -94,6 +95,7 @@ function payment(digest: string, from: string, to: string, sponsor?: string) {
 
 beforeEach(() => {
   mockGqlQuery.mockReset();
+  mockGetCachedFirstFunder.mockReset();
  cohortFixture.enabled = false;
   mockSaveFirstFunder.mockClear();
   mockPrices.mockReset().mockImplementation(aftermathUp());
@@ -175,6 +177,34 @@ describe("probeRecipients — the bound, not the count", () => {
     mockGqlQuery.mockImplementation(async () => page([sweep], false));
     const r = await probeRecipients("0xF", 50, new Budget(100));
     expect([...r.members.keys()]).toEqual(["0xa"]);
+  });
+  it("reads only pre-bound sends across pages, not newer recipients", async () => {
+    const sends = [
+      { checkpoint: 120, tx: payment("late", "0xF", "0xc") },
+      { checkpoint: 90, tx: payment("before-2", "0xF", "0xb") },
+      { checkpoint: 20, tx: payment("before-1", "0xF", "0xa") },
+    ];
+    for (const { checkpoint, tx } of sends) tx.effects.checkpoint.sequenceNumber = checkpoint;
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { before?: string; afterCheckpoint?: number; beforeCheckpoint?: number }) => {
+      const inWindow = sends.filter(({ checkpoint }) => checkpoint > (vars.afterCheckpoint ?? -1) && checkpoint < (vars.beforeCheckpoint ?? Infinity));
+      const offset = Number(vars.before ?? 0);
+      return page(inWindow.slice(offset, offset + 1).map(({ tx }) => tx), offset + 1 < inWindow.length, String(offset + 1));
+    });
+
+    const bounded = await probeRecipients("0xF", 2, new Budget(10), 100);
+    expect(bounded.popular).toBe(false);
+    expect(bounded.complete).toBe(true);
+    expect([...bounded.members.keys()].sort()).toEqual(["0xa", "0xb"]);
+    expect(mockGqlQuery.mock.calls).toHaveLength(2);
+    for (const [query, vars] of mockGqlQuery.mock.calls) {
+      expect(query).toContain("afterCheckpoint: $afterCheckpoint, beforeCheckpoint: $beforeCheckpoint");
+      expect(vars).toMatchObject({ afterCheckpoint: 0, beforeCheckpoint: 100 });
+    }
+
+    mockGqlQuery.mockClear();
+    const unbounded = await probeRecipients("0xF", 2, new Budget(10));
+    expect(unbounded.popular).toBe(true);
+    expect(mockGqlQuery.mock.calls.every(([query, vars]) => !String(query).includes("afterCheckpoint") && vars.afterCheckpoint === undefined && vars.beforeCheckpoint === undefined)).toBe(true);
   });
 });
 
@@ -1105,6 +1135,41 @@ describe("firstFunderOf caches only a pick no price could change", () => {
     expect(mockSaveFirstFunder.mock.calls[0]![2]).toBe("0xsui");
   });
 
+  it("ignores cached future funding and does not cache a bounded first funder", async () => {
+    const FIRST = "0xf01";
+    mockGetCachedFirstFunder.mockReturnValue({
+      funder_account: `sui:mainnet:0x${"0".repeat(61)}fa7`,
+      digest: "cached-late",
+    });
+    const txs = [
+      { checkpoint: 45, tx: payment("early", FIRST, A) },
+      { checkpoint: 120, tx: payment("late", LATER, A) },
+    ];
+    for (const { checkpoint, tx } of txs) tx.effects.checkpoint.sequenceNumber = checkpoint;
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { afterCheckpoint?: number; beforeCheckpoint?: number }) =>
+      page(txs
+        .filter(({ checkpoint }) => checkpoint > (vars.afterCheckpoint ?? -1) && checkpoint < (vars.beforeCheckpoint ?? Infinity))
+        .map(({ tx }) => tx)),
+    );
+
+    const bounded = await firstFunderOf(A, new Budget(10), 100);
+    expect(bounded).toMatchObject({ funder: FIRST, digest: "early" });
+    expect(mockGetCachedFirstFunder).not.toHaveBeenCalled();
+    expect(mockSaveFirstFunder).not.toHaveBeenCalled();
+    expect(mockGqlQuery.mock.calls[0]![0]).toContain("afterCheckpoint: $afterCheckpoint, beforeCheckpoint: $beforeCheckpoint");
+    expect(mockGqlQuery.mock.calls[0]![1]).toMatchObject({ afterCheckpoint: 0, beforeCheckpoint: 100 });
+
+    const beforeFirst = await firstFunderOf(A, new Budget(10), 45);
+    expect(beforeFirst).toMatchObject({ funder: null, digest: null });
+    expect(mockSaveFirstFunder).not.toHaveBeenCalled();
+    expect(mockGqlQuery.mock.calls[1]![1]).toMatchObject({ afterCheckpoint: 0, beforeCheckpoint: 45 });
+
+    const unbounded = await firstFunderOf(A, new Budget(10));
+    expect(unbounded?.digest).toBe("cached-late");
+    expect(mockGetCachedFirstFunder).toHaveBeenCalledTimes(1);
+    expect(mockGqlQuery).toHaveBeenCalledTimes(2);
+  });
+
   it("values a non-registry coin at its CoinMetadata decimals, not an assumed 9", async () => {
     // 100 of a 6-decimal coin at $0.05 is $5 of funding. Read at an assumed 9
     // decimals it would be $0.005 and skipped as below_usd_floor.
@@ -1125,6 +1190,51 @@ describe("firstFunderOf caches only a pick no price could change", () => {
     const r = await buildWalletEdges([A], { expand: false });
     expect(r.first_funders[A]).toBe(CEX);
     expect(mockSui.stateService.getCoinInfo).toHaveBeenCalledWith({ coinType: GAME });
+  });
+});
+
+describe("bounded first funding grant shape", () => {
+  it("does not judge an early grant using a later send burst", async () => {
+    const address = "0xaaa";
+    const funder = "0xf00d";
+    const coin = "0xcafe::grant::GRANT";
+    coinDecimals[coin] = 0;
+    coinSupply[coin] = 1_000_000_000n;
+    packagePublisher["0xcafe"] = funder;
+    const grant = {
+      digest: "grant",
+      sender: { address: funder },
+      effects: {
+        timestamp: "2026-01-01T00:00:00.000Z",
+        checkpoint: { sequenceNumber: 45 },
+        balanceChanges: {
+          nodes: [
+            { owner: { address: funder }, amount: "-100000", coinType: { repr: coin } },
+            { owner: { address }, amount: "100000", coinType: { repr: coin } },
+          ]
+        },
+      },
+    };
+    const later = payment("later-sui", "0xbee", address);
+    later.effects.checkpoint.sequenceNumber = 90;
+    mockGqlQuery.mockImplementation(async (query: string, vars: { filter?: { beforeCheckpoint: number }; beforeCheckpoint?: number }) => {
+      if (query.includes("TransactionFilter")) {
+        const future = [payment("future-1", funder, "0xb1"), payment("future-2", funder, "0xb2"), payment("future-3", funder, "0xb3")];
+        return {
+          transactions: {
+            pageInfo: { hasNextPage: false }, nodes: vars.filter!.beforeCheckpoint <= 100
+              ? [] : future.map((tx) => ({ ...tx, effects: { balanceChanges: tx.effects.balanceChanges } }))
+          }
+        };
+      }
+      return page([grant, later].filter((tx) => tx.effects.checkpoint.sequenceNumber < (vars.beforeCheckpoint ?? Infinity)));
+    });
+
+    const result = await firstFunderOf(address, new Budget(10), 100);
+    expect(result).toMatchObject({ funder, digest: "grant" });
+    const windowRead = mockGqlQuery.mock.calls.find(([query]) => String(query).includes("TransactionFilter"));
+    expect(windowRead?.[1].filter).toMatchObject({ sentAddress: funder, beforeCheckpoint: 100 });
+    expect(mockSaveFirstFunder).not.toHaveBeenCalled();
   });
 });
 

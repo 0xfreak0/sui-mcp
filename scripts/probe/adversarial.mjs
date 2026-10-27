@@ -141,6 +141,7 @@ const BASE = {
   get_package_dependency_graph: { package_id: NEMO_PKG, depth: 1 },
   identify_address: { address: NEMO },
   analyze_token: { query: "SUI", include_holders: false },
+  analyze_launch: { coin_type: "0x1efcc3037dcd3b0715e064896d4e45bcde85a517f9ca8d8a88de0f74c3967e76::suipump::SUIPUMP", max_pages: 1 },
   mvr_resolve: { names: ["@suins/core"] },
   mvr_reverse_resolve: { package_ids: [FRAMEWORK] },
   mvr_get_package_info: { name: "@suins/core" },

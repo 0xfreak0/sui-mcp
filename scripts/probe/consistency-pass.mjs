@@ -113,8 +113,14 @@ try {
   const later = await call("get_balance", { owner: address });
   // Current gRPC and GraphQL reads are not pinned to one checkpoint. When
   // payments land while these three calls run, no same-state equality follows.
+  // The overview reads GraphQL, which can trail the fullnode by a few
+  // checkpoints, so a wallet that transacted in the last minute can show its
+  // previous balance there while both fullnode reads agree.
+  const newest = (await gql(`query($a:SuiAddress!){ transactions(last: 1, filter: { affectedAddress: $a }) { nodes { effects { timestamp } } } }`, { a: address })).transactions?.nodes?.[0]?.effects?.timestamp;
+  const recent = newest != null && Date.now() - Date.parse(newest) < 60_000;
   const sui = overview.holdings?.find((b) => norm(b.coin_type) === norm(SUI));
   if (balance.balance !== later.balance) skip("overview liquid SUI", "wallet changed during the two balance reads");
+  else if (recent) skip("overview liquid SUI", "wallet transacted within the last minute; GraphQL may trail the fullnode");
   else if (sui) record("overview liquid SUI", address, balance.balance, sui.balance);
   else if (!overview.holdings_truncated)
    record("overview liquid SUI", address, balance.balance, "0");

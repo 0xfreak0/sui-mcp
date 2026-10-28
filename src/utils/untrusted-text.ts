@@ -175,6 +175,19 @@ const TYPE_PRIMITIVE = /^(?:u8|u16|u32|u64|u128|u256|bool|address|signer)$/;
  * oracle update): no markup and no readable text, so never cut.
  */
 const HEX_BYTES = /^0x[0-9a-fA-F]*$/;
+/**
+ * A base64 `data:` URI, which is how on-chain art reaches a result. The same
+ * reasoning as {@link HEX_BYTES}: the payload is an encoding, so it carries no
+ * markup and no readable text, and cutting it destroys the image while
+ * protecting nothing. The cap is an injection control, not a size control —
+ * result size is bounded separately by `capPayload` and the result-size limit
+ * in `tool-meta.ts`.
+ *
+ * `;base64,` is required. A data URI whose payload is readable
+ * (`data:image/svg+xml,<svg onload=…>`) is markup an author chose and stays
+ * capped, so this must not be widened to every `data:` URI.
+ */
+const BASE64_DATA_URI = /^data:[^,]*;base64,[A-Za-z0-9+/]*={0,2}$/;
 /** A type parameter as the chain prints one in a declaration (`Balance<T0>`). */
 const TYPE_PARAM = /^T\d*$/;
 
@@ -219,7 +232,7 @@ function isTypeTag(value: string, allowBareNames = false): boolean {
 function protect(value: unknown, key: string, raw: boolean, visited: { found: boolean }, toolName: string): unknown {
   if (typeof value === "string") {
     const code = !raw && (CODE.test(key) || (key === "source" && toolName === "decompile_module"));
-    if (isTypeTag(value) || HEX_BYTES.test(value) || (!raw && (IDENTIFIER.test(key) || (!HUMAN.test(key) && !code)))) {
+    if (isTypeTag(value) || HEX_BYTES.test(value) || BASE64_DATA_URI.test(value) || (!raw && (IDENTIFIER.test(key) || (!HUMAN.test(key) && !code)))) {
       const shown = escapeInvisible(value, true);
       if (shown !== value) visited.found = true;
       return shown;

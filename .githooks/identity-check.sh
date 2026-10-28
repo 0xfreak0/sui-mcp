@@ -14,7 +14,9 @@ reject() {
 }
 
 check_email() {
-  local email="${1,,}" label="$2" login id known_login known_id response actual
+  local email label="$2" login id known_login known_id response actual
+  # bash 3.2 (macOS) has no ${var,,}; tr is portable to every bash.
+  email="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   if [[ "$email" == 'noreply@users.noreply.github.com' ]]; then
     reject "$label uses an unowned GitHub noreply address"
     return
@@ -39,7 +41,7 @@ check_email() {
     login="${BASH_REMATCH[2]}"
     while read -r known_login known_id; do
       [[ "$known_login" == '' || "$known_login" == \#* ]] && continue
-      if [[ "${known_login,,}" == "$login" ]]; then
+      if [[ "$(printf '%s' "$known_login" | tr '[:upper:]' '[:lower:]')" == "$login" ]]; then
         if [[ "$id" != "$known_id" ]]; then
           reject "$label has a GitHub noreply ID that does not belong to its login"
         fi
@@ -118,7 +120,10 @@ case "${1:-}" in
     if ! git cat-file -e "$2^{commit}"; then
       reject 'cannot read the commit'
     else
-      mapfile -d '' -t fields < <(git log -1 --format='%an <%ae>%x00%cn <%ce>%x00%B%x00' "$2")
+      # mapfile -d needs bash 4.4; read -d '' works on bash 3.2 and up.
+      fields=()
+      while IFS= read -r -d '' field; do fields+=("$field"); done \
+        < <(git log -1 --format='%an <%ae>%x00%cn <%ce>%x00%B%x00' "$2")
       if [[ ${#fields[@]} -lt 3 ]]; then
         reject 'cannot read commit identities and message'
       else

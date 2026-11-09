@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.29.1 (2026-11-09)
+
+### Data
+- **Data refresh.** `disclosed-labels.json` labels +25 −1 ~142, sources ~2; `validator-labels.json` labels ~1; `sanctions.json` accounts +3, by_currency ~2, total_digital_currency_addresses updated; `guardians-blocklist.json` coins +1, counts ~1; `protocol-roots.json` custody ~5.
+
 ## 1.29.0 (2026-10-27)
 
 `analyze_launch` analyses a SuiPump launch from its coin type: every early buyer, their buys, sales and forwards over the sell window, where the proceeds went, and which buyers coordinate with each other or with the creator, with each member's route to the creator. It reads the creator's history with each destination before the launch, and first funders. Shipped data is refreshed.

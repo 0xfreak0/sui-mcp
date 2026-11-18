@@ -131,12 +131,17 @@ jobs:
           mode="$(node scripts/data-release-prep.mjs /tmp/changelog-note.md | tail -n 1)"
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          # The site's changelog and current-release pages are generated from
+          # CHANGELOG.md and package.json, which the prep step just changed;
+          # test/site-tool-reference.test.ts fails when they are stale.
+          node site/scripts/gen-release-pages.mjs
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -C "$BRANCH"
           # Only the synced data and any version bump; dist/ and scratch files stay out.
           # shellcheck disable=SC2086
-          git add CHANGELOG.md package.json package-lock.json server.json $FILES
+          git add CHANGELOG.md package.json package-lock.json server.json \
+            site/src/content/docs/project/changelog.md site/src/content/docs/project/_current-release.md $FILES
           git commit -q -m "Data refresh"
           # Rebuilt from main every week, so last week's unmerged run is replaced, not stacked.
           git push --force origin "$BRANCH"

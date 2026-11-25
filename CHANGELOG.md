@@ -10,6 +10,7 @@
 
 ### Changed
 - `@mysten/sui` 2.39.1, which parses allowance withdrawals in transaction bytes. The fullnode's gRPC-web transport is built by the server, so request queueing and 429 retries apply with this SDK.
+- A frozen or shared `Publisher` is no longer described as letting anyone create Display objects or reach the registry Display through a legacy one: Display V1 creation (`display::new` and its variants) aborts on the current framework. It still lets anyone create TransferPolicy objects.
 
 ## 1.29.2 (2026-11-23)
 

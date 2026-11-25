@@ -27,6 +27,8 @@ export interface FunctionClaim {
   calls?: string[];
   /** A phrase the doc comment contains. */
   doc?: string;
+  /** The body is a single `abort`: the function exists but always fails. */
+  aborts?: boolean;
   /** The rule this justifies. */
   why: string;
 }

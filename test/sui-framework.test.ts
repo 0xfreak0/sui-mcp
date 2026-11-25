@@ -116,6 +116,7 @@ function functionProblems(claim: FunctionClaim): string[] {
     if (!f.body || !new RegExp(`\\b${name}\\s*(?:<[^()]*>)?\\s*\\(`).test(f.body)) out.push(`does not call ${name}`);
   }
   if (claim.doc && !squash(f.doc).includes(squash(claim.doc))) out.push(`doc does not say "${claim.doc}"`);
+  if (claim.aborts && !(f.body && /^\{\s*abort\s+[A-Za-z_][A-Za-z0-9_]*\s*;?\s*\}$/.test(f.body))) out.push("does not just abort");
   return out;
 }
 
@@ -207,6 +208,16 @@ describe("framework claims hold in the pinned source", () => {
   it.each(payoutClaims.map((c) => c.fn))("ptb-anomalies FRAMEWORK_TRANSFER_RECIPIENT_ARG: %s is callable from a transaction", (fn) => {
     const f = functions.get(fn);
     expect(f && isCallable(f), `${fn} is not public or entry`).toBe(true);
+  });
+
+  // A derived id stays its object's only while nothing releases it; the
+  // coin registry's derived Currency ids rest on no framework code doing so.
+  it("no framework function outside derived_object calls derived_object::release", () => {
+    const callers = [...functions.values()]
+      .filter((f) => !f.testOnly && f.module !== "derived_object" && f.body)
+      .filter((f) => /\bderived_object::release\s*(?:<[^()]*>)?\s*\(|\.release\s*\(/.test(f.body!))
+      .map((f) => `${f.module}::${f.name}`);
+    expect(callers).toEqual([]);
   });
 });
 

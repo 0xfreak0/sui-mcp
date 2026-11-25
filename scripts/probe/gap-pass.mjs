@@ -3,11 +3,13 @@ import { registerRestrictionTools } from "../../dist/tools/restrictions.js";
 import { registerMultisigTools } from "../../dist/tools/multisig.js";
 import { registerAnalyzeTokenTools } from "../../dist/tools/analyze-token.js";
 import { registerAllowanceTools } from "../../dist/tools/allowances.js";
+import { registerCoinTools } from "../../dist/tools/coins.js";
 import { registerBridgeTools } from "../../dist/tools/bridge.js";
+import { PAS_PACKAGES } from "../../dist/utils/pas.js";
 import { gqlQuery } from "../../dist/clients/graphql.js";
 import { runWithNetwork } from "../../dist/config.js";
 const tools={}; const c={tool:(n,_d,_s,h)=>{tools[n]=h;}};
-[registerRestrictionTools,registerMultisigTools,registerAnalyzeTokenTools,registerAllowanceTools,registerBridgeTools].forEach(f=>f(c));
+[registerRestrictionTools,registerMultisigTools,registerAnalyzeTokenTools,registerAllowanceTools,registerBridgeTools,registerCoinTools].forEach(f=>f(c));
 const call=async(n,a)=>{const r=await tools[n](a);const t=r.content.map(x=>x.text);
   const j=t.find(x=>x.trim().startsWith("{")); return j?JSON.parse(j):{_text:t[0]};};
 const bad=[]; const ck=(n,ok,d="")=>{console.log(`   ${ok?"ok  ":"!!  "}${n}${d?"  "+d:""}`); if(!ok)bad.push(n);};
@@ -85,6 +87,21 @@ await runWithNetwork("mainnet", async () => {
   ck("destination domain matches the event",c?.destination_domain===burn?.destination_domain,`${c?.destination_domain} vs ${burn?.destination_domain}`);
   ck("amount matches the event",c?.amount===burn?.amount,`${c?.amount}`);
   ck("attestation lookup names this digest",c?.attestation_lookup?.transaction_hash===V2_TX);
+  console.log("\nE. get_balance against a raw read of a PAS account's balances");
+  // Truth: an Account object's own owner field, and the balances at its id read raw.
+  const pas=await gqlQuery(`query($t:String!){ objects(filter:{type:$t}, first:50){ nodes { address asMoveObject { contents { json } } } } }`,{t:`${PAS_PACKAGES.mainnet}::account::Account`});
+  let pasChecked=false;
+  for (const n of pas.objects?.nodes??[]) {
+    const acct=n.address; const owner=n.asMoveObject?.contents?.json?.owner;
+    const bal=await gqlQuery(`query($a:SuiAddress!){ address(address:$a){ balances(first:5){ nodes { coinType { repr } totalBalance } } } }`,{a:acct});
+    const held=(bal.address?.balances?.nodes??[]).find(b=>b.totalBalance!=="0");
+    if(!owner||!held) continue;
+    const r=await call("get_balance",{owner,coin_type:held.coinType.repr});
+    ck("get_balance names the owner's PAS account",r.pas_account_balance?.account_address===acct,`${r.pas_account_balance?.account_address} vs ${acct}`);
+    ck("PAS balance matches the account's raw balance",r.pas_account_balance?.balance===held.totalBalance,`${r.pas_account_balance?.balance} vs ${held.totalBalance}`);
+    pasChecked=true; break;
+  }
+  if(!pasChecked) console.log("   --  no PAS account holding a balance to check against; skipped");
 
   console.log("\n=== "+(bad.length?bad.length+" PROBLEM(S)":"clean")+" ===");
   bad.forEach(b=>console.log("  - "+b));

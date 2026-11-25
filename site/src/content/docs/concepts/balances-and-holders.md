@@ -17,6 +17,39 @@ Staked SUI and DeFi position value are excluded. Use `get_staking_summary`
 and `get_defi_positions` before concluding that an address holds little;
 `get_wallet_overview` reads all its coins together.
 
+### Permissioned Asset Standard accounts
+
+A Permissioned Asset Standard (PAS) balance sits in the owner's PAS account:
+a shared `Account` object at an address derived from the standard's
+`Namespace` and the owner's address. The balance belongs to the account
+address, so the owner's own balance excludes it. A PAS balance moves only
+through a transfer the asset issuer's policy approves, and the issuer may be
+able to claw it back.
+
+`get_balance` reports the requested coin's PAS balance beside the liquid
+total, and `get_wallet_overview` lists every PAS balance apart from
+`holdings`:
+
+```
+get_balance(owner: 0x0fe0…f9dc, coin_type: 0xb0c6…fb66::voloro::Voloro)
+  → balance: 0,
+    pas_account_balance: { account_address: 0x272b…abf6,
+      balance: 999000000, balance_formatted: "999 Voloro (unverified)" }
+
+get_wallet_overview(0x0fe0…f9dc)
+  → pas_account: { account_address: 0x272b…abf6, account_created: true,
+      balances: [ { coin_type: …::voloro::Voloro, balance: 999000000,
+        balance_formatted: "999 Voloro (unverified)" } ],
+      next_cursor: null }
+```
+
+- `account_created: false` with balances is possible: funds can be sent to
+  the derived address before the account object exists.
+- `pas_account.next_call` continues past the first block of coin types.
+- `pas_account_unavailable` means the account could not be read, and
+  whether the owner holds PAS balances is unknown.
+- PAS is deployed on mainnet and testnet; devnet has no PAS account.
+
 
 ## Balance at a past moment
 

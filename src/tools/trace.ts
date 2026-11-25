@@ -47,6 +47,7 @@ import { gqlQuery } from "../clients/graphql.js";
 import { readerFor } from "../utils/position-value.js";
 import { readMovedObjects, valueMovedObjects, type MovedObjectValue } from "../utils/moved-value.js";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
+import { allowanceDraws, allowanceSpendNote, readTxWithdrawals, type AllowanceDraw } from "../utils/allowance-links.js";
 import {
   coinScale,
   decimalsForCoinType,
@@ -93,9 +94,19 @@ interface HopResult {
   /**
    * Set when this hop was not sent by the address the trace was following:
    * the value was held by an object (a `Receiving<T>` transfer, an object's
-   * address balance) and this transaction took it out.
+   * address balance) and this transaction took it out, or the holder funds a
+   * native allowance and its spender sent this transaction, drawing on the
+   * holder's address balance (`allowance-spend`, with `allowance_spend`).
    */
-  reached_via?: "released-from-object";
+  reached_via?: "released-from-object" | "allowance-spend";
+  /**
+   * A withdrawal this hop drew on the followed party's address balance under
+   * a native allowance: the spender signed, the funder did not. Forward, the
+   * funds moved are the funder's; backward, the funder is the payer.
+   */
+  allowance_spend?: AllowanceDraw & { note: string };
+  /** The hop's inputs could not be read, so whether it drew under an allowance is unknown. */
+  allowance_spend_unavailable?: string;
   /**
    * False when the sender's own key did not sign: another address authorized
    * it through an address alias or a protocol-level substitution.
@@ -296,6 +307,12 @@ function buildSummary(
     if (hop.balance_changes_truncated) lines.push("  ⚠ More balance changes exist than could be read; the flows above are incomplete.");
     if (hop.signer_is_sender === false) {
       lines.push(`  ⚠ Not signed by the sender: authorized by ${hop.authorized_by?.join(", ")}.`);
+    }
+    if (hop.allowance_spend) {
+      lines.push(
+        `  Allowance spend: ${addrLabel(hop.allowance_spend.spender ?? "?", nameMap)} drew on ` +
+          `${addrLabel(hop.allowance_spend.funder, nameMap)}'s balance under allowance ${hop.allowance_spend.allowance_id.slice(0, 10)}…; the funder did not sign.`,
+      );
     }
     if (hop.commingled) lines.push(`  ⚠ ${hop.commingled.note}`);
     if (hop.residual) lines.push(`  ⚠ ${hop.residual.note}`);
@@ -601,6 +618,8 @@ export function registerTraceTools(server: McpServer) {
       // hop that took value out of an object.
       let holder: string | null = null;
       let reachedVia: HopResult["reached_via"];
+      // Forward: the allowance withdrawal the search found the current hop by.
+      let reachedAllowance: AllowanceDraw | undefined;
       // Backward: the address whose inflow the current hop explains.
       let recipient: string | null = null;
       // Forward: what the followed address received on the previous hop, so a
@@ -739,6 +758,7 @@ export function registerTraceTools(server: McpServer) {
           actions: decoded.actions,
           token_flow: decoded.token_flow,
           ...(reachedVia ? { reached_via: reachedVia } : {}),
+          ...(reachedAllowance ? { allowance_spend: { ...reachedAllowance, note: allowanceSpendNote(reachedAllowance) } } : {}),
           ...(signers.signer_is_sender === false
             ? { signer_is_sender: false as const, authorized_by: signers.authorized_by }
             : {}),
@@ -897,6 +917,26 @@ export function registerTraceTools(server: McpServer) {
           return usdValue(c.amount, decimalsForCoinType(c.coin_type), price);
         };
 
+        // A spend under an allowance debits the funder's address balance while
+        // the spender signs. The trace's first forward hop has no holder yet,
+        // so when an address other than the sender lost the tracked coin, its
+        // inputs say whether that was an allowance draw: then the funds moved
+        // are the funder's, and the funder is the holder.
+        if (direction === "forward" && hop === 0 && !holder) {
+          const losers = allChanges
+            .filter((c) => c.address && c.address !== sender && (!trackedCoin || sameCoin(c.coin_type, trackedCoin)))
+            .map((c) => ({ address: c.address, moved: nonGasAmount(c, gas) }))
+            .filter((c) => c.moved < 0n)
+            .sort((x, y) => (x.moved < y.moved ? -1 : x.moved > y.moved ? 1 : 0));
+          if (losers.length) {
+            const found = await hopAllowanceDraw(currentDigest, sender, losers.map((l) => l.address));
+            if (found.draw) {
+              holder = found.draw.funder;
+              hopResult.allowance_spend = { ...found.draw, note: allowanceSpendNote(found.draw) };
+            } else if (found.unavailable) hopResult.allowance_spend_unavailable = found.unavailable;
+          }
+        }
+
         // Swap-aware, pool-skipping next-hop selection.
         const actor: string | null = direction === "forward" ? (holder ?? sender) : (recipient ?? sender);
         const decision = chooseNextHop({
@@ -979,6 +1019,22 @@ export function registerTraceTools(server: McpServer) {
               ? forwardDeadEnd(tx, actor, coinBefore, decision.consumed === true, decision.note)
               : backwardDeadEnd(tx, actor, coinBefore);
           break;
+        }
+        // Backward, the payer is the owner of the largest decrease, which for
+        // a spend under an allowance is the funder although the spender
+        // signed. Said on the hop, so a payer that never signed this
+        // transaction does not read as a stolen key.
+        if (direction === "backward" && nextAddress !== sender) {
+          const found = await hopAllowanceDraw(currentDigest, sender, [nextAddress]);
+          if (found.draw) {
+            hopResult.allowance_spend = { ...found.draw, note: allowanceSpendNote(found.draw) };
+            hopResult.note = [
+              hopResult.note,
+              `${nextAddress} paid here under allowance ${found.draw.allowance_id}, spent by ${found.draw.spender ?? "the sender"}; its earlier inflows are followed as the payer's.`,
+            ]
+              .filter(Boolean)
+              .join(" ");
+          } else if (found.unavailable) hopResult.allowance_spend_unavailable = found.unavailable;
         }
         if (format !== "json") {
           const coin = decision.nextCoinType;
@@ -1106,6 +1162,7 @@ export function registerTraceTools(server: McpServer) {
           }
           holder = nextAddress;
           reachedVia = undefined;
+          reachedAllowance = undefined;
           // An owned object moves only in a transaction its holder sends.
           expectedSender = nextAddress;
           currentDigest = next;
@@ -1151,10 +1208,13 @@ export function registerTraceTools(server: McpServer) {
             ...kept(step.keptClaims),
           };
           holder = nextAddress;
-          reachedVia = step.via === "released-from-object" ? step.via : undefined;
-          // Only meaningful for a transaction the followed address sent. An
-          // object's funds leave in a transaction someone else sends.
-          expectedSender = step.via === "sent" ? nextAddress : null;
+          reachedVia = step.via === "sent" ? undefined : step.via;
+          reachedAllowance = step.via === "allowance-spend" ? step.allowance : undefined;
+          // A transaction the followed address sent must be sent by it. An
+          // object's funds leave in a transaction someone else sends, and a
+          // spend under an allowance is sent by its spender.
+          expectedSender =
+            step.via === "sent" ? nextAddress : step.via === "allowance-spend" ? (step.allowance?.spender ?? null) : null;
           currentDigest = step.digest;
         } else {
           const need = movedHere < 0n ? -movedHere : 1n;
@@ -1577,4 +1637,29 @@ export function registerTraceTools(server: McpServer) {
       };
     }
   );
+}
+
+/**
+ * The allowance withdrawal, if any, by which `digest` drew on one of
+ * `funders`' balances (the first listed that has one). A failed input read is
+ * `unavailable`, never "no allowance".
+ */
+async function hopAllowanceDraw(
+  digest: string,
+  sender: string | null,
+  funders: string[],
+): Promise<{ draw?: AllowanceDraw; unavailable?: string }> {
+  const got = (await readTxWithdrawals([digest])).get(digest);
+  if (!got) {
+    return {
+      unavailable:
+        "This transaction's inputs could not be read, so whether it drew on another address's balance under a native allowance is unknown.",
+    };
+  }
+  const draws = allowanceDraws(got.withdrawals, got.sender ?? sender);
+  for (const f of funders) {
+    const draw = draws.find((d) => d.funder === normalizeSuiAddress(f));
+    if (draw) return { draw };
+  }
+  return {};
 }

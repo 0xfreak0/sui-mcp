@@ -4,8 +4,9 @@ import { EXPORT_FORMATS, shortAddress, toCsv, toGraphJson, toMermaid, type Expor
 import { errorResult } from "../utils/errors.js";
 import { getLabel } from "../utils/labels.js";
 import { describeAddresses, identityNote } from "../utils/identity.js";
-import { buildWalletEdges } from "../utils/edge-probe.js";
+import { buildWalletEdges, readAllowanceLinks } from "../utils/edge-probe.js";
 import {
+  addAllowanceEdges,
   addCoSignerEdges,
   clusterEdges,
   EdgeSet,
@@ -67,7 +68,7 @@ export function pageEdgeEvidence(edge: WalletEdge, digestOffset: number, args: R
 export function registerClusterTools(server: McpServer) {
   server.tool(
     "build_wallet_edges",
-  "(Incident investigation) Find possible shared operators when a fund trace reaches fresh wallets. Seven live signals are multisig co-signature, shared first funder, one wallet first-funding another, reciprocal value between non-services, many-to-one consolidation sweeps, shared gas sponsor and co-appearance in a transaction. A consolidation needs six distinct payers of one coin to a collector seed within 30 minutes; a payer whose payment took at least 90% of its reconstructed balance gets a 0.8 edge, one in six near-equal payments a 0.6 edge, both below the merge floor because customers and victims sweep the same way. Popular collectors, labelled services and collectors repeatedly paying one recipient are excluded. Co-signature proves a key can spend the wallet through its committee's address hash; the other signals are behavioral. Intermediaries are measured before linking: services are discarded unless most wallets a sponsor serves share the seeds' narrow, unlabelled funder (role_split). Edges cite transaction digests, or the address hash for co_signer. Clusters are separately tiered inferences, never proof of ownership.",
+  "(Incident investigation) Find possible shared operators when a fund trace reaches fresh wallets. Eight live signals are multisig co-signature, native allowances (funder to spender), shared first funder, one wallet first-funding another, reciprocal value between non-services, many-to-one consolidation sweeps, shared gas sponsor and co-appearance in a transaction. A consolidation needs six distinct payers of one coin to a collector seed within 30 minutes; a payer whose payment took at least 90% of its reconstructed balance gets a 0.8 edge, one in six near-equal payments a 0.6 edge, both below the merge floor because customers and victims sweep the same way. Popular collectors, labelled services and collectors repeatedly paying one recipient are excluded. Co-signature proves a key can spend the wallet through its committee's address hash and an allowance that the funder's key granted the spender a bounded spend of its balance; spenders named by more than five funders are services and excluded; the other signals are behavioral. Intermediaries are measured before linking: services are discarded unless most wallets a sponsor serves share the seeds' narrow, unlabelled funder (role_split). Edges cite transaction digests, or the address hash for co_signer. Clusters are separately tiered inferences, never proof of ownership.",
     {
       addresses: addressListArg()
         .min(1)
@@ -188,18 +189,39 @@ export function registerClusterTools(server: McpServer) {
         const edgeSet = new EdgeSet();
         for (const e of built.edges) {
           for (const sig of e.signals) {
-            edgeSet.add(sig.type, e.wallet_a, e.wallet_b, sig.detail, sig.digests, sig.via, sig.weight);
+            edgeSet.add(sig.type, e.wallet_a, e.wallet_b, sig.detail, sig.digests, sig.via, sig.weight, sig.object_ids);
           }
         }
         const coSigner = addCoSignerEdges(edgeSet, committees);
+        // Allowances are read from state, like committees: the funder's key
+        // granted the spender a bounded spend of its balance. Chain-derived
+        // control, not ownership, so services are filtered out the same way.
+        const allowanceObs = await readAllowanceLinks(addresses);
+        const allowance = addAllowanceEdges(edgeSet, allowanceObs.links, (spender) => allowanceObs.reach.get(spender));
+        const allowanceIncomplete =
+          allowanceObs.funder_reads_incomplete.length > 0 || (allowanceObs.spender_scan?.status ?? "failed") !== "complete";
+        const truncated = built.truncated || allowanceIncomplete;
         const allEdges = edgeSet.edges();
 
-        if (committees.length > 0) {
-          const memberAddresses = committees.flatMap((c) => c.members.map((m) => m.address));
-          for (const [addr, id] of await describeAddresses(memberAddresses)) {
+        const counterparts = [
+          ...committees.flatMap((c) => c.members.map((m) => m.address)),
+          ...allowanceObs.links.flatMap((l) => [l.funder, l.spender]),
+        ].filter((a) => !identities.has(a));
+        if (counterparts.length > 0) {
+          for (const [addr, id] of await describeAddresses([...new Set(counterparts)])) {
             if (!identities.has(addr)) identities.set(addr, id);
           }
         }
+        const allowanceLinks = {
+          linked: allowance.linked,
+          allowances_read: allowanceObs.links.length,
+          spender_scan: allowanceObs.spender_scan,
+          ...(allowanceObs.funder_reads_incomplete.length ? { funder_reads_incomplete: allowanceObs.funder_reads_incomplete } : {}),
+          ...(allowance.excluded.length ? { excluded_spenders: allowance.excluded } : {}),
+          note:
+            "Allowances the seeds fund come from the AllowanceCaps they hold, which cannot leave them, so that side is complete while funder_reads_incomplete is absent. Allowances naming a seed as spender come from a scan of every Allowance object, reused for five minutes; unless spender_scan.status is complete, an allowance naming a seed may be unread, and no spender is linked whose funder count the scan did not finish. " +
+            "A spender named by more than five funders is an app or agent service and gets no edge (excluded_spenders, reason service); an app-bound allowance's edge sits below the merge floor because the app chooses and can rotate its spender. Revoked allowances are deleted and not seen.",
+        };
 
         const clustered = clusterEdges(allEdges, {
           minSignalTypes: min_signal_types,
@@ -238,7 +260,7 @@ export function registerClusterTools(server: McpServer) {
      } : {}),
     };
         if (format && format !== "json") {
-     const coverage = { truncated: built.truncated, notes: built.notes, expansion_scan: expansionScan, reciprocal_scan: reciprocalScan };
+     const coverage = { truncated, notes: built.notes, expansion_scan: expansionScan, reciprocal_scan: reciprocalScan, allowance_links: allowanceLinks };
           const label = (a: string) => {
             const d = describe(a);
             return d.name ?? d.label ?? d.protocol ?? shortAddress(a);
@@ -320,7 +342,8 @@ export function registerClusterTools(server: McpServer) {
                 // Expose the measured first funder even when popularity
                 // filtering excludes it as an edge intermediary.
                 first_funders: built.first_funders,
-                truncated: built.truncated,
+                truncated,
+                allowance_links: allowanceLinks,
               
                 // --- facts ---
                 edge_count: allEdges.length,
@@ -416,7 +439,7 @@ export function registerClusterTools(server: McpServer) {
                 ...(built.notes.length ? { notes: built.notes } : {}),
               
                 caveat:
-                  "Edges are facts; clusters are an inference — never record a heuristic-tier one as a finding without confirming it yourself. The exception is `co_signer`, which is read from the committee that hashes to the multisig's address rather than from behaviour, so a cluster marked `chain-derived` rests on arithmetic; it still shows control, not ownership. Critically, ABSENCE OF AN EDGE IS NOT EVIDENCE OF SEPARATE CONTROL: every behavioural signal here comes from a capped scan of public data, so two wallets funded out-of-band, sponsored by nobody and never sharing a transaction produce no edge no matter who controls them. And a multi-party committee is as much evidence its members are SEPARATE parties as that they share an operator — that is what a treasury multisig is for.",
+                  "Edges are facts; clusters are an inference — never record a heuristic-tier one as a finding without confirming it yourself. The exception is `co_signer`, which is read from the committee that hashes to the multisig's address rather than from behaviour, so a cluster marked `chain-derived` rests on arithmetic; it still shows control, not ownership. An `allowance` edge is read from state too, but grants a bounded, revocable spend rather than the wallet, so a cluster that needs one stays heuristic. Critically, ABSENCE OF AN EDGE IS NOT EVIDENCE OF SEPARATE CONTROL: every behavioural signal here comes from a capped scan of public data, so two wallets funded out-of-band, sponsored by nobody and never sharing a transaction produce no edge no matter who controls them. And a multi-party committee is as much evidence its members are SEPARATE parties as that they share an operator — that is what a treasury multisig is for.",
               }),
             },
           ],

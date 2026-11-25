@@ -58,6 +58,13 @@ import { assessCoFunding } from "./co-funding.js";
 import { pricesForRanking } from "./price-providers.js";
 import { prefetchCoinScale, pricingScale, usdValue } from "./valuation.js";
 import { counterpartySides } from "./fanout.js";
+import {
+  readFunderAllowances,
+  readSpenderAllowances,
+  type AllowanceInfo,
+  type AllowanceScanStatus,
+} from "./allowance.js";
+import type { AllowanceLink, SpenderReach } from "./wallet-edges.js";
 import { getLabel } from "./labels.js";
 
 /**
@@ -1943,4 +1950,78 @@ export async function buildWalletEdges(
    unreadIntermediaries > 0 || originUnreadLookups > 0 || unreadConsolidation > 0,
     notes,
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * Allowances
+ * ------------------------------------------------------------------ */
+
+export interface AllowanceObservations {
+  links: AllowanceLink[];
+  /** Distinct funders per spender of a link, from the scan of every allowance. */
+  reach: Map<string, SpenderReach>;
+  /** Seeds whose AllowanceCaps were not all read: `partial` stopped at the page cap, `failed` errored. */
+  funder_reads_incomplete: Array<{ address: string; status: "partial" | "failed"; error?: string }>;
+  /** The spender scan this read rests on. */
+  spender_scan: { status: AllowanceScanStatus; scanned: number; as_of: string; error?: string } | null;
+}
+
+function toLink(a: AllowanceInfo, capId: string | null): AllowanceLink | null {
+  if (!a.funder || !a.spender) return null;
+  return { allowance_id: a.allowance_id, cap_id: capId, funder: a.funder, spender: a.spender, app: a.app, coin_type: a.coin_type, status: a.status };
+}
+
+/**
+ * The allowances each seed funds (its `AllowanceCap`s, the complete set) and
+ * those naming it as spender (the bounded, cached scan of every allowance),
+ * with how many funders name each spender. Read outside the query budget,
+ * like the committee read: the caps are one request a seed and the scan is
+ * shared by the process for five minutes. A failed or truncated read is
+ * reported, never read as "no allowance".
+ */
+export async function readAllowanceLinks(seeds: string[], nowMs = Date.now()): Promise<AllowanceObservations> {
+  const links = new Map<string, AllowanceLink>();
+  const incomplete: AllowanceObservations["funder_reads_incomplete"] = [];
+  let spenderScan: AllowanceObservations["spender_scan"] = null;
+  const unique = [...new Set(seeds)];
+  await Promise.all(
+    unique.map(async (seed) => {
+      try {
+        const funded = await readFunderAllowances(seed, nowMs);
+        if (!funded.complete) incomplete.push({ address: seed, status: "partial" });
+        for (const a of funded.allowances) {
+          const link = toLink(a, a.cap_id);
+          if (link) links.set(link.allowance_id, link);
+        }
+      } catch (err) {
+        incomplete.push({ address: seed, status: "failed", error: err instanceof Error ? err.message : String(err) });
+      }
+    }),
+  );
+  // A failed scan is not cached, so it is not repeated for every seed and
+  // spender: once it fails, the spender side is unread for all of them.
+  const scanFailed = () => spenderScan?.status === "failed";
+  for (const seed of unique) {
+    if (scanFailed()) break;
+    const spent = await readSpenderAllowances(seed, nowMs);
+    spenderScan = { status: spent.status, scanned: spent.scanned, as_of: spent.as_of, ...(spent.error ? { error: spent.error } : {}) };
+    for (const a of spent.allowances) {
+      const link = toLink(a, null);
+      if (link && !links.has(link.allowance_id)) links.set(link.allowance_id, link);
+    }
+  }
+  const reach = new Map<string, SpenderReach>();
+  for (const spender of new Set([...links.values()].map((l) => l.spender))) {
+    if (scanFailed()) {
+      reach.set(spender, { funders: 0, complete: false });
+      continue;
+    }
+    const named = await readSpenderAllowances(spender, nowMs);
+    spenderScan = { status: named.status, scanned: named.scanned, as_of: named.as_of, ...(named.error ? { error: named.error } : {}) };
+    reach.set(spender, {
+      funders: new Set(named.allowances.flatMap((a) => (a.funder ? [a.funder] : []))).size,
+      complete: named.status === "complete",
+    });
+  }
+  return { links: [...links.values()], reach, funder_reads_incomplete: incomplete.sort((a, b) => a.address.localeCompare(b.address)), spender_scan: spenderScan };
 }

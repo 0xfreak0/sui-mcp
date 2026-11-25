@@ -90,7 +90,11 @@ export function candidates(hops: HopSpec[], paging: "forward" | "backward" = "fo
       digest: h.digest,
       sender: { address: h.sender },
       gasInput: { gasSponsor: { address: h.gasPayer ?? h.sender } },
-      effects: { gasEffects: { gasSummary: gasSummary(h) }, balanceChanges: gqlPage(balanceNodes(h)) },
+      effects: {
+        ...(h.checkpoint !== undefined ? { checkpoint: { sequenceNumber: h.checkpoint } } : {}),
+        gasEffects: { gasSummary: gasSummary(h) },
+        balanceChanges: gqlPage(balanceNodes(h)),
+      },
     })),
   );
   return {

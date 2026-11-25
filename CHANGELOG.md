@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.29.2 (2026-11-23)
+
+### Data
+- **Data refresh.** `validator-labels.json` labels −2 ~1, sources ~1; `sanctions.json` by_currency ~1, total_digital_currency_addresses updated; `coins.json` coins +18 −21; `protocol-roots.json` custody ~2. Not reverified, kept as `stale`: disclosed-labels.json: allbridge-core.
+
 ## 1.29.1 (2026-11-16)
 
 ### Data

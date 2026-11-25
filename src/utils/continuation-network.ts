@@ -18,6 +18,7 @@ const CALL_PATHS = [
   "package_activity.scan.next_call",
   "package_activity_next_call",
   "allowances_next_call",
+  "pas_account.next_call",
   "as_funder.next_call",
   "as_spender.next_call",
   "recent_transactions_next_call",

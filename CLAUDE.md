@@ -1954,8 +1954,15 @@ change is likely to break:
   says which.
 - **Package ids come from the standard's `Published.toml`** (mainnet
   `0xe2f75f77…`, testnet `0x7e775924…`, devnet none). The single `Namespace`
-  is found by type once per network and cached; more than one, or none, is
-  not the layout this reads, and returns no account rather than a guess.
+  is found by type once per network and cached. More than one, or none, is
+  not the layout this reads: `PasNamespaceUnavailable`, which both tools
+  report as `pas_account_unavailable`, never as no account. That miss is
+  kept five minutes so each call does not repeat the type query.
+- **`get_balance` reads its one coin at the account** (`readPasBalance`),
+  never by searching a page of the account's coins. The overview reads up to
+  `PAS_BALANCE_PAGES` pages and, past them, gives `pas_account.next_call`:
+  the overview of the account address itself from `next_cursor`, since it is
+  the same balance connection.
 - **An account address is durable.** Accounts are shared, and
   `derived_object::release` refuses a shared object, so an owner's derived
   address never passes to another object.

@@ -14,7 +14,7 @@ import {
   readBalanceRange,
   reconstructBalance,
 } from "../utils/historical-balance.js";
-import { PAS_NOTE, readPasAccount } from "../utils/pas.js";
+import { PAS_NOTE, readPasBalance } from "../utils/pas.js";
 import { getNetwork } from "../config.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -131,14 +131,15 @@ export function registerCoinTools(server: McpServer) {
         };
       }
 
+      // The same coin held in the owner's PAS account, which this balance
+      // excludes, read for this coin alone so no page of other coins hides it.
+      const pasCoin = canonicalCoinType(coin_type ?? "0x2::sui::SUI") ?? (coin_type ?? "0x2::sui::SUI");
       const [res, pas] = await Promise.all([
         sui.getBalance({ owner, coinType: coin_type }),
-        readPasAccount(owner).catch((err: unknown) => ({ failed: describeError(err, getNetwork()) })),
+        readPasBalance(owner, pasCoin).catch((err: unknown) => ({ failed: describeError(err, getNetwork()) })),
       ]);
       await prefetchCoinScale([res.balance.coinType]);
-      // The same coin held in the owner's PAS account, which this balance excludes.
-      const want = canonicalCoinType(res.balance.coinType);
-      const pasHeld = pas && !("failed" in pas) ? pas.balances.find((b) => canonicalCoinType(b.coin_type) === want) : undefined;
+      const pasHeld = pas && !("failed" in pas) && pas.balance !== "0" ? pas : undefined;
       return {
         content: [
           {
@@ -152,7 +153,7 @@ export function registerCoinTools(server: McpServer) {
               ...(pasHeld
                 ? {
                     pas_account_balance: {
-                      account_address: (pas as { account_address: string }).account_address,
+                      account_address: pasHeld.account_address,
                       balance: pasHeld.balance,
                       balance_formatted: formatCoinAmount(pasHeld.balance, res.balance.coinType),
                     },

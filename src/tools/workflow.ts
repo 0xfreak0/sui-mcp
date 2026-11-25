@@ -10,6 +10,7 @@ import { gqlQuery } from "../clients/graphql.js";
 import { getNetwork } from "../config.js";
 import { describeError, errorResult } from "../utils/errors.js";
 import { PAS_NOTE, readPasAccount } from "../utils/pas.js";
+import { formatCoinAmount } from "../utils/coin-amount.js";
 import { fetchAftermathPrices } from "./prices.js";
 import { countOwned } from "../utils/owned-objects.js";
 import { discoverKiosks } from "../utils/nft-holdings.js";
@@ -262,7 +263,22 @@ export function registerWorkflowTools(server: McpServer) {
         result.pas_account = null;
         result.pas_account_unavailable = `The Permissioned Asset Standard account read failed (${describeError(pasAccount, getNetwork())}), so whether this wallet holds permissioned balances is unknown.`;
       } else if (pasAccount && (pasAccount.account_created || pasAccount.balances.length)) {
-        result.pas_account = pasAccount;
+        // Formatted at each coin's own scale, as the holdings are.
+        await prefetchCoinScale(pasAccount.balances.map((b) => b.coin_type)).catch(() => undefined);
+        result.pas_account = {
+          ...pasAccount,
+          balances: pasAccount.balances.map((b) => ({ ...b, balance_formatted: formatCoinAmount(b.balance, b.coin_type) })),
+          // The account address is an ordinary address, so the overview of it
+          // pages the same balance connection from this cursor.
+          ...(pasAccount.next_cursor
+            ? {
+                next_call: {
+                  tool: "get_wallet_overview",
+                  args: { address: pasAccount.account_address, balance_cursor: pasAccount.next_cursor, include_nfts: false },
+                },
+              }
+            : {}),
+        };
         result.pas_account_note = PAS_NOTE;
       }
       if (packageActivity instanceof Error) {

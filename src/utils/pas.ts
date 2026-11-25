@@ -39,37 +39,61 @@ export function pasAccountAddress(pkg: string, namespace: string, owner: string)
 }
 
 const namespaceCache = new Map<SuiNetwork, string>();
+/** A failed identification, kept briefly so every call does not repeat the type query. */
+const namespaceMisses = new Map<SuiNetwork, { at: number; reason: string }>();
+const NAMESPACE_MISS_TTL_MS = 5 * 60 * 1000;
 
 /** Test-only. */
 export function resetPasCache(): void {
   namespaceCache.clear();
+  namespaceMisses.clear();
 }
 
-async function namespaceId(pkg: string): Promise<string | null> {
+/**
+ * PAS is deployed on this network but its Namespace could not be identified,
+ * so where owners' accounts sit is unknown. Never read as "no account".
+ */
+export class PasNamespaceUnavailable extends Error {}
+
+async function namespaceId(pkg: string): Promise<string> {
   const network = getNetwork();
   const cached = namespaceCache.get(network);
   if (cached) return cached;
+  const miss = namespaceMisses.get(network);
+  if (miss && Date.now() - miss.at < NAMESPACE_MISS_TTL_MS) throw new PasNamespaceUnavailable(miss.reason);
   const d = await gqlQuery<{ objects?: { nodes?: Array<{ address?: string }> } }>(
     `query ($t: String!) { objects(filter: { type: $t }, first: 2) { nodes { address } } }`,
     { t: `${pkg}::namespace::Namespace` },
   );
   const nodes = d.objects?.nodes ?? [];
   // The standard creates exactly one; anything else is not the layout read here.
-  if (nodes.length !== 1 || !nodes[0]!.address) return null;
+  if (nodes.length !== 1 || !nodes[0]!.address) {
+    const reason = `the PAS Namespace was not identified (${nodes.length} found where the standard creates one)`;
+    namespaceMisses.set(network, { at: Date.now(), reason });
+    throw new PasNamespaceUnavailable(reason);
+  }
   const id = normalizeSuiAddress(nodes[0]!.address);
   namespaceCache.set(network, id);
   return id;
 }
 
-/** Coin types read from a PAS account per request. */
-const BALANCE_PAGE = 50;
+/** `owner`'s derived account address, or null where PAS is not deployed. Throws when it cannot be placed. */
+export async function pasAccountFor(owner: string): Promise<string | null> {
+  const pkg = PAS_PACKAGES[getNetwork()];
+  if (!pkg) return null;
+  return pasAccountAddress(pkg, await namespaceId(pkg), owner);
+}
 
-const ACCOUNT_QUERY = `query ($a: SuiAddress!) {
+/** Coin types read from a PAS account per request, and requests per call. */
+const BALANCE_PAGE = 50;
+export const PAS_BALANCE_PAGES = 4;
+
+const ACCOUNT_QUERY = `query ($a: SuiAddress!, $after: String) {
   object(address: $a) { address }
   address(address: $a) {
-    balances(first: ${BALANCE_PAGE}) {
-      pageInfo { hasNextPage }
-      nodes { coinType { repr } totalBalance addressBalance }
+    balances(first: ${BALANCE_PAGE}, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes { coinType { repr } totalBalance }
     }
   }
 }`;
@@ -78,8 +102,8 @@ interface AccountResult {
   object?: { address?: string } | null;
   address?: {
     balances?: {
-      pageInfo?: { hasNextPage?: boolean };
-      nodes?: Array<{ coinType?: { repr?: string }; totalBalance?: string; addressBalance?: string | null }>;
+      pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+      nodes?: Array<{ coinType?: { repr?: string }; totalBalance?: string }>;
     } | null;
   } | null;
 }
@@ -90,32 +114,72 @@ export interface PasAccount {
   /** Whether the shared `Account` object exists. Funds can sit at the address before it does. */
   account_created: boolean;
   balances: Array<{ coin_type: string; balance: string }>;
-  /** More coin types than one page holds. */
+  /** More coin types remain after the pages read. */
   balances_truncated: boolean;
+  /** Reads the next coin types; null when none remain or the connection gave no advancing cursor. */
+  next_cursor: string | null;
 }
 
 /**
  * The PAS account `owner` has, or would have, on the call's network, with
- * the balances at its address. Null when PAS is not deployed on the network
- * or its namespace could not be identified. A failed read throws.
+ * the balances at its address: up to `PAS_BALANCE_PAGES` pages from `after`.
+ * Null when PAS is not deployed on the network. Throws on a failed read, and
+ * with `PasNamespaceUnavailable` when the standard's Namespace cannot be
+ * identified.
  */
-export async function readPasAccount(owner: string): Promise<PasAccount | null> {
-  const pkg = PAS_PACKAGES[getNetwork()];
-  if (!pkg) return null;
-  const namespace = await namespaceId(pkg);
-  if (!namespace) return null;
-  const account = pasAccountAddress(pkg, namespace, owner);
-  const d = await gqlQuery<AccountResult>(ACCOUNT_QUERY, { a: account });
-  const conn = d.address?.balances;
+export async function readPasAccount(owner: string, after: string | null = null): Promise<PasAccount | null> {
+  const account = await pasAccountFor(owner);
+  if (!account) return null;
+  const balances: PasAccount["balances"] = [];
+  let created = false;
+  let cursor = after;
+  let more = false;
+  let next: string | null = null;
+  for (let page = 0; page < PAS_BALANCE_PAGES; page++) {
+    const d = await gqlQuery<AccountResult>(ACCOUNT_QUERY, { a: account, after: cursor });
+    if (page === 0) created = Boolean(d.object?.address);
+    const conn = d.address?.balances;
+    for (const n of conn?.nodes ?? []) {
+      if (n.coinType?.repr && n.totalBalance && n.totalBalance !== "0") {
+        balances.push({ coin_type: n.coinType.repr, balance: n.totalBalance });
+      }
+    }
+    more = Boolean(conn?.pageInfo?.hasNextPage);
+    const end = conn?.pageInfo?.endCursor ?? null;
+    // A page claiming more with no advancing cursor cannot be continued.
+    next = more && end && end !== cursor ? end : null;
+    if (!next) break;
+    cursor = next;
+  }
   return {
     owner: normalizeSuiAddress(owner),
     account_address: account,
-    account_created: Boolean(d.object?.address),
-    balances: (conn?.nodes ?? [])
-      .filter((n) => n.coinType?.repr && n.totalBalance && n.totalBalance !== "0")
-      .map((n) => ({ coin_type: n.coinType!.repr!, balance: n.totalBalance! })),
-    balances_truncated: Boolean(conn?.pageInfo?.hasNextPage),
+    account_created: created,
+    balances,
+    balances_truncated: more,
+    next_cursor: more ? next : null,
   };
+}
+
+const BALANCE_QUERY = `query ($a: SuiAddress!, $t: String!) {
+  address(address: $a) { balance(coinType: $t) { totalBalance } }
+}`;
+
+/**
+ * One coin's balance at `owner`'s PAS account, however many coin types the
+ * account holds. Null where PAS is not deployed; throws like `readPasAccount`.
+ */
+export async function readPasBalance(
+  owner: string,
+  coinType: string,
+): Promise<{ account_address: string; balance: string } | null> {
+  const account = await pasAccountFor(owner);
+  if (!account) return null;
+  const d = await gqlQuery<{ address?: { balance?: { totalBalance?: string } | null } | null }>(BALANCE_QUERY, {
+    a: account,
+    t: coinType,
+  });
+  return { account_address: account, balance: d.address?.balance?.totalBalance ?? "0" };
 }
 
 export const PAS_NOTE =

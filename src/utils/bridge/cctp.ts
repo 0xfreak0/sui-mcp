@@ -161,12 +161,57 @@ export interface CctpTransfer {
    * a contract that may act on the USDC rather than hold it.
    */
   hookData: string | null;
+  /** V2: the event has a `hook_data` field in neither shape this reads. */
+  hookDataUnreadable?: true;
 }
 
-/** A `vector<u8>` field as hex: GraphQL renders it as base64. */
-function hexOf(v: string): string {
-  if (/^0x[0-9a-fA-F]*$/.test(v)) return v.toLowerCase();
-  return `0x${Buffer.from(v, "base64").toString("hex")}`;
+/**
+ * A `vector<u8>` field as hex. GraphQL renders it as base64, so a string is
+ * always decoded as base64 (a base64 string can look like `0x…` hex); a gRPC
+ * rendering as a list of byte values is read as bytes. Anything else is null.
+ */
+export function vectorU8Hex(v: unknown): string | null {
+  if (typeof v === "string") return `0x${Buffer.from(v, "base64").toString("hex")}`;
+  if (Array.isArray(v) && v.every((b) => Number.isInteger(b) && b >= 0 && b <= 255)) {
+    return `0x${Buffer.from(v as number[]).toString("hex")}`;
+  }
+  return null;
+}
+
+/** The CCTP version a burn event's own fields name: V2 carries `max_fee`, V1 a `nonce`. */
+export function burnEventVersion(json: unknown): 1 | 2 | null {
+  if (!json || typeof json !== "object") return null;
+  const f = json as Record<string, unknown>;
+  return "max_fee" in f ? 2 : "nonce" in f ? 1 : null;
+}
+
+/** A header's CCTP version: message version 0 is V1, 1 is V2. */
+export function headerVersion(h: CctpMessageHeader): 1 | 2 | null {
+  return h.version === 0 ? 1 : h.version === 1 ? 2 : null;
+}
+
+/**
+ * Pair each burn event with its own `MessageSent` header. A burn takes the
+ * first unused header of its own version (when its fields name one) and its
+ * destination domain, in emission order, since each burn sends one message.
+ * A burn with no such header gets null, never another burn's header.
+ */
+export function pairBurnHeaders(burns: unknown[], headers: CctpMessageHeader[]): Array<CctpMessageHeader | null> {
+  const used = new Set<number>();
+  return burns.map((json) => {
+    const version = burnEventVersion(json);
+    const f = json && typeof json === "object" ? (json as Record<string, unknown>) : {};
+    const dest = typeof f.destination_domain === "number" ? f.destination_domain : null;
+    const i = headers.findIndex(
+      (h, k) =>
+        !used.has(k) &&
+        (version === null || headerVersion(h) === version) &&
+        (dest === null || h.destinationDomain === dest),
+    );
+    if (i < 0) return null;
+    used.add(i);
+    return headers[i]!;
+  });
 }
 
 const str = (v: unknown): string | null =>
@@ -180,6 +225,12 @@ const str = (v: unknown): string | null =>
  * destination and recipient are still reported, since those are the parts an
  * investigator follows.
  */
+/** A header's destination domain, only when it is of the burn's own version. */
+function head0(header: CctpMessageHeader | null, f: Record<string, unknown>): number | undefined {
+  const own = burnEventVersion(f);
+  return header && (own === null || headerVersion(header) === own) ? header.destinationDomain : undefined;
+}
+
 export function parseDepositForBurn(
   json: unknown,
   header: CctpMessageHeader | null,
@@ -189,17 +240,21 @@ export function parseDepositForBurn(
   const f = json as Record<string, unknown>;
 
   const destinationDomain =
-    typeof f.destination_domain === "number" ? f.destination_domain : header?.destinationDomain;
+    typeof f.destination_domain === "number" ? f.destination_domain : head0(header, f);
   if (destinationDomain === undefined) return null;
 
-  // V1's event carries a nonce; V2's carries max_fee and no nonce.
-  const cctpVersion: CctpTransfer["cctpVersion"] =
-    header?.version === 1 || "max_fee" in f ? 2 : header?.version === 0 || "nonce" in f ? 1 : null;
-  const nonce = str(f.nonce) ?? header?.nonce ?? null;
-  const sourceDomain = header?.sourceDomain ?? null;
+  // The event's own fields decide the version (V1 carries a nonce, V2
+  // max_fee); a header only fills in when they say neither, and a header of
+  // the other version is not this burn's and is ignored.
+  const own = burnEventVersion(f);
+  const head = header && (own === null || headerVersion(header) === own) ? header : null;
+  const cctpVersion: CctpTransfer["cctpVersion"] = own ?? (head ? headerVersion(head) : null);
+  const nonce = str(f.nonce) ?? head?.nonce ?? null;
+  const sourceDomain = head?.sourceDomain ?? null;
   const minFinality =
-    typeof f.min_finality_threshold === "number" ? f.min_finality_threshold : (header?.minFinalityThreshold ?? null);
-  const hook = str(f.hook_data);
+    typeof f.min_finality_threshold === "number" ? f.min_finality_threshold : (head?.minFinalityThreshold ?? null);
+  const hookPresent = "hook_data" in f && f.hook_data !== null;
+  const hook = hookPresent ? vectorU8Hex(f.hook_data) : null;
   const mintRecipientRaw = str(f.mint_recipient);
 
   const destinationAddress = mintRecipientRaw
@@ -227,6 +282,7 @@ export function parseDepositForBurn(
     burnToken: str(f.burn_token),
     maxFee: cctpVersion === 2 ? str(f.max_fee) : null,
     minFinalityThreshold: cctpVersion === 2 ? minFinality : null,
-    hookData: cctpVersion === 2 && hook ? hexOf(hook) : null,
+    hookData: cctpVersion === 2 && hook && hook !== "0x" ? hook : null,
+    ...(cctpVersion === 2 && hookPresent && hook === null ? { hookDataUnreadable: true as const } : {}),
   };
 }

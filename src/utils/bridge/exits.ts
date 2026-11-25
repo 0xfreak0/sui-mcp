@@ -23,8 +23,10 @@ import {
 import {
   CCTP_DEPOSIT_EVENT_SUFFIX,
   CCTP_MESSAGE_EVENT_SUFFIX,
+  pairBurnHeaders,
   parseDepositForBurn,
   parseMessageHeader,
+  type CctpMessageHeader,
   type CctpTransfer,
 } from "./cctp.js";
 import {
@@ -57,7 +59,7 @@ export interface BridgeEventReading {
   axelar: AxelarTransfer[];
   allbridge: AllbridgeTransfer[];
   /** True for a CCTP burn that carries an Allbridge transfer (same nonce): its beneficiary is Allbridge's wallet. */
-  carriesAllbridge: (cctpNonce: string | null) => boolean;
+  carriesAllbridge: (t: CctpTransfer) => boolean;
   celer: CelerBurn[];
   /** Token Bridge redemptions: value ARRIVING on Sui. NTT redemptions need the inputs; see `nttRedemptions`. */
   wormholeInbound: WormholeInbound[];
@@ -89,25 +91,25 @@ export function readBridgeEvents(events: SuiEventNode[], qualify: boolean): Brid
   // CCTP: the burn event carries destination domain and recipient, so this
   // half is chain-derived. The paired MessageSent supplies the source
   // domain, which completes the transfer id.
-  const cctpHeader = (() => {
-    for (const e of events) {
-      const t = typeOf(e);
-      if (typeof t !== "string" || !t.endsWith(CCTP_MESSAGE_EVENT_SUFFIX)) continue;
-      const msg = (e.contents?.json as { message?: unknown } | undefined)?.message;
-      if (typeof msg === "string") {
-        const header = parseMessageHeader(msg);
-        if (header) return header;
-      }
-    }
-    return null;
-  })();
-
-  const cctpTransfers = events
+  const cctpHeaders: CctpMessageHeader[] = [];
+  for (const e of events) {
+    const t = typeOf(e);
+    if (typeof t !== "string" || !t.endsWith(CCTP_MESSAGE_EVENT_SUFFIX)) continue;
+    const msg = (e.contents?.json as { message?: unknown } | undefined)?.message;
+    const header = typeof msg === "string" ? parseMessageHeader(msg) : null;
+    if (header) cctpHeaders.push(header);
+  }
+  // Each burn sends one message, so each burn is paired with its own: a V2
+  // message's header never decides a V1 burn's version or identity.
+  const burnJson = events
     .filter((e) => {
       const t = typeOf(e);
       return typeof t === "string" && t.endsWith(CCTP_DEPOSIT_EVENT_SUFFIX);
     })
-    .map((e) => parseDepositForBurn(e.contents?.json, cctpHeader, qualify))
+    .map((e) => e.contents?.json);
+  const burnHeaders = pairBurnHeaders(burnJson, cctpHeaders);
+  const cctpTransfers = burnJson
+    .map((json, i) => parseDepositForBurn(json, burnHeaders[i] ?? null, qualify))
     .filter((t): t is NonNullable<typeof t> => t !== null);
 
   // Sui's native bridge carries its destination in the event, so this half
@@ -148,8 +150,20 @@ export function readBridgeEvents(events: SuiEventNode[], qualify: boolean): Brid
   // Allbridge's live route burns through CCTP with its own nonce. The burn's
   // mint recipient is where USDC lands (on Solana, the wallet's token
   // account); Allbridge's event names the wallet, so that is the beneficiary.
-  const allbridgeNonces = new Set(allbridge.filter((a) => a.route === "cctp").map((a) => a.nonce));
-  const carriesAllbridge = (cctpNonce: string | null) => cctpNonce !== null && allbridgeNonces.has(cctpNonce);
+  // V1 pairs by nonce. A V2 burn has no nonce on Sui, so it pairs with an
+  // Allbridge CCTP-route transfer in the same transaction that names the same
+  // 32-byte mint recipient (Allbridge's `recipient` is the CCTP mint
+  // recipient), and the same amount when both state one.
+  const allbridgeCctp = allbridge.filter((a) => a.route === "cctp");
+  const allbridgeNonces = new Set(allbridgeCctp.map((a) => a.nonce));
+  const carriesAllbridge = (t: CctpTransfer) => {
+    if (t.nonce !== null && allbridgeNonces.has(t.nonce)) return true;
+    if (t.cctpVersion !== 2 || !t.mintRecipientRaw) return false;
+    const raw = t.mintRecipientRaw.toLowerCase();
+    return allbridgeCctp.some(
+      (a) => a.recipient_raw.toLowerCase() === raw && (a.amount === null || t.amount === null || a.amount === t.amount),
+    );
+  };
   const beneficiaries: Beneficiary[] = [
     ...hashi.beneficiaries,
     ...mayan,
@@ -159,7 +173,7 @@ export function readBridgeEvents(events: SuiEventNode[], qualify: boolean): Brid
     ...allbridge.map((a) => a.beneficiary),
     ...celer.map((c) => c.beneficiary),
     ...cctpTransfers
-      .filter((t) => !settlesForMayan(t.destinationAddress) && !carriesAllbridge(t.nonce))
+      .filter((t) => !settlesForMayan(t.destinationAddress) && !carriesAllbridge(t))
       .map((t): Beneficiary => ({
         evidence: "chain-derived",
         protocol: "Circle CCTP",

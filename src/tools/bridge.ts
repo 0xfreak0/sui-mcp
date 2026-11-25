@@ -6,6 +6,7 @@ import { caip2ForSuiNetwork } from "../utils/chain-id.js";
 import { errorResult } from "../utils/errors.js";
 import { readBridgeEvents, sameForeignAddress } from "../utils/bridge/exits.js";
 import { CROSS_CHAIN_LEAD_MEANING } from "../utils/bridge/cross-chain.js";
+import { CCTP_SUI_DOMAIN } from "../utils/bridge/cctp.js";
 import { detectBridges, exitCarrier, type CallSite } from "../utils/bridge/detect.js";
 import { readHashiRequestStates, type HashiRequestState } from "../utils/bridge/hashi-status.js";
 import { bridgeCarriers, carrierPackages, CARRIER_MEANING } from "../utils/bridge/carrier.js";
@@ -385,12 +386,20 @@ export function registerBridgeTools(server: McpServer) {
                 source_domain: t.sourceDomain,
                 ...(t.cctpVersion === 2
                   ? {
-                      attestation_lookup: { source_domain: t.sourceDomain, transaction_hash: digest },
+                      // Every burn this tool reads was made on Sui.
+                      attestation_lookup: { source_domain: t.sourceDomain ?? CCTP_SUI_DOMAIN, transaction_hash: digest },
                       ...(t.maxFee !== null ? { max_fee: t.maxFee } : {}),
                       min_finality_threshold: t.minFinalityThreshold,
                       finality:
                         t.minFinalityThreshold === null ? null : t.minFinalityThreshold <= 1000 ? "fast" : "standard",
-                      ...(t.hookData && t.hookData !== "0x"
+                      ...(t.hookDataUnreadable
+                        ? {
+                            hook_data_unreadable: true,
+                            hook_note:
+                              "This burn has hook data in a shape this server does not read, so whether the mint recipient is a contract that acts on the USDC is unknown.",
+                          }
+                        : {}),
+                      ...(t.hookData
                         ? {
                             hook_data: t.hookData,
                             hook_note:
@@ -415,7 +424,7 @@ export function registerBridgeTools(server: McpServer) {
                       role: "settlement_intermediate" as const,
                       note: "This burn mints to Mayan's settlement contract, which pays the order on the destination chain. The recipient is the Mayan beneficiary in `beneficiaries`, not this address.",
                     }
-                  : carriesAllbridge(t.nonce)
+                  : carriesAllbridge(t)
                     ? {
                         carries: "Allbridge Core",
                         note: "This burn carries the Allbridge Core transfer with the same nonce. USDC is minted to this address (on Solana, the wallet's token account); the beneficiary is Allbridge's recipient wallet in `beneficiaries`.",

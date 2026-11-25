@@ -2896,8 +2896,13 @@ identity `8/0`. A V2 burn has `transfer_id: null` and is identified by
 recipient may be a contract that acts on the USDC. `amount` is a `u256`. V2
 also serves domains past 14 that `DOMAIN_NAMES` does not map; those stay
 reported by number until Circle's assignment is read from a first-party list.
-An Allbridge or Mayan CCTP leg is matched by V1 nonce, so it does not pair a
-V2 burn.
+A Mayan CCTP leg is matched by its mint recipient, whatever the version. An
+Allbridge CCTP leg is matched by nonce in V1; a V2 burn has no nonce on Sui,
+so it pairs with an Allbridge CCTP-route transfer in the same transaction
+naming the same 32-byte mint recipient (and amount, when both state one).
+Each burn is paired with its own `MessageSent` (`pairBurnHeaders`: same
+version and destination domain, in order), and a burn's version comes from
+its event's fields (`max_fee` for V2, `nonce` for V1) before any header.
 
 Circle's attestation API is deliberately **not** called: an attestation says
 Circle signed the message, not that anyone claimed it, so it would add a

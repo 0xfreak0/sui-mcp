@@ -191,7 +191,7 @@ describe("beneficiaries of the newer bridges", () => {
     expect(r.beneficiaries[0].chain).toBe("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp");
     // The CCTP burn is Allbridge's carrier, matched on the shared nonce.
     expect(r.cctpTransfers[0].destinationAddress).toBe("5xpSpHUF6Mub1vn1nf9yCktEJi4a6bqVKqwMxrYvHgd");
-    expect(r.carriesAllbridge(r.cctpTransfers[0].nonce)).toBe(true);
+    expect(r.carriesAllbridge(r.cctpTransfers[0])).toBe(true);
   });
 
   it("reads the deprecated pool bridge's recipient and messenger (FmxxWhRo…)", () => {

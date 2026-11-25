@@ -3,9 +3,12 @@ import {
   caip2ForCctpDomain,
   cctpDomainLabel,
   decodeMintRecipient,
+  pairBurnHeaders,
   parseDepositForBurn,
   parseMessageHeader,
+  vectorU8Hex,
 } from "../src/utils/bridge/cctp.js";
+import { readBridgeEvents } from "../src/utils/bridge/exits.js";
 
 /** Captured from mainnet tx 4rDEyqGebKd98mc8vpPs3E9jFXe37MhGWFN4tp2HdVvL. */
 const MESSAGE_B64 =
@@ -177,5 +180,72 @@ describe("CCTP V2", () => {
   it("reports hook data as hex", () => {
     const t = parseDepositForBurn({ ...V2_DEPOSIT, hook_data: Buffer.from([0xab, 0xcd]).toString("base64") }, null, true)!;
     expect(t.hookData).toBe("0xabcd");
+  });
+});
+
+describe("CCTP V2 review fixes", () => {
+  const V1_HEADER = parseMessageHeader(MESSAGE_B64)!;
+  const V2_HEADER = parseMessageHeader(V2_MESSAGE_B64)!;
+
+  it("keeps a V1 burn's own version and transfer id when a V2 header is passed to it", () => {
+    const t = parseDepositForBurn(DEPOSIT, V2_HEADER, true)!;
+    expect(t.cctpVersion).toBe(1);
+    // The V2 header is not this burn's, so it supplies no source domain.
+    expect(t.nonce).toBe("425380");
+    expect(t.sourceDomain).toBeNull();
+    expect(t.transferId).toBeNull();
+    // With its own header the V1 identity is complete.
+    expect(parseDepositForBurn(DEPOSIT, V1_HEADER, true)!.transferId).toBe("8/425380");
+  });
+
+  it("pairs each burn with the message of its own version and destination, whatever the emission order", () => {
+    const paired = pairBurnHeaders([DEPOSIT, V2_DEPOSIT], [V2_HEADER, V1_HEADER]);
+    expect(paired[0]).toBe(V1_HEADER);
+    expect(paired[1]).toBe(V2_HEADER);
+    expect(pairBurnHeaders([DEPOSIT], [V2_HEADER])).toEqual([null]);
+  });
+
+  it("reads hook data given as base64, as a byte list, and flags any other shape", () => {
+    // A base64 string that happens to look like 0x-prefixed hex is still base64.
+    expect(vectorU8Hex("0xAB")).toBe(`0x${Buffer.from("0xAB", "base64").toString("hex")}`);
+    expect(vectorU8Hex([171, 205])).toBe("0xabcd");
+    expect(vectorU8Hex([300])).toBeNull();
+    const list = parseDepositForBurn({ ...V2_DEPOSIT, hook_data: [171, 205] }, null, true)!;
+    expect(list.hookData).toBe("0xabcd");
+    const odd = parseDepositForBurn({ ...V2_DEPOSIT, hook_data: { bytes: "x" } }, null, true)!;
+    expect(odd).toMatchObject({ hookData: null, hookDataUnreadable: true });
+    expect(parseDepositForBurn(V2_DEPOSIT, null, true)!.hookDataUnreadable).toBeUndefined();
+  });
+});
+
+describe("readBridgeEvents pairs Allbridge with a V2 burn", () => {
+  const ALLBRIDGE_CCTP = "0x647e874d024e3dcbb77ac023ea6a506d2c8ff832ec58c4b2ad14e71ac465546c::events::TokensSentEvent";
+  const BURN = "0xeb14978abfe93a37c5d5bf86a0623b923553a5f0e794daac7724f1e2fdbfb830::deposit_for_burn::DepositForBurn";
+  const MSG = "0x16bcfcfc465f96281663a344641c017de84529370e11aa3879d0dce43ad6db87::send_message::MessageSent";
+  const MINT = "ab".repeat(32);
+  const WALLET = "cd".repeat(32);
+  const ev = (repr: string, json: unknown) => ({ contents: { type: { repr }, json } });
+  const allbridge = (recipient: string) =>
+    ev(ALLBRIDGE_CCTP, {
+      recipient,
+      recipient_wallet_address: WALLET,
+      destination_chain_id: 4,
+      amount: "4347668986",
+      nonce: "0",
+    });
+  const burn = ev(BURN, { ...V2_DEPOSIT, mint_recipient: `0x${MINT}`, destination_domain: 5 });
+
+  it("treats a V2 burn to Allbridge's mint recipient as carrying the Allbridge transfer", () => {
+    const r = readBridgeEvents([allbridge(MINT), burn, ev(MSG, { message: V2_MESSAGE_B64 })], true);
+    const t = r.cctpTransfers[0]!;
+    expect(r.carriesAllbridge(t)).toBe(true);
+    // The mint recipient is not reported as a destination beside Allbridge's wallet.
+    expect(r.beneficiaries.filter((b) => b.protocol === "Circle CCTP")).toEqual([]);
+  });
+
+  it("does not pair a V2 burn that mints elsewhere", () => {
+    const r = readBridgeEvents([allbridge("ef".repeat(32)), burn], true);
+    expect(r.carriesAllbridge(r.cctpTransfers[0]!)).toBe(false);
+    expect(r.beneficiaries.some((b) => b.protocol === "Circle CCTP")).toBe(true);
   });
 });

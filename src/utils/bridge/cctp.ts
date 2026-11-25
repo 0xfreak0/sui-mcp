@@ -7,9 +7,11 @@
  * the paired `MessageSent` carries the raw message whose header holds the
  * source domain and nonce.
  *
- * `(source_domain, nonce)` is CCTP's transfer identity and is quoted back by
- * the destination chain on mint, so it is also the key for confirming the
- * transfer completed.
+ * In V1, `(source_domain, nonce)` is the transfer identity, quoted back by the
+ * destination chain on mint. V2 (message version 1, `max_fee` in the burn
+ * event) leaves the 32-byte nonce zero in the source chain's message, since
+ * Circle's attester assigns it, so a V2 transfer is found by its source domain
+ * and burn transaction (Circle's `/v2/messages/{sourceDomain}?transactionHash=`).
  *
  * Circle also serves an attestation API. It is deliberately not called here: an
  * attestation says Circle signed the message, not that anyone claimed it, so it
@@ -63,31 +65,52 @@ export function caip2ForCctpDomain(domain: number): ChainId | null {
 
 /** CCTP message header, which is where the transfer's identity lives. */
 export interface CctpMessageHeader {
+  /** Message format version: 0 is CCTP V1, 1 is CCTP V2. */
   version: number;
   sourceDomain: number;
   destinationDomain: number;
-  nonce: string;
+  /**
+   * V1: the u64 nonce the source chain assigned. V2: null while the message's
+   * 32-byte nonce is still zero, which it always is in the source chain's own
+   * copy, since Circle's attester assigns it.
+   */
+  nonce: string | null;
+  /** V2 only: the finality the burner asked for (1000 fast, 2000 standard). */
+  minFinalityThreshold?: number;
 }
+
+/** CCTP V2 message: nonce(32) at 12, then sender, recipient, caller (32 each), two u32 thresholds. */
+const V2_HEADER_LEN = 148;
+const V2_MIN_FINALITY_AT = 140;
 
 /**
  * Read the fixed header of a CCTP message.
  *
- * Layout is version(4) ‖ sourceDomain(4) ‖ destinationDomain(4) ‖ nonce(8),
- * big-endian, then sender/recipient/body. Anything shorter than the header is
- * not a CCTP message and returns null rather than a record of zeros.
+ * V1 (version 0): version(4) ‖ sourceDomain(4) ‖ destinationDomain(4) ‖
+ * nonce(8), big-endian. V2 (version 1): the nonce is 32 bytes, and the header
+ * runs on to the sender, recipient, destination caller and finality
+ * thresholds. Anything shorter than its version's header is not a CCTP
+ * message and returns null rather than a record of zeros. An unknown
+ * version keeps its domains and reports no nonce.
  */
 export function parseMessageHeader(base64: string): CctpMessageHeader | null {
   try {
     const b = Buffer.from(base64, "base64");
-    if (b.length < 20) return null;
-    return {
-      version: b.readUInt32BE(0),
-      sourceDomain: b.readUInt32BE(4),
-      destinationDomain: b.readUInt32BE(8),
+    if (b.length < 12) return null;
+    const version = b.readUInt32BE(0);
+    const head = { version, sourceDomain: b.readUInt32BE(4), destinationDomain: b.readUInt32BE(8) };
+    if (version === 0) {
+      if (b.length < 20) return null;
       // u64: read as BigInt, since a nonce past 2^53 would lose precision as a
       // Number and stop matching the destination chain's copy.
-      nonce: b.readBigUInt64BE(12).toString(),
-    };
+      return { ...head, nonce: b.readBigUInt64BE(12).toString() };
+    }
+    if (version === 1) {
+      if (b.length < V2_HEADER_LEN) return null;
+      const nonce = BigInt(`0x${b.subarray(12, 44).toString("hex")}`);
+      return { ...head, nonce: nonce === 0n ? null : nonce.toString(), minFinalityThreshold: b.readUInt32BE(V2_MIN_FINALITY_AT) };
+    }
+    return { ...head, nonce: null };
   } catch {
     return null;
   }
@@ -108,7 +131,13 @@ export function decodeMintRecipient(raw: string, destinationDomain: number): str
 }
 
 export interface CctpTransfer {
-  /** `sourceDomain/nonce` — CCTP's transfer identity. */
+  /** 1 or 2, from the message version or the event's shape; null when neither says. */
+  cctpVersion: 1 | 2 | null;
+  /**
+   * `sourceDomain/nonce`, CCTP V1's transfer identity. Null for V2, whose
+   * nonce is assigned by Circle's attester after the burn: a V2 transfer is
+   * identified by its source domain and burn transaction instead.
+   */
   transferId: string | null;
   nonce: string | null;
   sourceDomain: number | null;
@@ -123,6 +152,66 @@ export interface CctpTransfer {
   depositor: string | null;
   amount: string | null;
   burnToken: string | null;
+  /** V2: the most of `amount` the burner lets the relayer keep as a fee. */
+  maxFee: string | null;
+  /** V2: 1000 or below asks for fast transfer, 2000 for standard finality. */
+  minFinalityThreshold: number | null;
+  /**
+   * V2: bytes the destination passes to a hook. Non-empty, the recipient is
+   * a contract that may act on the USDC rather than hold it.
+   */
+  hookData: string | null;
+  /** V2: the event has a `hook_data` field in neither shape this reads. */
+  hookDataUnreadable?: true;
+}
+
+/**
+ * A `vector<u8>` field as hex. GraphQL renders it as base64, so a string is
+ * always decoded as base64 (a base64 string can look like `0x…` hex); a gRPC
+ * rendering as a list of byte values is read as bytes. Anything else is null.
+ */
+export function vectorU8Hex(v: unknown): string | null {
+  if (typeof v === "string") return `0x${Buffer.from(v, "base64").toString("hex")}`;
+  if (Array.isArray(v) && v.every((b) => Number.isInteger(b) && b >= 0 && b <= 255)) {
+    return `0x${Buffer.from(v as number[]).toString("hex")}`;
+  }
+  return null;
+}
+
+/** The CCTP version a burn event's own fields name: V2 carries `max_fee`, V1 a `nonce`. */
+export function burnEventVersion(json: unknown): 1 | 2 | null {
+  if (!json || typeof json !== "object") return null;
+  const f = json as Record<string, unknown>;
+  return "max_fee" in f ? 2 : "nonce" in f ? 1 : null;
+}
+
+/** A header's CCTP version: message version 0 is V1, 1 is V2. */
+export function headerVersion(h: CctpMessageHeader): 1 | 2 | null {
+  return h.version === 0 ? 1 : h.version === 1 ? 2 : null;
+}
+
+/**
+ * Pair each burn event with its own `MessageSent` header. A burn takes the
+ * first unused header of its own version (when its fields name one) and its
+ * destination domain, in emission order, since each burn sends one message.
+ * A burn with no such header gets null, never another burn's header.
+ */
+export function pairBurnHeaders(burns: unknown[], headers: CctpMessageHeader[]): Array<CctpMessageHeader | null> {
+  const used = new Set<number>();
+  return burns.map((json) => {
+    const version = burnEventVersion(json);
+    const f = json && typeof json === "object" ? (json as Record<string, unknown>) : {};
+    const dest = typeof f.destination_domain === "number" ? f.destination_domain : null;
+    const i = headers.findIndex(
+      (h, k) =>
+        !used.has(k) &&
+        (version === null || headerVersion(h) === version) &&
+        (dest === null || h.destinationDomain === dest),
+    );
+    if (i < 0) return null;
+    used.add(i);
+    return headers[i]!;
+  });
 }
 
 const str = (v: unknown): string | null =>
@@ -136,6 +225,12 @@ const str = (v: unknown): string | null =>
  * destination and recipient are still reported, since those are the parts an
  * investigator follows.
  */
+/** A header's destination domain, only when it is of the burn's own version. */
+function head0(header: CctpMessageHeader | null, f: Record<string, unknown>): number | undefined {
+  const own = burnEventVersion(f);
+  return header && (own === null || headerVersion(header) === own) ? header.destinationDomain : undefined;
+}
+
 export function parseDepositForBurn(
   json: unknown,
   header: CctpMessageHeader | null,
@@ -145,11 +240,21 @@ export function parseDepositForBurn(
   const f = json as Record<string, unknown>;
 
   const destinationDomain =
-    typeof f.destination_domain === "number" ? f.destination_domain : header?.destinationDomain;
+    typeof f.destination_domain === "number" ? f.destination_domain : head0(header, f);
   if (destinationDomain === undefined) return null;
 
-  const nonce = str(f.nonce) ?? header?.nonce ?? null;
-  const sourceDomain = header?.sourceDomain ?? null;
+  // The event's own fields decide the version (V1 carries a nonce, V2
+  // max_fee); a header only fills in when they say neither, and a header of
+  // the other version is not this burn's and is ignored.
+  const own = burnEventVersion(f);
+  const head = header && (own === null || headerVersion(header) === own) ? header : null;
+  const cctpVersion: CctpTransfer["cctpVersion"] = own ?? (head ? headerVersion(head) : null);
+  const nonce = str(f.nonce) ?? head?.nonce ?? null;
+  const sourceDomain = head?.sourceDomain ?? null;
+  const minFinality =
+    typeof f.min_finality_threshold === "number" ? f.min_finality_threshold : (head?.minFinalityThreshold ?? null);
+  const hookPresent = "hook_data" in f && f.hook_data !== null;
+  const hook = hookPresent ? vectorU8Hex(f.hook_data) : null;
   const mintRecipientRaw = str(f.mint_recipient);
 
   const destinationAddress = mintRecipientRaw
@@ -163,7 +268,8 @@ export function parseDepositForBurn(
     : null;
 
   return {
-    transferId: sourceDomain !== null && nonce ? `${sourceDomain}/${nonce}` : null,
+    cctpVersion,
+    transferId: cctpVersion !== 2 && sourceDomain !== null && nonce ? `${sourceDomain}/${nonce}` : null,
     nonce,
     sourceDomain,
     destinationDomain,
@@ -174,5 +280,9 @@ export function parseDepositForBurn(
     depositor: str(f.depositor),
     amount: str(f.amount),
     burnToken: str(f.burn_token),
+    maxFee: cctpVersion === 2 ? str(f.max_fee) : null,
+    minFinalityThreshold: cctpVersion === 2 ? minFinality : null,
+    hookData: cctpVersion === 2 && hook && hook !== "0x" ? hook : null,
+    ...(cctpVersion === 2 && hookPresent && hook === null ? { hookDataUnreadable: true as const } : {}),
   };
 }

@@ -6,6 +6,7 @@ import { caip2ForSuiNetwork } from "../utils/chain-id.js";
 import { errorResult } from "../utils/errors.js";
 import { readBridgeEvents, sameForeignAddress } from "../utils/bridge/exits.js";
 import { CROSS_CHAIN_LEAD_MEANING } from "../utils/bridge/cross-chain.js";
+import { CCTP_SUI_DOMAIN } from "../utils/bridge/cctp.js";
 import { detectBridges, exitCarrier, type CallSite } from "../utils/bridge/detect.js";
 import { readHashiRequestStates, type HashiRequestState } from "../utils/bridge/hashi-status.js";
 import { bridgeCarriers, carrierPackages, CARRIER_MEANING } from "../utils/bridge/carrier.js";
@@ -379,9 +380,34 @@ export function registerBridgeTools(server: McpServer) {
           ? {
               circle_cctp: cctpTransfers.map((t) => ({
                 evidence: "chain-derived" as const,
+                cctp_version: t.cctpVersion,
                 transfer_id: t.transferId,
                 nonce: t.nonce,
                 source_domain: t.sourceDomain,
+                ...(t.cctpVersion === 2
+                  ? {
+                      // Every burn this tool reads was made on Sui.
+                      attestation_lookup: { source_domain: t.sourceDomain ?? CCTP_SUI_DOMAIN, transaction_hash: digest },
+                      ...(t.maxFee !== null ? { max_fee: t.maxFee } : {}),
+                      min_finality_threshold: t.minFinalityThreshold,
+                      finality:
+                        t.minFinalityThreshold === null ? null : t.minFinalityThreshold <= 1000 ? "fast" : "standard",
+                      ...(t.hookDataUnreadable
+                        ? {
+                            hook_data_unreadable: true,
+                            hook_note:
+                              "This burn has hook data in a shape this server does not read, so whether the mint recipient is a contract that acts on the USDC is unknown.",
+                          }
+                        : {}),
+                      ...(t.hookData
+                        ? {
+                            hook_data: t.hookData,
+                            hook_note:
+                              "This burn carries hook data for the destination, so the mint recipient may be a contract that acts on the USDC (forwards it, swaps it) rather than the final holder.",
+                          }
+                        : {}),
+                    }
+                  : {}),
                 destination_chain: t.destinationAccount
                   ? t.destinationAccount.split(":").slice(0, 2).join(":")
                   : null,
@@ -398,13 +424,16 @@ export function registerBridgeTools(server: McpServer) {
                       role: "settlement_intermediate" as const,
                       note: "This burn mints to Mayan's settlement contract, which pays the order on the destination chain. The recipient is the Mayan beneficiary in `beneficiaries`, not this address.",
                     }
-                  : carriesAllbridge(t.nonce)
+                  : carriesAllbridge(t)
                     ? {
                         carries: "Allbridge Core",
                         note: "This burn carries the Allbridge Core transfer with the same nonce. USDC is minted to this address (on Solana, the wallet's token account); the beneficiary is Allbridge's recipient wallet in `beneficiaries`.",
                       }
                     : {
-                        note: "Destination read from the burn event, not from an indexer. Confirm the mint on the destination chain against this transfer id to establish it was completed.",
+                        note:
+                          t.cctpVersion === 2
+                            ? "Destination read from the burn event, not from an indexer. This is a CCTP V2 burn: its nonce is assigned when Circle attests the message, so the transfer is identified by attestation_lookup (source domain and this transaction's digest). Confirm the mint on the destination chain to establish it was completed. The amount minted is amount less the fee the relayer took, at most max_fee."
+                            : "Destination read from the burn event, not from an indexer. Confirm the mint on the destination chain against this transfer id to establish it was completed.",
                       }),
               })),
             }

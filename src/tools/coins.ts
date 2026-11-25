@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { numArg, addressArg, coinTypeArg, timePointArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
-import { errorResult } from "../utils/errors.js";
+import { describeError, errorResult } from "../utils/errors.js";
 import { formatCoinAmount } from "../utils/coin-amount.js";
 import { prefetchCoinScale } from "../utils/valuation.js";
 import { checkpointAt } from "../utils/checkpoint-time.js";
@@ -14,12 +14,14 @@ import {
   readBalanceRange,
   reconstructBalance,
 } from "../utils/historical-balance.js";
+import { PAS_NOTE, readPasAccount } from "../utils/pas.js";
+import { getNetwork } from "../config.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerCoinTools(server: McpServer) {
   server.tool(
     "get_balance",
-    "Read one coin's liquid balance for a Sui address or object, now or at a past time/checkpoint; the default coin is SUI. The total includes Coin<T> objects and address-balance funds, so no coin objects does not mean no funds. Only its defining module can withdraw an object's address balance. This excludes staking and DeFi positions: check get_staking_summary and get_defi_positions before assessing holdings; use get_wallet_overview for every coin. Historical reads are direct within the consistent range (about the last hour), reconstructed for older points and exact only when complete:true. Reconstruction stops at max_transactions; an incomplete result has balance:null and reached_checkpoint marks progress. Reconstructed coin_balance and address_balance are null; anchor has the split at its checkpoint.",
+    "Read one coin's liquid balance for a Sui address or object, now or at a past time/checkpoint; the default coin is SUI. A current read also reports the same coin held in the owner's Permissioned Asset Standard account (pas_account_balance), which the total excludes. The total includes Coin<T> objects and address-balance funds, so no coin objects does not mean no funds. Only its defining module can withdraw an object's address balance. This excludes staking and DeFi positions: check get_staking_summary and get_defi_positions before assessing holdings; use get_wallet_overview for every coin. Historical reads are direct within the consistent range (about the last hour), reconstructed for older points and exact only when complete:true. Reconstruction stops at max_transactions; an incomplete result has balance:null and reached_checkpoint marks progress. Reconstructed coin_balance and address_balance are null; anchor has the split at its checkpoint.",
     {
       owner: addressArg().optional().describe("Owner address (0x...). Required; `address` is accepted in its place."),
       address: addressArg().optional().describe("Alias for `owner`."),
@@ -129,11 +131,14 @@ export function registerCoinTools(server: McpServer) {
         };
       }
 
-      const res = await sui.getBalance({
-        owner,
-        coinType: coin_type,
-      });
+      const [res, pas] = await Promise.all([
+        sui.getBalance({ owner, coinType: coin_type }),
+        readPasAccount(owner).catch((err: unknown) => ({ failed: describeError(err, getNetwork()) })),
+      ]);
       await prefetchCoinScale([res.balance.coinType]);
+      // The same coin held in the owner's PAS account, which this balance excludes.
+      const want = canonicalCoinType(res.balance.coinType);
+      const pasHeld = pas && !("failed" in pas) ? pas.balances.find((b) => canonicalCoinType(b.coin_type) === want) : undefined;
       return {
         content: [
           {
@@ -144,6 +149,18 @@ export function registerCoinTools(server: McpServer) {
               balance_formatted: formatCoinAmount(res.balance.balance, res.balance.coinType),
               coin_balance: res.balance.coinBalance,
               address_balance: res.balance.addressBalance,
+              ...(pasHeld
+                ? {
+                    pas_account_balance: {
+                      account_address: (pas as { account_address: string }).account_address,
+                      balance: pasHeld.balance,
+                      balance_formatted: formatCoinAmount(pasHeld.balance, res.balance.coinType),
+                    },
+                    pas_account_note: PAS_NOTE,
+                  }
+                : pas && "failed" in pas
+                  ? { pas_account_unavailable: `The Permissioned Asset Standard account read failed (${pas.failed}), so whether this owner holds this coin there is unknown.` }
+                  : {}),
             }),
           },
         ],

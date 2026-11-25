@@ -1936,6 +1936,30 @@ spender signs and the funder does not. Rules a change is likely to break:
   `SenderAllowance` in its BCS `WithdrawFrom` enum (2.39.1 does), so a PTB
   holding one does not decode at all on the older SDK.
 
+### Permissioned Asset Standard accounts
+
+PAS (MystenLabs/pas, `src/utils/pas.ts`) holds an issuer's permissioned
+balances in one shared `Account` per owner, at
+`deriveObjectID(namespace, <pkg>::keys::AccountKey, bcs(owner))`. Rules a
+change is likely to break:
+
+- **The balances are the account address's, not the owner's.** They are
+  address balances at the derived address, so any read keyed on the owner
+  misses them. `get_wallet_overview` (`pas_account`) and `get_balance`
+  (`pas_account_balance`) read the derived address and keep the result out
+  of the holdings: a PAS balance moves only through a transfer its issuer's
+  policy approves, and an issuer may claw it back.
+- **Read the balances whether or not the account object exists.** Funds can
+  be sent to a derived address before it is claimed; `account_created`
+  says which.
+- **Package ids come from the standard's `Published.toml`** (mainnet
+  `0xe2f75f77…`, testnet `0x7e775924…`, devnet none). The single `Namespace`
+  is found by type once per network and cached; more than one, or none, is
+  not the layout this reads, and returns no account rather than a guess.
+- **An account address is durable.** Accounts are shared, and
+  `derived_object::release` refuses a shared object, so an owner's derived
+  address never passes to another object.
+
 ### Multisig identity
 
 A Sui address **is the hash of its authenticator**. For a multisig that is

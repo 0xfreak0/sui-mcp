@@ -9,6 +9,7 @@ import { boolArg, addressArg, numArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { getNetwork } from "../config.js";
 import { describeError, errorResult } from "../utils/errors.js";
+import { PAS_NOTE, readPasAccount } from "../utils/pas.js";
 import { fetchAftermathPrices } from "./prices.js";
 import { countOwned } from "../utils/owned-objects.js";
 import { discoverKiosks } from "../utils/nft-holdings.js";
@@ -59,7 +60,7 @@ const asError = (err: unknown): Error => (err instanceof Error ? err : new Error
 export function registerWorkflowTools(server: McpServer) {
   server.tool(
     "get_wallet_overview",
-    "(Recommended first tool for wallets) Overview of a Sui wallet: every coin balance, SuiNS name, staked SUI and kiosk counts, 50 newest transactions with an older-history continuation, and a time-bounded scan of package versions it published or upgraded in the first 20 sent transactions (`package_activity.scan.next_call` continues; `package_activity_next_call` retries if unavailable). include_prices adds USD values, coins ranked by value, and DeFi positions (staked SUI with rewards, liquid staking, liquidity, lending, and balances inside owned objects), each totalled apart. `coverage` says which owned objects the total covers and lists unrecognised types with counts; `leads` names lending positions near their borrow limit and shared vaults the wallet operates, with what they hold. include_nfts adds NFT estimates, kept out of the total.",
+    "(Recommended first tool for wallets) Overview of a Sui wallet: every coin balance, balances in its Permissioned Asset Standard account (pas_account, apart from holdings), SuiNS name, staked SUI and kiosk counts, 50 newest transactions with an older-history continuation, and a time-bounded scan of package versions it published or upgraded in the first 20 sent transactions (`package_activity.scan.next_call` continues; `package_activity_next_call` retries if unavailable). include_prices adds USD values, coins ranked by value, and DeFi positions (staked SUI with rewards, liquid staking, liquidity, lending, and balances inside owned objects), each totalled apart. `coverage` says which owned objects the total covers and lists unrecognised types with counts; `leads` names lending positions near their borrow limit and shared vaults the wallet operates, with what they hold. include_nfts adds NFT estimates, kept out of the total.",
     {
       address: addressArg().describe("Wallet address (0x...)"),
       include_prices: boolArg()
@@ -81,7 +82,7 @@ export function registerWorkflowTools(server: McpServer) {
         .describe("'summary' (default): holdings and unrecognised object types that fit about 12k characters each, the rest in `omitted`. 'full': every row."),
     },
     async ({ address, include_prices, include_nfts, detail, balance_cursor, owned_max_scan, nft_max_collections, nft_market_depth, operated_recent_limit, operated_candidate_limit, operated_cursor }) => {
-      const [gqlResult, stakedResult, kioskResult, packageActivity] = await Promise.all([
+      const [gqlResult, stakedResult, kioskResult, packageActivity, pasAccount] = await Promise.all([
         // A failed read is an error, never an empty wallet: `holdings: []`
         // and no transactions is exactly what a real unused address returns.
         gqlQuery<{
@@ -91,6 +92,9 @@ export function registerWorkflowTools(server: McpServer) {
         countOwned(address, STAKED_SUI_TYPE, MAX_STAKES_COUNTED).catch(asError),
         discoverKiosks(address).catch(asError),
         readWalletPackageActivityBounded(address).catch(asError),
+        // Permissioned balances live at the owner's derived PAS account, not
+        // at its address; read on the first page only.
+        balance_cursor ? Promise.resolve(null) : readPasAccount(address).catch(asError),
       ]);
 
       if (gqlResult instanceof Error) {
@@ -253,6 +257,13 @@ export function registerWorkflowTools(server: McpServer) {
       }
       if (kioskResult instanceof Error) {
         result.kiosk_unavailable = `The kiosk read failed (${describeError(kioskResult, getNetwork())}), so whether this wallet owns kiosks is unknown.`;
+      }
+      if (pasAccount instanceof Error) {
+        result.pas_account = null;
+        result.pas_account_unavailable = `The Permissioned Asset Standard account read failed (${describeError(pasAccount, getNetwork())}), so whether this wallet holds permissioned balances is unknown.`;
+      } else if (pasAccount && (pasAccount.account_created || pasAccount.balances.length)) {
+        result.pas_account = pasAccount;
+        result.pas_account_note = PAS_NOTE;
       }
       if (packageActivity instanceof Error) {
         result.package_activity_unavailable = `The package publication scan failed (${describeError(packageActivity, getNetwork())}); whether this wallet published or upgraded packages is unknown.`;

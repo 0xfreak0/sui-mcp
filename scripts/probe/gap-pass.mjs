@@ -2,9 +2,11 @@
 import { registerRestrictionTools } from "../../dist/tools/restrictions.js";
 import { registerMultisigTools } from "../../dist/tools/multisig.js";
 import { registerAnalyzeTokenTools } from "../../dist/tools/analyze-token.js";
+import { registerAllowanceTools } from "../../dist/tools/allowances.js";
+import { gqlQuery } from "../../dist/clients/graphql.js";
 import { runWithNetwork } from "../../dist/config.js";
 const tools={}; const c={tool:(n,_d,_s,h)=>{tools[n]=h;}};
-[registerRestrictionTools,registerMultisigTools,registerAnalyzeTokenTools].forEach(f=>f(c));
+[registerRestrictionTools,registerMultisigTools,registerAnalyzeTokenTools,registerAllowanceTools].forEach(f=>f(c));
 const call=async(n,a)=>{const r=await tools[n](a);const t=r.content.map(x=>x.text);
   const j=t.find(x=>x.trim().startsWith("{")); return j?JSON.parse(j):{_text:t[0]};};
 const bad=[]; const ck=(n,ok,d="")=>{console.log(`   ${ok?"ok  ":"!!  "}${n}${d?"  "+d:""}`); if(!ok)bad.push(n);};
@@ -43,6 +45,28 @@ await runWithNetwork("mainnet", async () => {
      `capped=${JSON.stringify(capped.dormant_members)} full=${JSON.stringify(full.dormant_members)}`);
   ck("note carries the count it rests on",String(capped.note??"").includes(String(capped.transactions_examined)),
      String(capped.note??"").slice(0,70));
+
+  console.log("\nC. list_allowances against a raw read of an Allowance object");
+  // Truth: the newest Allowance objects, read straight from the type filter.
+  const raw=await gqlQuery(`query { objects(filter:{type:"0x2::allowance::Allowance"}, last: 5) { nodes { address asMoveObject { contents { json } } } } }`);
+  const subject=(raw.objects?.nodes??[]).find(n=>n.asMoveObject?.contents?.json?.settings?.funder);
+  if(!subject){
+    console.log("   --  no Allowance object on chain to check against; skipped");
+  } else {
+    const norm=a=>"0x"+String(a).replace(/^0x/,"").toLowerCase().padStart(64,"0");
+    const j=subject.asMoveObject.contents.json; const id=norm(subject.address);
+    const f=await call("list_allowances",{address:j.settings.funder,role:"funder"});
+    const row=(f.as_funder?.allowances??[]).find(a=>a.allowance_id===id);
+    ck("funder side lists the allowance",!!row,`count=${f.as_funder?.count} complete=${f.as_funder?.complete}`);
+    if(row){
+      ck("spender matches the object",row.spender===norm(j.settings.spender),`${row.spender}`);
+      ck("current_spend matches the object",row.current_spend===String(BigInt(j.current_spend)),`${row.current_spend} vs ${j.current_spend}`);
+      ck("funder row names its cap",typeof row.cap_id==="string"&&row.cap_id.length===66,`${row.cap_id}`);
+    }
+    const sp=await call("list_allowances",{address:j.settings.spender,role:"spender"});
+    const found=(sp.as_spender?.allowances??[]).some(a=>a.allowance_id===id);
+    ck("spender scan finds it, or says it stopped",found||sp.as_spender?.scan?.status!=="complete",`status=${sp.as_spender?.scan?.status} scanned=${sp.as_spender?.scan?.scanned}`);
+  }
 
   console.log("\n=== "+(bad.length?bad.length+" PROBLEM(S)":"clean")+" ===");
   bad.forEach(b=>console.log("  - "+b));

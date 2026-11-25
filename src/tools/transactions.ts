@@ -39,6 +39,7 @@ import {
 } from "../utils/ptb-resolve.js";
 import { commandInputIndices, eventCommands, objectMatcher } from "../utils/command-attribution.js";
 import { gasSource, readAddressBalanceOps, readFundsWithdrawals } from "../utils/address-balance.js";
+import { allowanceSpends } from "../utils/allowance-spend.js";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { protoValueToJson } from "../utils/proto.js";
 import { describeWindow, resolveWindow } from "../utils/checkpoint-time.js";
@@ -451,6 +452,9 @@ export function registerTransactionTools(server: McpServer) {
           ? kind.data.programmableTransaction.inputs ?? []
           : [];
       const fundsWithdrawals = readFundsWithdrawals(ptbInputs);
+      // A withdrawal under an allowance debits an address that did not sign.
+      // Its allowance is read now, a secondary read that fails soft.
+      const allowanceSpentP = allowanceSpends(fundsWithdrawals, sender ?? null, effects?.status?.success === true);
       const gas =
         kind?.data.oneofKind === "programmableTransaction" && transaction?.gasPayment
           ? gasSource(transaction.gasPayment.objects ?? [])
@@ -719,9 +723,10 @@ export function registerTransactionTools(server: McpServer) {
           ? {
               funds_withdrawals: fundsWithdrawals,
               funds_withdrawals_note:
-                "Each entry is an input authorising a withdrawal from the sender's or the gas sponsor's address balance, up to `amount`. What was actually withdrawn is in address_balance_ops and balance_changes.",
+                "Each entry is an input authorising a withdrawal from an address balance, up to `amount`: the sender's, the gas sponsor's, or (`sender_allowance`) the `funder`'s under an allowance granted to the sender. What was actually withdrawn is in address_balance_ops and balance_changes.",
             }
           : {}),
+        ...(await allowanceSpentP),
         ...(authorization.length ? { authorization } : {}),
         ...(signers.signer_is_sender === false
           ? {

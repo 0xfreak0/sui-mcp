@@ -17,7 +17,7 @@ src/
 ├── index.ts              # MCP server entry point (stdio transport)
 ├── config.ts             # Network endpoints, constants
 ├── clients/              # gRPC + GraphQL client setup
-├── tools/                # One file per tool category (76 tools total)
+├── tools/                # One file per tool category (81 tools total)
 ├── protocols/            # Protocol registry for tx decoding
 ├── data/                 # Static JSON data (token registry, etc.)
 ├── utils/                # Shared helpers (formatting, SuiNS, etc.)
@@ -1900,6 +1900,41 @@ Two traps, both verified on mainnet:
 A hop the archive served is counted in `hops_served_by_archive`. An
 unfetchable *starting* digest is an error, never an empty trace — "nothing to
 follow" and "could not look" are opposite conclusions on hop 0.
+
+### Native allowances
+
+`0x2::allowance` (`src/utils/allowance.ts`) lets a funder authorize a spender
+to withdraw from the funder's address balance. The spend's `FundsWithdrawal`
+input names `SenderAllowance { funder, allowance }` (gRPC source 3); the
+spender signs and the funder does not. Rules a change is likely to break:
+
+- **The funder side is complete, the spender side is a scan.**
+  `AllowanceCap<T>` has `key` and no `store` and `revoke` deletes it with the
+  allowance, so the caps a funder holds are every live allowance it funds.
+  Nothing indexes spenders: `readSpenderAllowances` scans every
+  `Allowance` object, cached five minutes like the alias scan, and a
+  truncated or failed scan rules nothing out.
+- **An allowance spend is not a stolen key.** The funder's loss appears in
+  balance changes of a transaction it never signed. `get_transaction`
+  reports it in `allowance_spends`; any reader of "who authorized this
+  loss" must consult it. `allowance_now` is the current state, never the
+  state at the spend. `allowance_state` keeps `absent` (what revoking
+  leaves) apart from `read_failed`: telling a victim an allowance is revoked
+  because a read failed is the dangerous error.
+- **A failed transaction spent nothing.** An allowance withdrawal input is
+  present whether or not `consume`'s checks passed, so a failed transaction's
+  rows say `allowance_spends_executed: false` and name an attempt by the
+  sender, not a spend from the funder. Only a successful spend proves the
+  sender was the spender; an app can rotate the spender afterwards.
+- **Status follows the module's checks.** Start inclusive, expiry exclusive,
+  lifetime cap inclusive; a rate window rolls over as `charge` does, so the
+  stored `spent` counts only while the stored window still holds `now`.
+  Calendar windows renew on the anchor's day at 00:00 UTC, clamped to the
+  month's end. A limit that is set but unreadable leaves `spendable_now`
+  null, never unbounded.
+- **The SDK must know the variant.** `@mysten/sui` 2.3.1 has no
+  `SenderAllowance` in its BCS `WithdrawFrom` enum (2.39.1 does), so a PTB
+  holding one does not decode at all on the older SDK.
 
 ### Multisig identity
 

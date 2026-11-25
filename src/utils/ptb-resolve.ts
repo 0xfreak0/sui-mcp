@@ -390,13 +390,17 @@ function formatInput(input: Loose, pureType: Body | undefined, executed: Execute
     const fw = input.FundsWithdrawal as {
       reservation: { $kind: string; MaxAmountU64?: string };
       typeArg: { $kind: string; Balance?: string };
-      withdrawFrom: { $kind: string };
+      withdrawFrom: { $kind: string; SenderAllowance?: { funder: string; allowance: string } };
     };
+    const allowance = fw.withdrawFrom.SenderAllowance;
     return {
       type: "FundsWithdrawal",
       amount: fw.reservation.MaxAmountU64 ?? null,
       coin_type: fw.typeArg.Balance ?? null,
       withdraw_from: fw.withdrawFrom.$kind,
+      // An allowance spend draws on another address's balance; that address
+      // authorized the sender in advance and does not sign.
+      ...(allowance ? { funder: allowance.funder, allowance: allowance.allowance } : {}),
     };
   }
   return { type: input.$kind };

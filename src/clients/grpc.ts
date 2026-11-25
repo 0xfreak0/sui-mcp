@@ -1,4 +1,4 @@
-import { SuiGrpcClient } from "@mysten/sui/grpc";
+import { GrpcWebFetchTransport, SuiGrpcClient } from "@mysten/sui/grpc";
 import { GrpcTransport } from "@protobuf-ts/grpc-transport";
 import { ChannelCredentials } from "@grpc/grpc-js";
 import { type SuiNetwork, GRPC_TRANSPORT, REPLAY_DIR, getNetwork, getNetworkConfig } from "../config.js";
@@ -18,8 +18,7 @@ const clientCache = new Map<SuiNetwork, NetworkClients>();
 
 function buildClients(network: SuiNetwork): NetworkClients {
   const cfg = getNetworkConfig(network);
-  const fullnode = new SuiGrpcClient({ network, baseUrl: cfg.fullnode });
-  queueAndRetry(fullnode, cfg.fullnode);
+  const fullnode = new SuiGrpcClient({ network, transport: fullnodeTransport(cfg.fullnode) });
 
   // Archive serves native gRPC (not gRPC-Web), so we use GrpcTransport instead
   // of the default GrpcWebFetchTransport. Mainnet and testnet have one; devnet
@@ -40,23 +39,17 @@ function buildClients(network: SuiNetwork): NetworkClients {
 }
 
 /**
- * Route the fullnode client's gRPC-web requests through {@link retryingFetch}:
- * at most `GRPC_TRANSPORT.concurrency` in flight, and a 429 or 5xx retried with
- * backoff. The SDK builds its `GrpcWebFetchTransport` itself and shares it
- * between every service, and protobuf-ts reads `fetch` and `interceptors` from
- * the transport's `defaultOptions` on each call, so setting them there covers
- * every `sui.*` call. With `SUI_REPLAY_DIR` set, fixed reads are replayed
- * ahead of the queue. `test/grpc-client.test.ts` fails if the SDK stops
- * exposing the transport.
+ * The fullnode's gRPC-web transport, with every request routed through
+ * {@link retryingFetch}: at most `GRPC_TRANSPORT.concurrency` in flight, and a
+ * 429 or 5xx retried with backoff. It is built here and handed to the client,
+ * never patched onto the one the SDK builds: the SDK wraps its own transport,
+ * so its options are not reachable after construction. With `SUI_REPLAY_DIR`
+ * set, fixed reads are replayed ahead of the queue.
+ * `test/grpc-client.test.ts` checks the retry and the queue.
  */
-function queueAndRetry(client: SuiGrpcClient, endpoint: string): void {
-  const service: object = client.ledgerService;
-  if (!("_transport" in service)) return;
-  const transport = service._transport;
-  if (!transport || typeof transport !== "object" || !("defaultOptions" in transport)) return;
-  const options = transport.defaultOptions;
-  if (!options || typeof options !== "object") return;
-  Object.assign(options, {
+function fullnodeTransport(endpoint: string): GrpcWebFetchTransport {
+  return new GrpcWebFetchTransport({
+    baseUrl: endpoint,
     fetch: retryingFetch(endpoint, { ...GRPC_TRANSPORT, service: "gRPC" }),
     ...(REPLAY_DIR ? { interceptors: [replayInterceptor(endpoint, REPLAY_DIR)] } : {}),
   });

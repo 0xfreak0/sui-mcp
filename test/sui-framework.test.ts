@@ -32,6 +32,7 @@ import { REGISTRY_LAYOUT_CLAIMS } from "../src/utils/onchain-coin-registry.js";
 import { DENY_LIST_LAYOUT_CLAIMS } from "../src/utils/deny-list.js";
 import { ADDRESS_BALANCE_CLAIMS } from "../src/utils/address-balance.js";
 import { ALIAS_CLAIMS } from "../src/utils/identity.js";
+import { ALLOWANCE_CLAIMS } from "../src/utils/allowance.js";
 import { DENY_LIST_ID_CLAIMS } from "../src/utils/deny-list-probe.js";
 import { FRAMEWORK_TRANSFER_RECIPIENT_ARG } from "../src/utils/ptb-anomalies.js";
 
@@ -181,6 +182,7 @@ const CLAIM_SETS: Record<string, FrameworkClaim[]> = {
   "deny-list-probe DENY_LIST_ID_CLAIMS": DENY_LIST_ID_CLAIMS,
   "address-balance ADDRESS_BALANCE_CLAIMS": ADDRESS_BALANCE_CLAIMS,
   "identity ALIAS_CLAIMS": ALIAS_CLAIMS,
+  "allowance ALLOWANCE_CLAIMS": ALLOWANCE_CLAIMS,
   "ptb-anomalies FRAMEWORK_TRANSFER_RECIPIENT_ARG": payoutClaims,
 };
 

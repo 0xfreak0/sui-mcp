@@ -38,7 +38,11 @@ const ID_DELETED = 3;
 /** `sui.rpc.v2.Owner.OwnerKind.ADDRESS` */
 const OWNER_ADDRESS = 1;
 /** `sui.rpc.v2.FundsWithdrawal.Source` */
-const WITHDRAW_SOURCE: Record<number, "sender" | "sponsor"> = { 1: "sender", 2: "sponsor" };
+const WITHDRAW_SOURCE: Record<number, "sender" | "sponsor" | "sender_allowance"> = {
+  1: "sender",
+  2: "sponsor",
+  3: "sender_allowance",
+};
 
 /**
  * Framework facts the module comment states: how an address balance is
@@ -196,12 +200,19 @@ export interface FundsWithdrawalInput {
   /** The most the transaction may withdraw. */
   amount: string;
   coin_type: string | null;
-  source: "sender" | "sponsor" | "unknown";
+  /**
+   * Whose balance it draws on: the sender's, the gas sponsor's, or, for
+   * `sender_allowance`, `funder`'s under the shared `allowance` object, which
+   * authorizes the sender to spend it. The funder does not sign.
+   */
+  source: "sender" | "sponsor" | "sender_allowance" | "unknown";
+  funder?: string;
+  allowance?: string;
 }
 
 /** Shape of a gRPC `Input` carrying a `FundsWithdrawal`. */
 export interface GrpcFundsInput {
-  fundsWithdrawal?: { amount?: bigint; coinType?: string; source?: number };
+  fundsWithdrawal?: { amount?: bigint; coinType?: string; source?: number; funder?: string; allowance?: string };
 }
 
 /** `FundsWithdrawal` inputs: whose address balance the transaction may draw on, and how much. */
@@ -214,6 +225,8 @@ export function readFundsWithdrawals(inputs: GrpcFundsInput[]): FundsWithdrawalI
         amount: (w.amount ?? 0n).toString(),
         coin_type: w.coinType ?? null,
         source: WITHDRAW_SOURCE[w.source ?? 0] ?? "unknown",
+        ...(w.funder ? { funder: w.funder } : {}),
+        ...(w.allowance ? { allowance: w.allowance } : {}),
       },
     ];
   });

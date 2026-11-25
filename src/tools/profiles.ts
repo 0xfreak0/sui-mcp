@@ -44,6 +44,8 @@ export const PROFILES = {
   /** Everyday lookups: what is this, what does this wallet hold, what happened. */
   core: [
     "identify_address",
+    // Who may spend a wallet's address balance without its signature.
+    "list_allowances",
     "get_wallet_overview",
     "get_wallet_packages",
     "get_transaction",

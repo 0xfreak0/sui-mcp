@@ -1,4 +1,5 @@
 import { addressArg } from "./args.js";
+import { readFunderAllowances } from "../utils/allowance.js";
 import { describeError, errorResult, isNotFound } from "../utils/errors.js";
 import { fetchActiveValidators, findValidatorByAddress } from "../utils/validators.js";
 import { sui } from "../clients/grpc.js";
@@ -370,7 +371,7 @@ export function registerIdentifyTools(server: McpServer) {
       }
 
       // CASE 4: Treat as a wallet address — fetch summary data in parallel
-      const [balanceRes, nameRes, ownedRes, identities, firstSeenRes, packageActivity] = await Promise.all([
+      const [balanceRes, nameRes, ownedRes, identities, firstSeenRes, packageActivity, allowancesRes] = await Promise.all([
         // Each read reports its own failure: a failed balance read is not a
         // zero balance, and a failed name lookup is not the absence of a name.
         sui.getBalance({ owner: address }).catch((err: unknown) => ({ failed: describeError(err, getNetwork()) })),
@@ -402,6 +403,9 @@ export function registerIdentifyTools(server: McpServer) {
         // history call. A failed read is reported, never shown as no history.
         readFirstSeen(address).catch((err: unknown) => ({ failed: describeError(err, getNetwork()) })),
         readWalletPackageActivityBounded(address).catch((err: unknown) => ({ failed: describeError(err, getNetwork()) })),
+        // Who may spend its balance without its signature: native allowances
+        // it granted. Complete from the AllowanceCaps it holds.
+        readFunderAllowances(address).catch((err: unknown) => ({ failed: describeError(err, getNetwork()) })),
       ]);
 
       const balanceFailed = "failed" in balanceRes ? balanceRes.failed : null;
@@ -536,6 +540,35 @@ export function registerIdentifyTools(server: McpServer) {
                         : "The addresses in delegated_to have been authorized to act for this wallet through 0x2::address_alias, and the wallet's own address is NOT among them. An alias set replaces the signer rather than extending it, so this wallet's own key can no longer authorize for it and only those addresses can move its funds. The set is mutable, so it is true as of now.",
                 }
               : {}),
+            // Allowances: delegated spending of its address balance. Omitted
+            // when it has granted none; a failed read says so.
+            ...("failed" in allowancesRes
+              ? {
+                  allowances_granted: null,
+                  allowances_unavailable: `The AllowanceCaps could not be read (${allowancesRes.failed}), so whether this wallet has let anyone spend its balance is unknown.`,
+                }
+              : allowancesRes.allowances.length || allowancesRes.caps_without_allowance.length || !allowancesRes.complete
+                ? {
+                    allowances_granted: allowancesRes.allowances.map((a) => ({
+                      allowance_id: a.allowance_id,
+                      cap_id: a.cap_id,
+                      spender: a.spender,
+                      app: a.app,
+                      coin_type: a.coin_type,
+                      status: a.status,
+                      spendable_now: a.spendable_now,
+                      expiration_ms: a.expiration_ms,
+                    })),
+                    ...(allowancesRes.caps_without_allowance.length
+                      ? { allowance_caps_unread: allowancesRes.caps_without_allowance }
+                      : {}),
+                    allowances_note: `This wallet has granted native allowances (0x2::allowance): each spender can withdraw from its address balance up to spendable_now, signing alone, until the allowance expires or is revoked with its cap_id.${allowancesRes.caps_without_allowance.length ? " allowance_caps_unread lists caps whose allowance could not be read, so what they permit is unknown." : ""}${allowancesRes.complete ? "" : ` Only the first ${allowancesRes.caps_read} caps were read.`}`,
+                    allowances_next_call: {
+                      tool: "list_allowances",
+                      args: { address, role: "funder", ...(allowancesRes.complete ? {} : { max_cap_pages: 40 }) },
+                    },
+                  }
+                : {}),
             // A failed lookup is not an absence of delegation.
             ...(identities.get(address)?.aliases_unavailable
               ? {

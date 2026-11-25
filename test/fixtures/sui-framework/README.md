@@ -11,7 +11,7 @@ account for. Every non-test source is here so those checks see every module.
 - Upstream: https://github.com/MystenLabs/sui/tree/fdbc1e0e2ed8626677abc33ce00afa1f23cdfe98/crates/sui-framework/packages/sui-framework/sources
 - Ref: `mainnet-v1.84.2`
 - Commit: `fdbc1e0e2ed8626677abc33ce00afa1f23cdfe98`
-- Commit date: 2026-11-20T12:59:46-08:00
+- Commit date: 2026-11-20T20:59:46Z
 
 The files are copied byte for byte and keep their Mysten Labs copyright and
 Apache-2.0 SPDX headers. `LICENSE` is the upstream repository's license.

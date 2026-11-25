@@ -3781,11 +3781,11 @@ Seven rules, every one of them a bug that shipped to `main` first:
   unspendable address renounces it. Freezing (→ Immutable) renounces only a
   type no function takes by `&` to any effect (UpgradeCap, DenyCap,
   DenyCapV2); a frozen object still passes by `&`, so a frozen
-  TreasuryCap (metadata setters, `token::new_policy`), Publisher (Display,
-  TransferPolicy, and through a legacy Display the registry Display) or
+  TreasuryCap (metadata setters, `token::new_policy`), Publisher
+  (TransferPolicy; Display V1 creation, `display::new` and its variants,
+  aborts, so it no longer reaches the registry Display) or
   custom cap (`_: &AdminCap` checks) is `opened`: usable by every
-  transaction. What a `&` function returns counts too: `display::new`'s
-  Display reaches `display_registry::migrate_v1_to_v2` and `claim`, a
+  transaction. What a `&` function returns counts too: a
   `transfer_policy::new` policy clears any kiosk purchase of the type
   (`transfer_policy::confirm_request`), and a `token::new_policy` cap
   confirms any holder's token actions (`token::confirm_with_policy_cap`).

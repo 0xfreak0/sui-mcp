@@ -18,7 +18,7 @@
  * records the commit, its date and why each file is there.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CITED_FILES, REPO, SOURCES_DIR } from "./lib/sui-framework-files.mjs";
@@ -52,10 +52,21 @@ function recorded() {
 }
 
 const args = process.argv.slice(2);
-const at = args.indexOf("--checkout");
-const checkout = at >= 0 ? args[at + 1] : null;
-if (at >= 0 && !checkout) throw new Error("--checkout needs a directory");
-const arg = args.filter((_, i) => at < 0 || (i !== at && i !== at + 1))[0];
+let checkout = null;
+const rest = [];
+for (let i = 0; i < args.length; i++) {
+  const a = args[i];
+  if (a === "--checkout" || a.startsWith("--checkout=")) {
+    const value = a === "--checkout" ? args[++i] : a.slice("--checkout=".length);
+    if (!value || value.startsWith("--")) throw new Error("--checkout needs a directory");
+    checkout = value;
+  } else if (a.startsWith("--")) {
+    throw new Error(`unknown option ${a}`);
+  } else {
+    rest.push(a);
+  }
+}
+const arg = rest[0];
 const pinned = recorded();
 const ref = arg ?? pinned.ref;
 const lookup = arg ?? pinned.commit;
@@ -68,19 +79,23 @@ let sources;
 let readSource;
 let readLicense;
 if (checkout) {
-  // The checkout must be at the ref named, so the README records what was read.
+  // Read the ref's commit from git's object store, never the working tree,
+  // so local edits, untracked files or line-ending conversion cannot be
+  // vendored as upstream bytes. The checkout's HEAD must also be that commit.
   const git = (...a) => execFileSync("git", ["-C", checkout, ...a], { encoding: "utf8" }).trim();
-  commit = git("rev-parse", "HEAD");
-  const wanted = git("rev-parse", `${lookup}^{commit}`);
-  if (wanted !== commit) throw new Error(`${checkout} is at ${commit}, not ${lookup} (${wanted})`);
-  date = git("log", "-1", "--format=%cI");
-  const walk = (dir) =>
-    readdirSync(join(checkout, prefix, dir), { withFileTypes: true }).flatMap((e) =>
-      e.isDirectory() ? walk(join(dir, e.name)) : e.name.endsWith(".move") ? [join(dir, e.name)] : [],
-    );
-  sources = walk("").filter((p) => !p.startsWith("test/"));
-  readSource = async (p) => readFileSync(join(checkout, prefix, p));
-  readLicense = async () => readFileSync(join(checkout, "LICENSE"));
+  const show = (path) => execFileSync("git", ["-C", checkout, "show", `${commit}:${path}`], { maxBuffer: 64 * 1024 * 1024 });
+  commit = git("rev-parse", `${lookup}^{commit}`);
+  const head = git("rev-parse", "HEAD");
+  if (head !== commit) throw new Error(`${checkout} is at ${head}, not ${lookup} (${commit})`);
+  // UTC, the form the GitHub API gives, so both modes record the same date.
+  date = new Date(git("log", "-1", "--format=%cI", commit)).toISOString().replace(/\.000Z$/, "Z");
+  sources = git("ls-tree", "-r", "--name-only", commit, "--", prefix)
+    .split("\n")
+    .filter((p) => p.endsWith(".move"))
+    .map((p) => p.slice(prefix.length))
+    .filter((p) => !p.startsWith("test/"));
+  readSource = async (p) => show(`${prefix}${p}`);
+  readLicense = async () => show("LICENSE");
 } else {
   const commitInfo = await get(`https://api.github.com/repos/${REPO}/commits/${encodeURIComponent(lookup)}`, "json");
   commit = commitInfo?.sha;

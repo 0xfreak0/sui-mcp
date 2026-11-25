@@ -61,6 +61,16 @@ describe("address_balance_ops", () => {
     ]);
   });
 
+  it("reads the amount from integerValue, the current proto's field", () => {
+    const changes = withdrawAndSend.changedObjects.map((c: Record<string, unknown>) => {
+      const w = c.accumulatorWrite as Record<string, unknown> | undefined;
+      if (!w) return c;
+      const { value, ...rest } = w;
+      return { ...c, accumulatorWrite: { ...rest, integerValue: value } };
+    });
+    expect(readAddressBalanceOps(changes).map((o) => o.amount)).toEqual(["1951", "101951"]);
+  });
+
   /**
    * 34q8k…: the sender's 704,848 SUI gas coin 0x6b0e… was deleted and MERGEd
    * into the same owner's address balance while balance_changes showed only the

@@ -178,7 +178,7 @@ export function readAddressBalanceOps(changes: GrpcChangedObject[]): AddressBala
       owner,
       ...(coinType ? { coin_type: coinType } : { accumulator_type: w.accumulatorType ?? "unknown" }),
       op: w.operation === OP_MERGE ? "deposit" : w.operation === OP_SPLIT ? "withdraw" : "unknown",
-      amount: (w.value ?? 0n).toString(),
+      amount: (w.integerValue ?? w.value ?? 0n).toString(),
     };
     if (op.op === "deposit" && coinType && owner) {
       const want = normalizeCoinType(coinType) ?? coinType;

@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.30.0 (2026-11-25)
+
+`list_allowances` reads native allowances, and `get_transaction` names the funder of a spend made under one, so a delegated spend no longer reads as a stolen key. CCTP V2 burns get their own identity instead of the shared `8/0`, balances held in Permissioned Asset Standard accounts are reported, and ML-DSA-65 signers are named. `@mysten/sui` is 2.39.1, and the vendored Sui framework is `mainnet-v1.84.2`.
 
 ### Added
 - **Native allowances (`0x2::allowance`).** `list_allowances` lists the allowances an address funds, read from its non-transferable `AllowanceCap`s, each with the cap that revokes it, and those naming it as spender, from a bounded scan of every allowance that states whether it finished. Each row gives funder, spender, app, coin, lifetime cap, current spend, remaining amount, rate-limit window, status and `spendable_now`. `get_transaction` reports a withdrawal under an allowance in `allowance_spends`, naming the funder who did not sign; `funds_withdrawals` and `decode_ptb` inputs carry the `funder` and `allowance`. `identify_address` lists granted allowances as `allowances_granted`. The incident-response prompt checks for an allowance before treating a loss as a leaked key.

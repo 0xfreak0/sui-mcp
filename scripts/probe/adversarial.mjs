@@ -110,6 +110,7 @@ const BASE = {
   get_defi_positions: { address: NEMO },
   list_nfts: { address: NEMO, limit: 1 },
   list_nft_collections: { address: NEMO },
+  list_allowances: { address: NEMO, role: "funder" },
   build_transfer: { sender: NEMO, recipient: CETUS, amount: "1" },
   build_staking: { action: "stake", sender: NEMO, validator_address: VALIDATOR, amount_mist: "1000000000" },
   get_validators: { limit: 1 },

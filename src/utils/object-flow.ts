@@ -665,6 +665,8 @@ export interface GrpcChangedObject {
     address?: string;
     accumulatorType?: string;
     operation?: number;
+    /** `integer_value` in the current proto; `value` in effects read by SDKs before it. */
+    integerValue?: bigint;
     value?: bigint;
   } | null;
 }

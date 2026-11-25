@@ -220,6 +220,65 @@ moves. That deposit carries `converted_from_coins` and a note saying so.
 list `address_balances` for an object id: funds the object holds itself, which
 are not among its fields and which only its defining module can withdraw.
 
+## Allowances
+
+A native allowance (`0x2::allowance`) lets a spender withdraw from a funder's
+address balance within a lifetime cap, a rate limit and a time window. The
+spender signs and pays gas; the funder does not sign the spend. The funder's
+loss in such a transaction is a spend the funder authorized when it created
+the allowance, not evidence that its key leaked.
+
+`get_transaction` lists each withdrawal under an allowance in
+`allowance_spends`, with the allowance's current state:
+
+```
+get_transaction(2MLtTJz3iBH9MhGn2jdmJaVrjK5w2kDYRdLYj4xTUu74)
+  → funds_withdrawals: [ { amount: 3125000000, coin_type: …::sui::SUI,
+        source: sender_allowance, funder: 0x1eb7…e0b1, allowance: 0x7a87…96b2 } ]
+    allowance_spends: [ { allowance_id: 0x7a87…96b2, funder: 0x1eb7…e0b1,
+        sender: 0x5eb6…c2aa, max_amount: 3125000000, allowance_state: read,
+        sender_is_spender_now: true,
+        allowance_now: { app: 0x389b…063f::pass::PASS, lifetime_cap: 150000000000,
+          current_spend: 150000000000, status: expired, spendable_now: 0 } } ]
+```
+
+- `allowance_now` is the allowance as it stands at the read, not when the
+  transaction ran. `allowance_state` is `read`, `absent` (no allowance exists at
+  that id; a revoked allowance reads this way) or `read_failed` (the state
+  is unknown, not revoked).
+- In a failed transaction nothing was withdrawn:
+  `allowance_spends_executed: false`, and each row names an allowance the
+  sender tried to draw on.
+- `app` is set on an app-bound allowance, which is spent through that app's
+  package. The app can change the spender afterwards, so
+  `sender_is_spender_now: false` is possible on a spend that succeeded.
+
+`list_allowances(address, role)` lists the allowances an address funds or can
+spend:
+
+```
+list_allowances(0x…, role: "funder")
+  → as_funder: { count: 9, complete: true,
+      allowances: [ { allowance_id, cap_id, spender, app, coin_type,
+        lifetime_cap, current_spend, remaining_lifetime, rate_limit,
+        status, spendable_now } ] }
+```
+
+- The funder side is complete: it is read from the funder's `AllowanceCap`
+  objects, which cannot be transferred. `cap_id` is the cap the funder passes
+  to `0x2::allowance::revoke`.
+- The spender side scans every `Allowance` object and reports
+  `scan.status`. A `truncated` or `failed` scan rules nothing out.
+- `status` is `active`, `not_started`, `expired`, `exhausted` or `unknown`
+  (a time bound is set but could not be read). `spendable_now` is the most the
+  limits still permit, null when a set limit could not be read. The funder's
+  balance bounds it too.
+- `max_cap_pages` and `max_scan` raise the read bounds, and `next_call` is
+  given when a read stops.
+
+`identify_address` lists the allowances a wallet has granted as
+`allowances_granted`.
+
 ## Decoding a PTB before signing
 
 `decode_ptb` accepts exactly one of `transaction_bcs` (base64 BCS bytes) and
@@ -240,7 +299,7 @@ also occupy 32 bytes.
 Result and NestedResult arguments identify the producing command in `from`;
 that command's `returns` gives the declared type. With a digest, object
 inputs include the version read and the object's type. FundsWithdrawal inputs
-name the amount, coin type and address-balance source (Sender or Sponsor).
+name the amount, coin type and address-balance source: `Sender`, `Sponsor`, or `SenderAllowance` with the `funder` and `allowance`.
 `gas_source` distinguishes coin-funded gas from the gas owner's address balance.
 `get_transaction` with `detail: "full"` returns these inputs and commands
 alongside effects and events.

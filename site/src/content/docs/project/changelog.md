@@ -5,9 +5,15 @@ description: Every sui-mcp release, newest first, with a summary and links to it
 sidebar:
   order: 3
 ---
-The current release is 1.29.2. Each release below links to its full entry in [CHANGELOG.md](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md), which lists what was added, changed and fixed, and to its GitHub release.
+The current release is 1.30.0. Each release below links to its full entry in [CHANGELOG.md](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md), which lists what was added, changed and fixed, and to its GitHub release.
 
 Published versions are on npm as [`sui-analytics-mcp`](https://www.npmjs.com/package/sui-analytics-mcp). To check that an installed tarball was built by the project's CI, see [Verifying a release](/concepts/security/#verifying-a-release).
+
+## 1.30.0 (2026-11-25)
+
+`list_allowances` reads native allowances, and `get_transaction` names the funder of a spend made under one, so a delegated spend no longer reads as a stolen key. CCTP V2 burns get their own identity instead of the shared `8/0`, balances held in Permissioned Asset Standard accounts are reported, and ML-DSA-65 signers are named. `@mysten/sui` is 2.39.1, and the vendored Sui framework is `mainnet-v1.84.2`.
+
+[Full entry](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md#1300-2026-11-25) · [GitHub release](https://github.com/0xfreak0/sui-mcp/releases/tag/v1.30.0)
 
 ## 1.29.2 (2026-11-23)
 

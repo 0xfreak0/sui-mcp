@@ -207,6 +207,12 @@
       "decimals": 6
     },
     {
+      "coin_type": "0x2636ea7a57a1389a8a051bc5bf9f773cd98c71dd076410376281ab1e07250382::anon::ANON",
+      "symbol": "ANON",
+      "name": "ANON",
+      "decimals": 6
+    },
+    {
       "coin_type": "0x2665273e0930bf4a4cd0ed0fe90a26f7cbd013480167ca2b1589789130741ee8::cheese::CHEESE",
       "symbol": "CHEESE",
       "name": "Cheese Cat 8888",
@@ -288,6 +294,12 @@
       "coin_type": "0x30fe2be9b585076f2d10d0349f1f7f333a08f4d79e2b9eb8babed671b8770d48::suiguy::SUIGUY",
       "symbol": "Suiguy",
       "name": "Chill Sui Guy",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x335c08f644f8ac5fe86f2ed480afac90917812f89c3c092fe8d3265dbb25cc59::suipump::SUIPUMP",
+      "symbol": "SERP",
+      "name": "SERPENT",
       "decimals": 6
     },
     {
@@ -375,12 +387,6 @@
       "decimals": 6
     },
     {
-      "coin_type": "0x3cb52b59860159e2bf0a3b3a4af2d338c89d7a69cac339bf3295fa7c31605089::af_lp::AF_LP",
-      "symbol": "AF_LP_WHUSD",
-      "name": "AfLpWhUSD",
-      "decimals": 9
-    },
-    {
       "coin_type": "0x3ddfcf2e7a25f53419444ece1faee75eb17c3fb4535d28063547bdf43553fcf9::snrkl::SNRKL",
       "symbol": "SNRKL",
       "name": "SNORKEL",
@@ -417,22 +423,16 @@
       "decimals": 6
     },
     {
-      "coin_type": "0x42d0b3476bc10d18732141a471d7ad3aa588a6fb4ba8e1a6608a4a7b78e171bf::af_lp::AF_LP",
-      "symbol": "AF_LP_AFSUI_SUI",
-      "name": "AfLpAfSuiSui",
-      "decimals": 9
+      "coin_type": "0x42ba9220e980b4819e4df208dd50013d0bbbfde142996e8db1319ac61f879205::zuk::ZUK",
+      "symbol": "ZUK",
+      "name": "Zuk",
+      "decimals": 6
     },
     {
       "coin_type": "0x439dc5b02f643131f94cfbfeb577bba3c02ff23b4e5158bad436f79293a37685::snwy::SNWY",
       "symbol": "SNWY",
       "name": "SNOWY",
       "decimals": 6
-    },
-    {
-      "coin_type": "0x44356dba84dd74290dda0eb81e5bc4b7076f534babb8cbaf17b9b8b35a6faf0a::af_lp::AF_LP",
-      "symbol": "AF_LP_AF_USDC",
-      "name": "AfLpAfUsdc",
-      "decimals": 9
     },
     {
       "coin_type": "0x44bec60c55e7c4233a240b804310511e6d0c18168636bf537639669035bbb1b2::natl::NATL",
@@ -513,12 +513,6 @@
       "decimals": 9
     },
     {
-      "coin_type": "0x50bedb72c2d5d6e4327f1b7fcc5aeabc8edf373c9fa7eb691d42f2654e3a6362::af_lp::AF_LP",
-      "symbol": "AF_LP_THREETH",
-      "name": "AfLpThreeth",
-      "decimals": 9
-    },
-    {
       "coin_type": "0x513209220b0c75a26aa1b0a6141d3600b5f360ca5aceb6ce3d0f16fced2aed62::suidan::SUIDAN",
       "symbol": "SUIDAN",
       "name": "LT. Lego Dan",
@@ -585,12 +579,6 @@
       "decimals": 3
     },
     {
-      "coin_type": "0x5bb54b3a9d30e890eca8098832d2d4927abd47d466c73bed72d0dc5251660b2e::af_lp::AF_LP",
-      "symbol": "AF_LP_SUI_USDC",
-      "name": "AfLpSuiUsdc",
-      "decimals": 9
-    },
-    {
       "coin_type": "0x5ca17430c1d046fae9edeaa8fd76c7b4193a00d764a0ecfa9418d733ad27bc1e::scallop_sca::SCALLOP_SCA",
       "symbol": "sSCA",
       "name": "sSCA",
@@ -627,16 +615,16 @@
       "decimals": 6
     },
     {
+      "coin_type": "0x5f496ed5d9d045c5b788dc1bb85f54100f2ede11e46f6a232c29daada4c5bdb6::coin::COIN",
+      "symbol": "stBTC",
+      "name": "Lorenzo stBTC",
+      "decimals": 8
+    },
+    {
       "coin_type": "0x5f70820b716a1d83580e5cf36dd0d0915b8763e1b85e3ef3db821ff40846be44::bread_wal::BREAD_WAL",
       "symbol": "BreadWal",
       "name": "Bread Walrus",
       "decimals": 9
-    },
-    {
-      "coin_type": "0x604f2e82f5923c22373d048149c4b7861585cebe231b4e9e93ed8fb9c3c33bb5::af_lp::AF_LP",
-      "symbol": "AF_LP_LBTC_SUIWBTC",
-      "name": "AfLpLbtcSuiWbtc",
-      "decimals": 8
     },
     {
       "coin_type": "0x6081300950a4f1e2081580e919c210436a1bed49080502834950d31ee55a2396::coin::COIN",
@@ -657,10 +645,16 @@
       "decimals": 9
     },
     {
-      "coin_type": "0x62e39f5554a2badccab46bf3fab044e3f7dc889d42a567a68d3c1b2e5463001f::af_lp::AF_LP",
-      "symbol": "AF_LP_SUI_BUCK",
-      "name": "AfLpSuiBuck",
-      "decimals": 9
+      "coin_type": "0x62c9f760d935a44855424d11f8e979824070c751dd1966c4d1b9d2f8c479a35e::soh::SOH",
+      "symbol": "SOH",
+      "name": "Strait of Hormuz",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x63c01bc7e35831163753bd34542727224c4370cb4a1eeafec53c2e48be86a21e::meowl::MEOWL",
+      "symbol": "MEOWL",
+      "name": "NVDA Cat",
+      "decimals": 6
     },
     {
       "coin_type": "0x64c37820fa974745c91c30f21a9266ccbea3790525e7a9d1687da16423de1d7e::suu::SUU",
@@ -699,6 +693,12 @@
       "decimals": 9
     },
     {
+      "coin_type": "0x6a4a8ddec73351c54399a2ca9b7d650a8ac5f5c5c8a17cde5cf6d8a69225ea07::egg::EGG",
+      "symbol": "EGG",
+      "name": "EGGDENIYI",
+      "decimals": 6
+    },
+    {
       "coin_type": "0x6a4d9c0eab7ac40371a7453d1aa6c89b130950e8af6868ba975fdd81371a7285::sbets::SBETS",
       "symbol": "SBets",
       "name": "SuiBets",
@@ -715,6 +715,12 @@
       "symbol": "GRASS",
       "name": "GRASS",
       "decimals": 9
+    },
+    {
+      "coin_type": "0x6adeff8d922dc10768a6bf35ca09d16e1d4be1f3cd9ad089a74fe4f36c33bcb6::coin::COIN",
+      "symbol": "USDC",
+      "name": "USD Coin",
+      "decimals": 6
     },
     {
       "coin_type": "0x6b42e2f4cd5b74c737258b3589a3a09397bb012bda6183f99a87294ecaa8504e::capo::CAPO",
@@ -759,10 +765,10 @@
       "decimals": 9
     },
     {
-      "coin_type": "0x713280ef74d6ae68dc679f588f1eb7f83b877df8e7d8441aa6af972fe215ec48::af_lp::AF_LP",
-      "symbol": "AF_LP_SUI_MPOINTS",
-      "name": "AfLpSuiMPoints",
-      "decimals": 9
+      "coin_type": "0x71fe96abb8f25374fa8d124185cec4eb98425697340f0ac793d976bf1fd116e0::hue::HUE",
+      "symbol": "HUE",
+      "name": "Just Hue",
+      "decimals": 6
     },
     {
       "coin_type": "0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA",
@@ -792,12 +798,6 @@
       "coin_type": "0x790f258062909e3a0ffc78b3c53ac2f62d7084c3bab95644bdeb05add7250001::super_sui::SUPER_SUI",
       "symbol": "superSUI",
       "name": "superSUI",
-      "decimals": 9
-    },
-    {
-      "coin_type": "0x797abd920c222fef740fddf865e94c1f8198d67e18d395ee4445a7f263677e62::af_lp::AF_LP",
-      "symbol": "AF_LP_SUPER_SUI_MUSD",
-      "name": "AfLpSuperSuiMUsd",
       "decimals": 9
     },
     {
@@ -864,12 +864,6 @@
       "coin_type": "0x84b27ddadc6139c7e8837fef6759eba4670ba3fc0679acd118b4e9252f834e29::e4c::E4C",
       "symbol": "E4C",
       "name": "$E4C",
-      "decimals": 9
-    },
-    {
-      "coin_type": "0x84c853d28dac001038015d8580bf6b078c670817434f06c5ecad44fd181d7252::af_lp::AF_LP",
-      "symbol": "AF_LP_SUI_MUSD",
-      "name": "AfLpSuiMUsd",
       "decimals": 9
     },
     {
@@ -951,6 +945,12 @@
       "decimals": 6
     },
     {
+      "coin_type": "0x8f76903a7569f6ee11a7ab3ae58cdd854f54a0cae986fecd95ccf9453eecaafc::af_lp::AF_LP",
+      "symbol": "CARIB_SUI",
+      "name": "CARIB/SUI",
+      "decimals": 8
+    },
+    {
       "coin_type": "0x909cba62ce96d54de25bec9502de5ca7b4f28901747bbf96b76c2e63ec5f1cba::coin::COIN",
       "symbol": "USDC",
       "name": "USD Coin",
@@ -978,12 +978,6 @@
       "coin_type": "0x93c5b75322b5f9fc194e16d869b30a1db8d1f1826b2371c776c21c3d6a375b10::suitable::SUITABLE",
       "symbol": "TABLE",
       "name": "SUITABLE",
-      "decimals": 9
-    },
-    {
-      "coin_type": "0x94b092e200b1a700fb3ebc1bd0f1eee4d06fd2edfd626ae6efebb2da78ce125b::af_lp::AF_LP",
-      "symbol": "AF_LP_METH_MUSD",
-      "name": "AfLpMEthMUsd",
       "decimals": 9
     },
     {
@@ -1095,6 +1089,12 @@
       "decimals": 9
     },
     {
+      "coin_type": "0xa00e5c8c0bb9525931d75ed7089e084b70c7b779b5aa147b189c670f715750d1::eksarpi::EKSARPI",
+      "symbol": "EKSARPI",
+      "name": "EKS-AR-PI",
+      "decimals": 6
+    },
+    {
       "coin_type": "0xa198f3be41cda8c07b3bf3fee02263526e535d682499806979a111e88a5a8d0f::coin::COIN",
       "symbol": "CELO",
       "name": "Celo native asset",
@@ -1159,6 +1159,12 @@
       "symbol": "wBTC",
       "name": "Wrapped Bitcoin",
       "decimals": 8
+    },
+    {
+      "coin_type": "0xaaffd090b57fcdcf293f7e7ec59c119acc910eeb5fc4aadfb4185fa56b6a2cb5::suipump::SUIPUMP",
+      "symbol": "ONE",
+      "name": "JustOneSui",
+      "decimals": 6
     },
     {
       "coin_type": "0xaded77ced91afca17e03306d24962f782a51c7395eaf0e7bc1e08ac0dca0fd52::fl_sui::FL_SUI",
@@ -1245,12 +1251,6 @@
       "decimals": 8
     },
     {
-      "coin_type": "0xb84323cac05ce4ba5ec8abb9a7499171ca66aff75a4e38f7d7dc536718ff374b::af_lp::AF_LP",
-      "symbol": "AF_LP_AFSUI_USDY",
-      "name": "AfLpAfSuiUsdy",
-      "decimals": 9
-    },
-    {
       "coin_type": "0xb848cce11ef3a8f62eccea6eb5b35a12c4c2b1ee1af7755d02d7bd6218e8226f::coin::COIN",
       "symbol": "WBNB",
       "name": "Wrapped BNB",
@@ -1275,6 +1275,12 @@
       "decimals": 9
     },
     {
+      "coin_type": "0xbcd73dc8d774982c2da4e07cd1c6803ec29e128821d1ade9e9a7ce4975b44944::joey::JOEY",
+      "symbol": "JOEY",
+      "name": "JOEY",
+      "decimals": 9
+    },
+    {
       "coin_type": "0xbd2301d12b96dd64b41134168931dd54742c0336bcf1752ed346a177ac00d1ed::SuiRewardsMe::SUIREWARDSME",
       "symbol": "SRM",
       "name": "SuiRewards.Me",
@@ -1291,12 +1297,6 @@
       "symbol": "SBOX",
       "name": "SuiBoxer Coin",
       "decimals": 1
-    },
-    {
-      "coin_type": "0xc00dfc048ec250a6029a0728f799905d3d8d3c281fd5bd153584a5dbafde93e1::af_lp::AF_LP",
-      "symbol": "AF_LP_IKA_SUI",
-      "name": "AfLpIkaSui",
-      "decimals": 9
     },
     {
       "coin_type": "0xc060006111016b8a020ad5b33834984a437aaa7d3c74c18e09a95d48aceab08c::coin::COIN",
@@ -1320,6 +1320,12 @@
       "coin_type": "0xc355eec877678040e55e58f3ac985e8a1b42205d5e9025e9711d1dfb3540639e::suipump::SUIPUMP",
       "symbol": "JEAN",
       "name": "Jean sui",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xc3f8927de33d3deb52c282a836082a413bc73c6ee0bd4d7ec7e3b6b4c28e9abf::coin::COIN",
+      "symbol": "USDC",
+      "name": "USD Coin",
       "decimals": 6
     },
     {
@@ -1359,18 +1365,6 @@
       "decimals": 6
     },
     {
-      "coin_type": "0xc9ad7962644dbcc6cd88f6e926d3c721655731ad5362c0eea8ec21d45840ed14::af_lp::AF_LP",
-      "symbol": "AF_LP_AFSUI_ETH",
-      "name": "AfLpAfSuiEth",
-      "decimals": 8
-    },
-    {
-      "coin_type": "0xc9ecb0b9d62dac89607dbe368de67a022bf07dd37273b298d7074d7cff42e39b::af_lp::AF_LP",
-      "symbol": "AF_LP_MBTC_MUSD",
-      "name": "AfLpMbtcMusd",
-      "decimals": 9
-    },
-    {
       "coin_type": "0xcbd480f670c70232ad52ab12b56f81e6bfc870b14ae4e2af6e40426458450478::mvg::MVG",
       "symbol": "MVG",
       "name": "monivong",
@@ -1381,12 +1375,6 @@
       "symbol": "mETH",
       "name": "mETH",
       "decimals": 8
-    },
-    {
-      "coin_type": "0xcd4874d0ea02e448076ba7490de089dc071c396a677af5b1bde6df9f8bedd267::af_lp::AF_LP",
-      "symbol": "AF_LP_CUSD",
-      "name": "AfLpCUSD",
-      "decimals": 9
     },
     {
       "coin_type": "0xce7ff77a83ea0cb6fd39bd8748e2ec89a3f41e8efdc3f4eb123e0ca37b184db2::buck::BUCK",
@@ -1425,12 +1413,6 @@
       "decimals": 6
     },
     {
-      "coin_type": "0xd1a3eab6e9659407cb2a5a529d13b4102e498619466fc2d01cb0a6547bbdb376::af_lp::AF_LP",
-      "symbol": "AF_LP_SUI_USDC",
-      "name": "AfLpSuiUsdc",
-      "decimals": 9
-    },
-    {
       "coin_type": "0xd1b72982e40348d069bb1ff701e634c117bb5f741f44dff91e472d3b01461e55::stsui::STSUI",
       "symbol": "stSUI",
       "name": "AlphaFi Staked SUI",
@@ -1441,6 +1423,12 @@
       "symbol": "TOCE",
       "name": "Tocen Token",
       "decimals": 9
+    },
+    {
+      "coin_type": "0xd30fb3f8914efdbeb7b8e85fae1d65dc584b44a1281f66737b92bb9f03a59d06::btc::BTC",
+      "symbol": "hBTC",
+      "name": "BTC",
+      "decimals": 8
     },
     {
       "coin_type": "0xd3ccd5bf9e845177220dadd080aa05bff57706f73afb2f3e3713bcf8fb68b447::mazu::MAZU",
@@ -1503,12 +1491,6 @@
       "decimals": 6
     },
     {
-      "coin_type": "0xdb48d22586b7eabf33202ae32a0c074577ad90e94cf7ce476362256b45f9a1fd::af_lp::AF_LP",
-      "symbol": "AF_LP_SURF_SUI",
-      "name": "AfLpSurf/Sui",
-      "decimals": 7
-    },
-    {
       "coin_type": "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
       "symbol": "USDC",
       "name": "USDC",
@@ -1563,10 +1545,22 @@
       "decimals": 6
     },
     {
+      "coin_type": "0xdf291061aeda7dced540dce2de0bf0484240113987c249f2d5370517651abe21::pumpkin_sui::PUMPKIN_SUI",
+      "symbol": "pumpkinSUI",
+      "name": "Pumpkin Staked SUI",
+      "decimals": 9
+    },
+    {
       "coin_type": "0xdfe175720cb087f967694c1ce7e881ed835be73e8821e161c351f4cea24a0f20::satlbtc::SATLBTC",
       "symbol": "SATLBTC",
       "name": "satLBTC",
       "decimals": 8
+    },
+    {
+      "coin_type": "0xdfff755d5fa3097da2a8e9da17c0787ea185c05798ad04d5983a26c7a778a32d::parchment::PARCHMENT",
+      "symbol": "PARCHMENT",
+      "name": "Parchment",
+      "decimals": 9
     },
     {
       "coin_type": "0xe0644f3e46b2d9f319a2cc3491155c75d1b6132ba9b3601c6e7e102e17296645::goof::GOOF",
@@ -1620,6 +1614,12 @@
       "coin_type": "0xe4cbb9bcb343ce93182725da11050640c7872453cdb7809e8b7e654581e32774::frog::FROG",
       "symbol": "FROG",
       "name": "HopFrog",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xe596782fbaebef51ae99ffac8731aed98a80642b9dc193ed659c97fbc2cc0f84::coin::COIN",
+      "symbol": "USDC",
+      "name": "USD Coin",
       "decimals": 6
     },
     {
@@ -1725,12 +1725,6 @@
       "decimals": 6
     },
     {
-      "coin_type": "0xf1b901d93cc3652ee26e8d88fff8dc7b9402b2b2e71a59b244f938a140affc5e::af_lp::AF_LP",
-      "symbol": "AF_LP_USDC_BUCK",
-      "name": "AfLpUsdcBuck",
-      "decimals": 9
-    },
-    {
       "coin_type": "0xf217249507c83f0d404b096c1f79194c3290d9c26b453cd78c95d2062f76812d::fish::FISH",
       "symbol": "FISH",
       "name": "Catfish",
@@ -1779,22 +1773,10 @@
       "decimals": 9
     },
     {
-      "coin_type": "0xf847c541b3076eea83cbaddcc244d25415b7c6828c1542cae4ab152d809896b6::af_lp::AF_LP",
-      "symbol": "AF_LP_SUI_NS",
-      "name": "AfLpSuiNs",
-      "decimals": 9
-    },
-    {
       "coin_type": "0xfa7ac3951fdca92c5200d468d31a365eb03b2be9936fde615e69f0c1274ad3a0::BLUB::BLUB",
       "symbol": "BLUB",
       "name": "BLUB",
       "decimals": 2
-    },
-    {
-      "coin_type": "0xfbdd50dd7bc7af482d308f8c5d8c66c23e3b59494ff92f2947b150f20b5f43fd::af_lp::AF_LP",
-      "symbol": "AF_LP_SUPER_SUI",
-      "name": "AfLpSuperSui",
-      "decimals": 9
     },
     {
       "coin_type": "0xfd22b6a15804cfa918ea25fbc48c48fe220382be34d5fb44594448717e6661d3::explorers::EXPLORERS",

@@ -608,6 +608,7 @@
     },
     "0xce7ff77a83ea0cb6fd39bd8748e2ec89a3f41e8efdc3f4eb123e0ca37b184db2": {
       "signers": [
+        "0x19f528cf4b5d0d8bcbc33c66405d149ea726a4dc1bc773537dc65364d4e58be4",
         "0x8fb41c0caf9fa1205a854806edf5f3f16023e7ddbb013c717b50ce7e539dc038",
         "0x938884d43de2bcf13a2f8f5886ea6382994ba49dcf7b3d08203acdd508778b6b"
       ]
@@ -1045,6 +1046,7 @@
     },
     "0x44dad8a2899167fe2806c2c298366c0824180fc382aa66cb8bd034b2e9aef96f": {
       "signers": [
+        "0x17feaf03c9dfdae0300b7c87b5805fb5d3f5aaeb6ad5847afd15a7d73f481951",
         "0x99bcc2ba724821ce090add468efbb730a4926adcfefd7185212380b81b72aa66",
         "0xeaadff7edd13268918f649adbe9de20984646645e750b44bac929f35a12e0abe"
       ]

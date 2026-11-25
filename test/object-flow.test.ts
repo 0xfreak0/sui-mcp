@@ -428,13 +428,13 @@ describe("giving up a capability: who can use it afterwards", () => {
     expect(createdShared(`${P2}::coin::DenyCapV2<0xa::t::T>`).note).toMatch(/deny_list_v2_enable_global_pause/);
   });
 
-  // display::new takes a Publisher by & and returns a legacy Display, which
-  // display_registry::migrate_v1_to_v2 and claim turn into the registry
-  // Display or its DisplayCap: freezing does not close the registry.
-  it("does not say a frozen Publisher closes the Display registry", () => {
+  // Display V1 creation aborts, so a Publisher taken by & no longer reaches
+  // the registry through a legacy Display; its registry functions take it by
+  // &mut, which a frozen object cannot give.
+  it("does not credit a frozen Publisher with creating Displays", () => {
     const note = to(`${P2}::package::Publisher`, IMMUTABLE).note!;
-    expect(note).toMatch(/display_registry::migrate_v1_to_v2 and claim/);
-    expect(note).not.toMatch(/nobody can/i);
+    expect(note).not.toMatch(/display::new|migrate_v1_to_v2/);
+    expect(note).toMatch(/transfer_policy::new/);
   });
 
   // coin::migrate_regulated_currency_to_v2 takes the DenyCap by value, and a

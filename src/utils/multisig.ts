@@ -32,6 +32,7 @@ import { MultiSigPublicKey } from "@mysten/sui/multisig";
 import { Ed25519PublicKey } from "@mysten/sui/keypairs/ed25519";
 import { Secp256k1PublicKey } from "@mysten/sui/keypairs/secp256k1";
 import { Secp256r1PublicKey } from "@mysten/sui/keypairs/secp256r1";
+import { MLDSA65PublicKey } from "@mysten/sui/keypairs/mldsa65";
 import { computeZkLoginAddressFromSeed } from "@mysten/sui/zklogin";
 import type { PublicKey } from "@mysten/sui/cryptography";
 
@@ -46,6 +47,7 @@ const PLAIN_KEY_CLASSES = {
   ED25519: Ed25519PublicKey,
   Secp256k1: Secp256k1PublicKey,
   Secp256r1: Secp256r1PublicKey,
+  MLDSA65: MLDSA65PublicKey,
 } as const;
 
 export type AuthScheme =
@@ -55,6 +57,7 @@ export type AuthScheme =
   | "multisig"
   | "zklogin"
   | "passkey"
+  | "mldsa65"
   | "unknown";
 
 /** SDK scheme names are capitalised; ours are the wire-ish lowercase form. */
@@ -65,6 +68,7 @@ const SCHEME_NAMES: Record<string, AuthScheme> = {
   MultiSig: "multisig",
   ZkLogin: "zklogin",
   Passkey: "passkey",
+  MLDSA65: "mldsa65",
 };
 
 /** A zkLogin identity as it appears on chain. See {@link zkLoginNote}. */
@@ -184,7 +188,9 @@ const MAX_GENERATED_RUN = 7;
 
 /**
  * Why no private key can exist for these public-key bytes, or null when they
- * look generated. A public key chosen by hand still parses, and may even be a
+ * look generated. It applies to every scheme's key bytes, a 1952-byte ML-DSA-65
+ * key as well as a 32-byte curve key; the stated chance scales with the length.
+ * A public key chosen by hand still parses, and may even be a
  * valid curve point, but finding the private key behind a chosen point is
  * the discrete-logarithm problem, so nobody holds it. A member with such a
  * key can never sign, so a 2-of-4 committee with one is in practice 2-of-3.
@@ -203,9 +209,12 @@ export function unsignableKeyReason(bytes: Uint8Array): string | null {
   let text = 0;
   while (text < bytes.length && bytes[text] >= 0x20 && bytes[text] <= 0x7e) text++;
   const prefix = text >= 3 ? `begins with the text "${Buffer.from(bytes.subarray(0, text)).toString("latin1")}" and ` : "";
+  // A run of more than MAX_GENERATED_RUN equal bytes starts at any of about
+  // `length` positions, each with probability 255 / 256^8 once the run is 8.
+  const chance = (bytes.length * 255) / 2 ** 64;
   return (
-    `The public key ${prefix}contains a run of ${longest} bytes of 0x${longestByte.toString(16).padStart(2, "0")}, which a generated key has with probability below 1e-15: it was written by hand. ` +
-    "Nobody holds a private key for a public key chosen this way (finding one is the discrete-logarithm problem), so this member can never sign."
+    `The public key ${prefix}contains a run of ${longest} bytes of 0x${longestByte.toString(16).padStart(2, "0")}, which a generated ${bytes.length}-byte key has with probability below ${chance.toExponential(0)}: it was written by hand. ` +
+    "Nobody holds a private key for a public key chosen this way (for a curve key, finding one is the discrete-logarithm problem; no signature scheme lets one be computed from a chosen public key), so this member can never sign."
   );
 }
 
@@ -356,7 +365,7 @@ export function describeSignatures(signatures: string[]): SignatureIdentity[] {
       return { scheme, ...(address ? { address } : {}), zklogin };
     }
 
-    // Passkey and the three plain schemes all expose a public key directly.
+    // Passkey, ML-DSA-65 and the three curve schemes all expose a public key directly.
     const pk = publicKeyFor(
       parsed.signatureScheme === "Passkey" ? "Secp256r1" : parsed.signatureScheme,
       parsed.publicKey,
@@ -492,6 +501,9 @@ export function authenticationNote(auth: Authentication): string | undefined {
   if (auth.scheme === "zklogin" && auth.zklogin) return zkLoginNote(auth.zklogin);
   if (auth.scheme === "passkey") {
     return "This wallet authenticates with a passkey (WebAuthn), so its key lives in a device or platform keystore.";
+  }
+  if (auth.scheme === "mldsa65") {
+    return "This wallet signs with ML-DSA-65, a post-quantum signature scheme (flag 7). It is one key, like an Ed25519 wallet, and its address is the hash of that key.";
   }
   return undefined;
 }

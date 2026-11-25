@@ -7,6 +7,7 @@
 
 ### Fixed
 - **CCTP V2 burns.** `resolve_bridge_transfer` read a V2 message's 32-byte nonce as V1's u64, so every V2 burn from Sui shared the transfer id `8/0`. V2 burns now report `cctp_version: 2`, no transfer id, and `attestation_lookup` (source domain and burn digest), with `max_fee`, `min_finality_threshold`, `finality` and any `hook_data`. V1 burns are unchanged and report `cctp_version: 1`.
+- **ML-DSA-65 signers.** A post-quantum ML-DSA-65 signature (flag 7) or multisig member is named `mldsa65` with its derived address in `identify_address`, `analyze_multisig`, `get_transaction`'s `authorization` and `get_upgrade_history`, rather than `unknown`. Mainnet has not enabled the scheme yet (`mldsa65_auth` is off at protocol 142).
 
 ### Changed
 - `@mysten/sui` 2.39.1, which parses allowance withdrawals in transaction bytes. The fullnode's gRPC-web transport is built by the server, so request queueing and 429 retries apply with this SDK.

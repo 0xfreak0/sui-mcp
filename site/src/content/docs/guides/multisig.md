@@ -46,10 +46,10 @@ signed only before the examined window shows as dormant, so raise
 `max_transactions` before calling a key unused.
 
 A committee key holding a run of more than seven identical bytes, such as a
-readable word followed by zero bytes, was written by hand. A generated key
-has such a run with probability below 1e-15, and finding the private key for
-a chosen public key is the discrete-logarithm problem, so that member can
-never sign. It is listed in `unsignable_members`, and `effective_committee`
+readable word followed by zero bytes, was written by hand. A generated
+32-byte key has such a run with probability below 1e-15 (3e-14 for a
+1952-byte ML-DSA-65 key), and no private key can be computed for a chosen
+public key, so that member can never sign. It is listed in `unsignable_members`, and `effective_committee`
 gives the threshold against the keys that can sign: a 2-of-4 with one such
 member is 2-of-3. The dormancy note leaves such members out of its cold or
 lost key reading.
@@ -133,7 +133,10 @@ is not a negative finding.
 A wallet that has never sent a transaction has no signature from which to
 classify its authentication. The result reports it as unknown.
 
-## zkLogin and passkey wallets
+## zkLogin, passkey and ML-DSA-65 wallets
 
-zkLogin and passkey wallets go through the same path. zkLogin reports its
+zkLogin, passkey and ML-DSA-65 wallets go through the same path. An
+ML-DSA-65 key (signature flag 7, a post-quantum scheme) is reported as scheme
+`mldsa65` with its derived address, alone or as a committee member. Mainnet
+has not enabled the scheme yet (`mldsa65_auth` is off at protocol 142). zkLogin reports its
 OAuth issuer; the chain discloses nothing else about the account.

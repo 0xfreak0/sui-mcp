@@ -79,6 +79,7 @@ const SINGLE_KEY: Partial<Record<AuthScheme, true>> = {
   secp256r1: true,
   zklogin: true,
   passkey: true,
+  mldsa65: true,
 };
 
 /** `UpgradeCap.policy` (u8) as a word. The framework only lets it rise. */

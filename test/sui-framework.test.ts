@@ -330,3 +330,25 @@ describe("the capability rules agree with what the framework lets any transactio
     });
   }
 });
+
+/**
+ * Framework modules that change who an address's funds belong to, which the
+ * server reads nothing from yet because they have no callable API. Each entry
+ * states what has to be built once one appears; a framework sync that adds a
+ * public or entry function fails here naming it.
+ */
+const NO_API_YET: Record<string, string> = {
+  forwarding_address:
+    "a forwarding address forwards deposits to its registered master address, so traces, balances and identity must treat the two as one account and read registrations from the ForwardingAddressRegistry at 0xfa",
+};
+
+describe("framework modules with no API yet", () => {
+  for (const [name, needed] of Object.entries(NO_API_YET)) {
+    it(`${name} has no callable function`, () => {
+      const m = modules.find((x) => x.name === name);
+      expect(m, `${name} is not in the vendored framework: revisit ${name}`).toBeDefined();
+      const callable = m!.functions.filter(isCallable).map((f) => f.name);
+      expect(callable, `${name} gained ${callable.join(", ")}: ${needed}`).toEqual([]);
+    });
+  }
+});

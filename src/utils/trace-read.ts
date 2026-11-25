@@ -45,6 +45,7 @@ import { adaptCommands, adaptBalanceChanges } from "./gql-adapters.js";
 import { withArchiveFallback } from "./archive-fallback.js";
 import { timestampToIso } from "./formatting.js";
 import { isNotFound } from "./errors.js";
+import { allowanceDrawsFrom, holdsAllowanceCaps, readTxWithdrawals, type AllowanceDraw } from "./allowance-links.js";
 import { getCachedTransaction, saveTransaction } from "./store.js";
 import { getNetwork } from "../config.js";
 import type { GqlBalanceChangeNode, GqlCommandNode } from "./gql-adapters.js";
@@ -377,7 +378,7 @@ export async function fetchTx(digest: string): Promise<FetchedTx | null> {
  * selection needs: who sent it, who paid gas, and every balance change.
  */
 const CANDIDATE_NODE = `digest sender { address } gasInput { gasSponsor { address } }
-      effects { gasEffects { gasSummary { computationCost storageCost storageRebate } } ${BALANCE_CHANGES_SELECTION} }`;
+      effects { checkpoint { sequenceNumber } gasEffects { gasSummary { computationCost storageCost storageRebate } } ${BALANCE_CHANGES_SELECTION} }`;
 
 const SENT_AFTER = `query($address: SuiAddress!, $first: Int!, $after: String, $afterCheckpoint: Int, $beforeCheckpoint: Int) {
   transactions(filter: { sentAddress: $address, afterCheckpoint: $afterCheckpoint, beforeCheckpoint: $beforeCheckpoint }, first: $first, after: $after) {
@@ -417,6 +418,7 @@ export interface CandidateNode {
   sender?: { address?: string } | null;
   gasInput?: { gasSponsor?: { address?: string } | null } | null;
   effects?: {
+    checkpoint?: { sequenceNumber?: number | null } | null;
     gasEffects?: { gasSummary?: GqlGasSummary | null } | null;
     balanceChanges?: GqlConnection<GqlBalanceChangeNode> | null;
   } | null;
@@ -449,9 +451,11 @@ export async function candidatePage(
   const txs = nodes.map((n, i): CandidateTx => {
     const sender = n.sender?.address ?? null;
     const net = netGas(n.effects?.gasEffects?.gasSummary);
+    const checkpoint = n.effects?.checkpoint?.sequenceNumber;
     return {
       digest: n.digest,
       sender,
+      ...(typeof checkpoint === "number" ? { checkpoint } : {}),
       gas: { payer: n.gasInput?.gasSponsor?.address ?? sender, net: net === null ? null : BigInt(net) },
       changes: completed[i].balanceChanges.map((b) => ({
         address: b.owner?.address ?? "",
@@ -525,11 +529,16 @@ export async function scanObjectTouches(
  return { digests, exhausted: false };
 }
 
+/** How a forward spend was found: sent by the holder, taken out of an object, or drawn on the holder's balance under an allowance. */
+export type ForwardVia = "sent" | "released-from-object" | "allowance-spend";
+
 export type ForwardStep =
   | {
       digest: string;
-      via: "sent" | "released-from-object";
+      via: ForwardVia;
       spent: bigint;
+      /** Set when `via` is `allowance-spend`: the withdrawal that drew on the holder's balance. */
+      allowance?: AllowanceDraw;
       /** The other spends read before the delivered amount was covered, in order. */
       others: Array<{ digest: string; spent: bigint }>;
       /** Earlier transactions in which the address kept a claim on the coin it put in and still held (see claimCoinsKept). */
@@ -556,8 +565,22 @@ export interface SearchWindow {
 /** One transaction in which the followed address spent the tracked coin. */
 export interface ForwardSpend {
   tx: CandidateTx;
-  via: "sent" | "released-from-object";
+  via: ForwardVia;
   spent: bigint;
+  allowance?: AllowanceDraw;
+}
+
+/**
+ * Whether the forward search looked for spends of the holder's balance that
+ * another address signed under an allowance. `ran` false with `gate:
+ * "no_caps"` means the holder holds no AllowanceCap now; an allowance revoked
+ * before the read leaves none. `unread` counts candidates whose inputs could
+ * not be read, so whether they drew under an allowance is unknown.
+ */
+export interface AllowanceSearch {
+  ran: boolean;
+  gate: "holds_caps" | "gate_unread" | "no_caps" | "affected_phase";
+  unread: number;
 }
 export interface ForwardScan {
   /** Spends in the order they happened. */
@@ -585,6 +608,8 @@ export interface ForwardScan {
   drainedBySelf: number;
   /** Candidates `passOver` set aside: spends of the coin that did not move it on. */
   passedOver: ForwardSpend[];
+  /** Absent when the caller turned the allowance search off. */
+  allowanceSearch?: AllowanceSearch;
 }
 
 /**
@@ -602,6 +627,15 @@ export interface ForwardScan {
  * object's address balance), and the transaction that takes them out is sent
  * by someone else. That case is found through `affectedAddress`, as the later
  * transactions in which R's balance of the coin goes down.
+ *
+ * A funder's balance also leaves in transactions someone else sends: a spend
+ * under a native allowance is signed by the spender. When R holds an
+ * `AllowanceCap` (or that read failed), the transactions in which R's balance
+ * of the coin fell while another address signed are read through
+ * `affectedAddress` too, and one counts only when its own `FundsWithdrawal`
+ * input draws on R under an allowance (`via: "allowance-spend"`). Those spends
+ * are merged with R's sent ones in checkpoint order. In the object phase a
+ * spend whose input draws on R that way is labelled the same.
  *
  * `afterCheckpoint` is **exclusive**: passing a transaction's own checkpoint
  * excludes it, passing `cp - 1` includes it. Same-checkpoint forwarding is
@@ -629,6 +663,8 @@ export async function scanForwardSpends(
      * to another address (see passesClaim).
      */
     passOver?: (tx: CandidateTx) => string[];
+    /** False skips the allowance search (and the gate read it needs). */
+    allowances?: boolean;
   } = {},
 ): Promise<ForwardScan> {
   const w = opts.window ?? {};
@@ -639,19 +675,24 @@ export async function scanForwardSpends(
     (opts.maxSpends !== undefined && spends.length >= opts.maxSpends) ||
     (opts.need !== undefined && covered >= opts.need);
 
+  /** What a classifier says of one hit: drawn under an allowance, set aside, or kept as the phase reads it. */
+  type Verdict = { draw?: AllowanceDraw; drop?: boolean };
+
   const read = async (
     query: string,
     via: ForwardSpend["via"],
     pages: number,
-  ): Promise<Omit<ForwardScan, "phase">> => {
+    classify?: (txs: CandidateTx[]) => Promise<Map<string, Verdict>>,
+  ): Promise<PhaseScan> => {
     const spends: ForwardSpend[] = [];
     const passedOver: Array<ForwardSpend & { claims: string[] }> = [];
     /** Order each spend was seen in, so released claims keep their place. */
     const order = new Map<ForwardSpend, number>();
     let seq = 0;
     let covered = 0n;
+    let lastCheckpoint: number | undefined;
     const inOrder = () => spends.sort((a, b) => order.get(a)! - order.get(b)!);
-    const result = (exhausted: boolean, satisfied: boolean) => ({
+    const result = (exhausted: boolean, satisfied: boolean): PhaseScan => ({
       spends: inOrder(),
       seen,
       exhausted,
@@ -659,6 +700,7 @@ export async function scanForwardSpends(
       alreadyAllocated,
       drainedBySelf,
       passedOver: passedOver.map(({ claims: _, ...p }) => p),
+      ...(lastCheckpoint !== undefined ? { lastCheckpoint } : {}),
     });
     let seen = 0;
     let alreadyAllocated = 0;
@@ -676,25 +718,39 @@ export async function scanForwardSpends(
       // this receipt, so it is not a transaction sent since.
       seen += txs.filter((t) => t.digest !== current && !opts.hardSkip?.has(t.digest)).length;
       const found = allSpends(txs, address, coin, remaining, opts.hardSkip, current);
+      const verdicts = classify && found.hits.length ? await classify(found.hits.map((h) => h.tx)) : null;
+      const kept = found.hits.filter((h) => !verdicts?.get(h.tx.digest)?.drop);
       alreadyAllocated += found.alreadyAllocated;
       drainedBySelf += found.drainedBySelf;
-      const hitOf = new Map(found.hits.map((h) => [h.tx, h]));
-      const lastHit = found.hits.at(-1)?.tx;
+      const hitOf = new Map(kept.map((h) => [h.tx, h]));
+      const lastHit = kept.at(-1)?.tx;
       for (const tx of txs) {
+        if (tx.checkpoint !== undefined) lastCheckpoint = tx.checkpoint;
         // A claim set aside earlier counts as a spend once it is passed on.
         for (let i = passedOver.length - 1; i >= 0; i--) {
           const held = passedOver[i];
           if (held.tx === tx || !passesClaim(tx, address, held.claims)) continue;
           passedOver.splice(i, 1);
-          const spend = { tx: held.tx, via: held.via, spent: held.spent };
+          const spend: ForwardSpend = {
+            tx: held.tx,
+            via: held.via,
+            spent: held.spent,
+            ...(held.allowance ? { allowance: held.allowance } : {}),
+          };
           order.set(spend, order.get(held)!);
           spends.push(spend);
           covered += held.spent;
         }
         const hit = hitOf.get(tx);
         if (hit) {
+          const draw = verdicts?.get(tx.digest)?.draw;
           const claims = opts.passOver?.(hit.tx) ?? [];
-          const spend = { tx: hit.tx, via, spent: hit.spent };
+          const spend: ForwardSpend = {
+            tx: hit.tx,
+            via: draw ? "allowance-spend" : via,
+            spent: hit.spent,
+            ...(draw ? { allowance: draw } : {}),
+          };
           if (claims.length) {
             const held = { ...spend, claims };
             order.set(held, seq++);
@@ -714,9 +770,106 @@ export async function scanForwardSpends(
     return result(false, false);
   };
 
+  const strip = ({ lastCheckpoint: _, ...scan }: PhaseScan) => scan;
+  let unread = 0;
+  /**
+   * The allowance withdrawals that draw on `address` in each candidate
+   * another address sent. `keepUndrawn` keeps a candidate that draws on no
+   * allowance (the object phase, where every spend is someone else's
+   * transaction); otherwise it is set aside, as is one whose inputs could not
+   * be read, which `unread` counts.
+   */
+  const classifier = (keepUndrawn: boolean) => async (txs: CandidateTx[]): Promise<Map<string, Verdict>> => {
+    const verdicts = new Map<string, Verdict>();
+    const foreign = txs.filter((t) => t.sender !== address);
+    for (const t of txs) if (t.sender === address) verdicts.set(t.digest, keepUndrawn ? {} : { drop: true });
+    const inputs = foreign.length ? await readTxWithdrawals(foreign.map((t) => t.digest)) : new Map();
+    for (const t of foreign) {
+      const got = inputs.get(t.digest);
+      if (got == null) {
+        unread++;
+        verdicts.set(t.digest, keepUndrawn ? {} : { drop: true });
+        continue;
+      }
+      const draw = allowanceDrawsFrom(got.withdrawals, address, got.sender ?? t.sender)[0];
+      verdicts.set(t.digest, draw ? { draw } : keepUndrawn ? {} : { drop: true });
+    }
+    return verdicts;
+  };
+
   const sent = await read(SENT_AFTER, "sent", SENT_PAGES);
-  if (sent.spends.length > 0 || sent.seen > 0) return { ...sent, phase: "sent" };
-  return { ...(await read(AFFECTED_AFTER, "released-from-object", AFFECTED_PAGES)), phase: "affected" };
+  if (sent.spends.length === 0 && sent.seen === 0) {
+    const affected = await read(
+      AFFECTED_AFTER,
+      "released-from-object",
+      AFFECTED_PAGES,
+      opts.allowances === false ? undefined : classifier(true),
+    );
+    return {
+      ...strip(affected),
+      phase: "affected",
+      ...(opts.allowances === false ? {} : { allowanceSearch: { ran: true, gate: "affected_phase" as const, unread } }),
+    };
+  }
+  if (opts.allowances === false) return { ...strip(sent), phase: "sent" };
+  const holds = await holdsAllowanceCaps(address);
+  if (holds === false) return { ...strip(sent), phase: "sent", allowanceSearch: { ran: false, gate: "no_caps", unread: 0 } };
+  const drawn = await read(AFFECTED_AFTER, "allowance-spend", AFFECTED_PAGES, classifier(false));
+  return {
+    ...mergeForwardScans(sent, drawn, done),
+    phase: "sent",
+    allowanceSearch: { ran: true, gate: holds === null ? "gate_unread" : "holds_caps", unread },
+  };
+}
+
+/** One filter's forward search, before it is merged with another. */
+export type PhaseScan = Omit<ForwardScan, "phase" | "allowanceSearch"> & {
+  /** The checkpoint of the last candidate read; nothing later was read. */
+  lastCheckpoint?: number;
+};
+
+/**
+ * Two forward searches of one address through different filters, as one, in
+ * checkpoint order. A search that stopped at its page limit read nothing past
+ * its last checkpoint, so the other's spends after that point are cut: the
+ * merged list holds no spend later than an unread stretch of either. Then the
+ * `need` and `maxSpends` cut is applied again over the merged order. `seen`
+ * stays the first search's, the transactions the address sent. Exported for
+ * tests.
+ */
+export function mergeForwardScans(
+  a: PhaseScan,
+  b: PhaseScan,
+  done: (spends: ForwardSpend[], covered: bigint) => boolean,
+): Omit<ForwardScan, "phase" | "allowanceSearch"> {
+  const base = {
+    seen: a.seen,
+    alreadyAllocated: a.alreadyAllocated + b.alreadyAllocated,
+    drainedBySelf: a.drainedBySelf + b.drainedBySelf,
+    passedOver: [...a.passedOver, ...b.passedOver],
+  };
+  if (b.spends.length === 0 && (b.exhausted || b.satisfied)) {
+    return { ...base, spends: a.spends, exhausted: a.exhausted, satisfied: a.satisfied };
+  }
+  const open = [a, b].filter((s) => !s.exhausted && !s.satisfied);
+  const boundary = open.length ? Math.min(...open.map((s) => s.lastCheckpoint ?? -1)) : Infinity;
+  const dated = [...a.spends, ...b.spends].every((s) => s.tx.checkpoint !== undefined);
+  // Undated spends cannot be interleaved, so the first search's come first.
+  const all = dated
+    ? [...a.spends, ...b.spends].sort((x, y) => x.tx.checkpoint! - y.tx.checkpoint!)
+    : [...a.spends, ...b.spends];
+  const within = all.filter((s) => s.tx.checkpoint === undefined || s.tx.checkpoint <= boundary);
+  const spends: ForwardSpend[] = [];
+  let covered = 0n;
+  for (const s of within) {
+    spends.push(s);
+    covered += s.spent;
+    if (done(spends, covered)) {
+      const last = s === all.at(-1) && a.exhausted && b.exhausted;
+      return { ...base, spends, exhausted: last, satisfied: true };
+    }
+  }
+  return { ...base, spends, exhausted: a.exhausted && b.exhausted && within.length === all.length, satisfied: false };
 }
 
 /**
@@ -731,6 +884,14 @@ export async function scanForwardSpends(
  * nothing was found yet.
  */
 export function noSpendReason(address: string, coin: string | null, scan: ForwardScan): string {
+  const unread = scan.allowanceSearch?.unread ?? 0;
+  const base = spendReason(address, coin, scan);
+  return unread > 0
+    ? `${base} The inputs of ${unread} later transaction(s) another address sent, in which ${address}'s balance fell, could not be read, so whether they spent it under an allowance is unknown.`
+    : base;
+}
+
+function spendReason(address: string, coin: string | null, scan: ForwardScan): string {
   const coinName = coin ? displayCoin(coin).symbol : "the funds";
   const { seen, exhausted, satisfied, alreadyAllocated, drainedBySelf } = scan;
   const budgetLimited = !exhausted && !satisfied;
@@ -813,6 +974,7 @@ export async function findNextForward(
     digest: hit.tx.digest,
     via: hit.via,
     spent: hit.spent,
+    ...(hit.allowance ? { allowance: hit.allowance } : {}),
     others: scan.spends.filter((s) => s !== hit).map((s) => ({ digest: s.tx.digest, spent: s.spent })),
     keptClaims,
   };

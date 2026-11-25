@@ -39,6 +39,7 @@
  */
 export type SignalType =
   | "co_signer"
+  | "allowance"
   | "cofunded"
   | "funding_edge"
   | "reciprocal"
@@ -74,6 +75,18 @@ export const SIGNAL_WEIGHTS: Record<SignalType, number> = {
    * spend alone — which is a weaker claim, not a weaker version of this one.
    */
   co_signer: 1.5,
+  /**
+   * The funder's key granted this spender a spend of its address balance,
+   * read from a signer-path `0x2::allowance::Allowance` object (no `app`).
+   * Like `co_signer` it is chain-derived control rather than behaviour, and
+   * like it, not ownership: an agent session or a custodian holds such a key
+   * for someone else. Below `co_signer` because an allowance is bounded (a
+   * lifetime cap, a rate limit, an expiry) and revocable, so it is not
+   * control of the wallet; level with `funding_edge`, a one-way act by one
+   * address that names the other. App-bound allowances get
+   * {@link APP_ALLOWANCE_WEIGHT}.
+   */
+  allowance: 1.0,
   cofunded: 1.0,
   funding_edge: 1.0,
   // Level with a shared narrow funder. Both carry the same kind of false
@@ -108,6 +121,20 @@ export const SIGNAL_WEIGHTS: Record<SignalType, number> = {
  * often suggests the opposite.
  */
 export const PARTIAL_CO_SIGNER_WEIGHT = 0.6;
+
+/**
+ * Weight of an app-bound allowance (`app` set, spent through
+ * `app_balance_spend`): below the merge floor.
+ *
+ * The spender of an app-bound allowance is the key the app's module accepts,
+ * an operator the app chose for its users, and the app can rotate it. On
+ * mainnet in November 2026 every spender named by five or more funders was
+ * app-bound (swap-funding and settlement apps), while every signer-path
+ * spender was named by one funder. Two of those app spenders sit at exactly
+ * the popularity limit of five, so the weight, not the filter, is what keeps
+ * an app's users from merging through its operator.
+ */
+export const APP_ALLOWANCE_WEIGHT = 0.6;
 
 /** A coin transfer into a collector, with the payer's pre-transfer balance when known. */
 export interface ConsolidationPayment {
@@ -198,6 +225,8 @@ export interface EdgeEvidence {
   digests: string[];
   /** Plain-language statement of the observed fact — never the inference. */
   detail: string;
+  /** Objects that are the evidence, for a signal read from state rather than a transaction (an allowance and its cap). */
+  object_ids?: string[];
   /**
    * Weight for this instance.
    *
@@ -263,6 +292,7 @@ export class EdgeSet {
     digests: string[] = [],
     via?: string,
     weight?: number,
+    objectIds?: string[],
   ): void {
     if (a === b) return;
     const w = weight ?? SIGNAL_WEIGHTS[type];
@@ -279,6 +309,10 @@ export class EdgeSet {
     // funder seen twice is one fact observed twice.
     const existing = edge.signals.find((s) => s.type === type && s.via === via);
     if (existing) {
+      for (const id of objectIds ?? []) {
+        if (!existing.object_ids) existing.object_ids = [];
+        if (!existing.object_ids.includes(id)) existing.object_ids.push(id);
+      }
    const seen = this.evidenceSeen.get(existing)!;
       for (const d of digests) {
     if (!seen.has(d)) {
@@ -288,7 +322,14 @@ export class EdgeSet {
       }
       return;
     }
-  const evidence = { type, via, digests: [...new Set(digests)], detail, weight: w };
+  const evidence: EdgeEvidence = {
+   type,
+   via,
+   digests: [...new Set(digests)],
+   detail,
+   weight: w,
+   ...(objectIds?.length ? { object_ids: [...new Set(objectIds)] } : {}),
+  };
   this.evidenceSeen.set(evidence, new Set(evidence.digests));
   edge.signals.push(evidence);
     if (!edge.signal_types.includes(type)) edge.signal_types.push(type);
@@ -467,6 +508,100 @@ export function addCoSignerEdges(
     }
   }
   return { excluded };
+}
+
+/** One allowance between two addresses, as read from the `Allowance` object (and the funder's cap, when the funder side was read). */
+export interface AllowanceLink {
+  allowance_id: string;
+  /** The `AllowanceCap` that revokes it, held by the funder; null when only the spender scan found it. */
+  cap_id: string | null;
+  funder: string;
+  spender: string;
+  /** The app type an app-bound allowance requires; null for the signer path. */
+  app: string | null;
+  coin_type: string | null;
+  status: string;
+}
+
+/** How many distinct funders name a spender, and whether that count read every allowance. */
+export interface SpenderReach {
+  funders: number;
+  complete: boolean;
+}
+
+export interface ExcludedAllowanceSpender {
+  address: string;
+  /** Distinct funders naming it; a lower bound when `reach_complete` is false. */
+  funders: number;
+  reach_complete: boolean;
+  /** `service`: more funders than the limit. `unmeasured`: the spender scan did not read every allowance, so the count is unproven. */
+  reason: "service" | "unmeasured";
+}
+
+/**
+ * Link each allowance's funder to its spender, in a star through the spender,
+ * never funder to funder.
+ *
+ * A spender named by more than `spenderLimit` distinct funders is a service
+ * (an app's operator, an agent platform) and gets no edge; it is listed in
+ * `excluded` with its count, since "this key may spend these balances" is
+ * still chain-derived. A spender whose count comes from a scan that did not
+ * read every allowance is `unmeasured` and gets no edge either, unless that
+ * lower bound already exceeds the limit: an unread popularity is never read
+ * as narrow.
+ */
+export function addAllowanceEdges(
+  set: EdgeSet,
+  links: AllowanceLink[],
+  reachOf: (spender: string) => SpenderReach | undefined,
+  opts: { spenderLimit?: number } = {},
+): { excluded: ExcludedAllowanceSpender[]; linked: number } {
+  const limit = opts.spenderLimit ?? DEFAULT_CO_SIGNER_LIMIT;
+  const funders = new Map<string, Set<string>>();
+  for (const l of links) {
+    let f = funders.get(l.spender);
+    if (!f) funders.set(l.spender, (f = new Set()));
+    f.add(l.funder);
+  }
+  const excluded = new Map<string, ExcludedAllowanceSpender>();
+  // One evidence row per pair, naming every allowance between them.
+  const pairs = new Map<string, AllowanceLink[]>();
+  for (const l of links) {
+    if (l.funder === l.spender) continue;
+    const key = `${l.funder}|${l.spender}`;
+    pairs.set(key, [...(pairs.get(key) ?? []), l]);
+  }
+  let linked = 0;
+  for (const group of pairs.values()) {
+    const { funder, spender } = group[0];
+    const reach = reachOf(spender);
+    const count = Math.max(reach?.funders ?? 0, funders.get(spender)!.size);
+    const complete = reach?.complete === true;
+    if (count > limit || !complete) {
+      if (!excluded.has(spender)) {
+        excluded.set(spender, { address: spender, funders: count, reach_complete: complete, reason: count > limit ? "service" : "unmeasured" });
+      }
+      continue;
+    }
+    // A signer-path allowance lets the spender's own signature spend; an
+    // app-bound one runs through an app that chooses the spender.
+    const direct = group.filter((l) => l.app === null);
+    const apps = [...new Set(group.flatMap((l) => (l.app ? [l.app] : [])))];
+    const statuses = [...new Set(group.map((l) => l.status))];
+    const ids = group.flatMap((l) => [l.allowance_id, ...(l.cap_id ? [l.cap_id] : [])]);
+    const detail =
+      `${funder} granted ${spender} ${group.length} allowance(s) to spend its address balance ` +
+      `(${group.map((l) => `${l.allowance_id}${l.coin_type ? ` in ${l.coin_type}` : ""}`).join(", ")}): ` +
+      (direct.length ? `${direct.length} by the spender's own signature` : "") +
+      (direct.length && apps.length ? ", " : "") +
+      (apps.length ? `${group.length - direct.length} through the app(s) ${apps.join(", ")}, which can rotate the spender` : "") +
+      `; status ${statuses.join(", ")}. Read from the Allowance object(s)` +
+      (group.some((l) => l.cap_id) ? " and the funder's AllowanceCap(s)" : "") +
+      `. ${spender} is named by ${count} funder(s). Control of a bounded spend, not ownership: an agent session or a custodian holds such a key for someone else.`;
+    set.add("allowance", funder, spender, detail, [], spender, direct.length ? SIGNAL_WEIGHTS.allowance : APP_ALLOWANCE_WEIGHT, ids);
+    linked++;
+  }
+  return { excluded: [...excluded.values()].sort((a, b) => b.funders - a.funders), linked };
 }
 
 export interface ClusterOptions {

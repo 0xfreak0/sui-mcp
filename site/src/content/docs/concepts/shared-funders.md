@@ -78,6 +78,15 @@ and candidates it discovers. It uses these chain observations:
 
 - Multisig co-signature: a committee key can spend the wallet whose address
   the committee hashes to. This is the non-behavioral signal.
+- A native allowance (`0x2::allowance`) from a seed to its spender, or to a
+  seed from its funder. The funder's key granted the spender a bounded spend
+  of its address balance, read from the `Allowance` object and the funder's
+  `AllowanceCap`. A signer-path allowance weighs 1.0; an app-bound one
+  (`app` set) weighs 0.6, below the merge floor, because the app chooses and
+  can rotate its spender. A spender named by more than five funders is an
+  app or agent service: it gets no edge and is listed under
+  `allowance_links.excluded_spenders`. An allowance is control of a bounded
+  spend, not ownership, so a cluster that needs one stays `heuristic`.
 - A shared first funder.
 - One address first-funding another.
 - Value moving both ways between two non-service addresses.
@@ -105,7 +114,13 @@ seeds' own narrow, unlabelled funder: one operator may fund and sponsor from
 different addresses.
 
 `edges` are facts with transaction digests to check; `co_signer` instead cites
-the committee's address hash. `clusters` are inferences with their own
+the committee's address hash, and `allowance` lists the allowance and cap ids
+under `object_ids`. `allowance_links` says what the allowance reads covered:
+the seeds' caps are the complete set of allowances they fund, while the
+spender side comes from a scan of every `Allowance` object
+(`spender_scan.status`). A spender whose funder count the scan did not finish
+is excluded as `unmeasured`, and an unfinished scan or a failed cap read sets
+`truncated`. `clusters` are inferences with their own
 `evidence_tier`, never proof of ownership.
 
 `observed_but_below_threshold` lists each pair once with its signal types

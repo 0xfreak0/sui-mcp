@@ -1933,6 +1933,14 @@ spender signs and the funder does not. Rules a change is likely to break:
   Calendar windows renew on the anchor's day at 00:00 UTC, clamped to the
   month's end. A limit that is set but unreadable leaves `spendable_now`
   null, never unbounded.
+- **A spend is a hop and a link.** `src/utils/allowance-links.ts` reads a
+  transaction's `FundsWithdrawal` inputs over gRPC (`readTxWithdrawals`; the
+  signed data is `response.transaction.transaction`, one level below the
+  executed transaction) and `allowanceDrawsFrom` keeps the source-3 rows
+  naming a funder. A failed input read is unknown, never "no allowance":
+  the trace counts it and says so, and never follows it. `trace_funds` and
+  `build_wallet_edges` use these reads; see the trace hop rules and the
+  clustering table.
 - **The SDK must know the variant.** `@mysten/sui` 2.3.1 has no
   `SenderAllowance` in its BCS `WithdrawFrom` enum (2.39.1 does), so a PTB
   holding one does not decode at all on the older SDK.
@@ -2306,6 +2314,8 @@ floor too, since dust back is what a poisoner sends.
 |---|---|---|
 | `co_signer` | 1.5 | A key that can spend the wallet ALONE (`weight >= threshold`), read from the address hash |
 | `co_signer` (cannot spend alone) | 0.6 | On the committee but needs others — below the merge floor |
+| `allowance` | 1.0 | The funder's key granted this spender a signer-path spend of its balance (`0x2::allowance`, no `app`), and at most five funders name the spender. Bounded and revocable, so below `co_signer`; level with `funding_edge`, a one-way act naming the other address |
+| `allowance` (app-bound) | 0.6 | The spender is the key an app's module accepts, chosen and rotatable by the app. Measured on mainnet 2026-11 over all 125 allowances: the four spenders named by five or more funders were all app-bound, every signer-path spender had one funder. Below the merge floor |
 | `cofunded` | 1.0 | Same first funder, funder passed the popularity check |
 | `cofunded` (same tx, ≤3 paid) | 1.2 | Bespoke payout — built for these addresses |
 | `cofunded` (same tx, ≥10 paid) | 0.8 | Batch payout — list membership, needs corroboration |
@@ -2515,6 +2525,21 @@ Four rules that are easy to get wrong:
   "every cluster of none is chain-derived" used to report it as a chain fact.
   A committee member whose key was written by hand (`unsignable`) gets no
   co-signer edge at all: its address can spend nothing.
+- **An allowance is control of a bounded spend, filtered like a co-signer.**
+  `addAllowanceEdges` (`wallet-edges.ts`) runs funder to spender in a star
+  through the spender, never funder to funder, with one evidence row per
+  pair whose `object_ids` are the allowance and cap ids.
+  `readAllowanceLinks` (`edge-probe.ts`) reads each seed's caps (complete:
+  a cap cannot leave its funder) and the spender scan, outside
+  `query_budget`. A spender named by more than `DEFAULT_CO_SIGNER_LIMIT`
+  funders is a service, excluded and listed in
+  `allowance_links.excluded_spenders`; two blink swap-funding spenders sit
+  at exactly five, so the app-bound weight, not the filter, keeps their
+  users apart. A spender whose funder count rests on a scan that did not
+  complete is `unmeasured` and excluded, never read as narrow, and an
+  unfinished scan or a failed cap read sets `truncated`. A cluster that
+  needs an allowance edge is `heuristic`: only full-weight co-signature
+  makes a cluster `chain-derived`.
 - **A committee is evidence its members are SEPARATE parties.** That is what a
   4-of-7 treasury is for. So co-signer edges run member↔multisig in a star and
   never member↔member, and a member who cannot spend alone sits below the merge
@@ -4068,6 +4093,23 @@ Rules a change is likely to break:
   the next hop is the first later transaction in which its balance of the coin
   goes down, found through `affectedAddress` and marked
   `reached_via: "released-from-object"`; the custody check does not apply.
+- **A funder's balance leaves in transactions its spender sends.** When the
+  holder holds an `AllowanceCap` (`holdsAllowanceCaps`, cached five minutes;
+  a failed read searches anyway), `scanForwardSpends` also reads
+  `affectedAddress` for transactions another address sent in which the
+  holder's coin fell, and keeps one only when its withdrawal input draws on
+  the holder under an allowance. Those spends merge with the sent ones in
+  checkpoint order (`mergeForwardScans`, which drops spends past the last
+  checkpoint a page-limited search read). The hop is
+  `reached_via: "allowance-spend"`, its expected sender is the spender, and
+  the spender signs, so the custody and signer rules hold. The object phase
+  labels a release the same way when its input draws on the holder. A
+  revoked allowance leaves no cap, so its spends are found only through the
+  object phase. A start transaction that is an allowance spend is traced
+  from the funder; backward, the payer of the largest decrease is already
+  the funder, and the hop says so in `allowance_spend`. The flow graphs
+  share `scanForwardSpends` and so read the same spends, without marking
+  the edge.
 - **The next hop is the largest spend of what arrived.** `findNextForward`
   reads the holder's spends until they cover what the previous hop delivered
   (at most `MOVES_PER_NODE`, 20) and follows the largest; the others are the

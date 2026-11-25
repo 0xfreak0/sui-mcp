@@ -277,7 +277,9 @@ list_allowances(0x…, role: "funder")
   given when a read stops.
 
 `identify_address` lists the allowances a wallet has granted as
-`allowances_granted`.
+`allowances_granted`. `trace_funds` follows a funder's balance into its
+allowance spends, and `build_wallet_edges` links a funder to its spender (see
+Fund flows and Shared funders).
 
 ## Decoding a PTB before signing
 

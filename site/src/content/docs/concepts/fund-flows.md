@@ -563,6 +563,29 @@ Bridge exits and high-fanout hubs also stop it. Forward hub stops require at
 least 100 distinct senders paying in; an address with fewer can pass on the
 funds and remains followed. Every ending has a `stop_reason`.
 
+A funder's balance can also leave through a native allowance, in a
+transaction its spender sends and signs. When the holder holds an
+`AllowanceCap`, the forward search also reads the transactions in which the
+holder's balance of the tracked coin fell while another address signed, and
+follows one whose `FundsWithdrawal` input draws on the holder under an
+allowance. That hop carries `reached_via: "allowance-spend"` and
+`allowance_spend` (`funder`, `spender`, `allowance_id`), and the spender must
+be its sender. A start transaction that is an allowance spend is followed
+from the funder. Backward, the payer of an allowance spend is the funder, and
+the hop carries the same `allowance_spend`. An allowance revoked before the
+trace runs leaves no cap, so its spends are found only when the funder sent
+nothing else since the hop. `trace_flow_graph` and `find_flow_path` read the
+same spends but do not mark the edge.
+
+```json
+{"tool":"trace_funds","args":{"digest":"<funding digest>","direction":"forward"}}
+```
+
+```
+hops[1]: { reached_via: "allowance-spend", sender: 0xspender,
+  allowance_spend: { funder: 0xfunder, spender: 0xspender, allowance_id: 0x…, max_amount: "1278774014" } }
+```
+
 Each hop includes decoded actions and USD at block time, with the price source
 under `usd`. Reads are sequential per hop, defaulting to three and capped at ten.
 A `coin_type`, such as `0x2::sui::SUI`, selects the starting coin and filters

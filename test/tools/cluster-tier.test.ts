@@ -20,6 +20,7 @@ vi.mock("../../src/utils/edge-probe.js", () => ({
     truncated: false,
     notes: [],
   }),
+  readAllowanceLinks: async () => ({ links: [], reach: new Map(), funder_reads_incomplete: [], spender_scan: { status: "complete", scanned: 0, as_of: "2026-11-25T00:00:00.000Z" } }),
 }));
 vi.mock("../../src/utils/identity.js", () => ({
   describeAddresses: async (addresses: string[]) => new Map(addresses.map((a) => [a, { address: a, kind: "wallet" }])),

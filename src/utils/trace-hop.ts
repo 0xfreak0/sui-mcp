@@ -550,6 +550,8 @@ export function chooseNextHop(params: {
 export interface CandidateTx {
   digest: string;
   sender: string | null;
+  /** Where it landed, when the page reported it; orders candidates read through two filters. */
+  checkpoint?: number;
   gas: GasCharge;
   changes: HopChange[];
   /** The page reader could not fetch every balance change, so `changes` is partial. */

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 const { mockBuildWalletEdges } = vi.hoisted(() => ({ mockBuildWalletEdges: vi.fn() }));
-vi.mock("../src/utils/edge-probe.js", () => ({ buildWalletEdges: mockBuildWalletEdges }));
+vi.mock("../src/utils/edge-probe.js", () => ({
+  buildWalletEdges: mockBuildWalletEdges,
+  readAllowanceLinks: async () => ({ links: [], reach: new Map(), funder_reads_incomplete: [], spender_scan: { status: "complete", scanned: 0, as_of: "2026-11-25T00:00:00.000Z" } }),
+}));
 vi.mock("../src/utils/identity.js", () => ({ describeAddresses: async () => new Map(), identityNote: () => undefined }));
 import { pageEdgeEvidence, registerClusterTools } from "../src/tools/cluster.js";
 import { EdgeSet } from "../src/utils/wallet-edges.js";

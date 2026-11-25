@@ -127,6 +127,13 @@ describe("parseAllowance", () => {
     expect(a.lifetime_cap).toBe("5");
   });
 
+  it("never reads a set but unreadable bound as unbounded", () => {
+    const cap = parseAllowance(ALLOWANCE, SUI_ALLOWANCE, json({}, { lifetime_cap: { odd: 1 } }), T0);
+    expect(cap).toMatchObject({ lifetime_cap: null, status: "active", spendable_now: null });
+    const exp = parseAllowance(ALLOWANCE, SUI_ALLOWANCE, json({}, { expiration_timestamp_ms: "soon" }), T0);
+    expect(exp).toMatchObject({ status: "unknown", spendable_now: null });
+  });
+
   it("leaves spendable_now unknown when a set rate limit cannot be read", () => {
     const a = parseAllowance(ALLOWANCE, SUI_ALLOWANCE, json({}, { rate_limit: { "@variant": "Windowed", limit: "x" } }), T0);
     expect(a.rate_limit).toBeNull();
@@ -197,32 +204,41 @@ describe("allowanceSpends", () => {
   beforeEach(() => mockGqlQuery.mockReset());
 
   it("reports nothing when no withdrawal draws on an allowance", async () => {
-    expect(await allowanceSpends([{ amount: "1", coin_type: null, source: "sender" }], SPENDER)).toEqual({});
+    expect(await allowanceSpends([{ amount: "1", coin_type: null, source: "sender" }], SPENDER, true)).toEqual({});
     expect(mockGqlQuery).not.toHaveBeenCalled();
   });
 
-  it("names the funder and spender and attaches the allowance's current state", async () => {
-    mockGqlQuery.mockResolvedValueOnce({
-      multiGetObjects: [{ address: ALLOWANCE, asMoveObject: { contents: { type: { repr: SUI_ALLOWANCE }, json: json() } } }],
-    });
-    const out = await allowanceSpends(
-      [{ amount: "250", coin_type: "0x2::sui::SUI", source: "sender_allowance", funder: FUNDER, allowance: ALLOWANCE }],
-      SPENDER,
-    );
+  const W = [{ amount: "250", coin_type: "0x2::sui::SUI", source: "sender_allowance" as const, funder: FUNDER, allowance: ALLOWANCE }];
+  const found = (j: unknown) => ({ multiGetObjects: [{ address: ALLOWANCE, asMoveObject: { contents: { type: { repr: SUI_ALLOWANCE }, json: j } } }] });
+
+  it("names the funder and sender and attaches the allowance's current state", async () => {
+    mockGqlQuery.mockResolvedValueOnce(found(json()));
+    const out = await allowanceSpends(W, SPENDER, true);
     const rows = out.allowance_spends as Array<Record<string, unknown>>;
-    expect(rows[0]).toMatchObject({ allowance_id: ALLOWANCE, funder: FUNDER, spender: SPENDER, max_amount: "250" });
+    expect(rows[0]).toMatchObject({ allowance_id: ALLOWANCE, funder: FUNDER, sender: SPENDER, max_amount: "250", allowance_state: "read", sender_is_spender_now: true });
     expect(rows[0].allowance_now).toMatchObject({ spender: SPENDER, status: "active" });
     expect(String(out.allowance_spends_note)).toMatch(/did not sign/);
+    expect(out.allowance_spends_executed).toBeUndefined();
   });
 
-  it("keeps the rows when the allowance read fails, and says the state is unknown", async () => {
+  it("does not call a failed transaction's withdrawal a spend", async () => {
+    mockGqlQuery.mockResolvedValueOnce(found(json()));
+    const out = await allowanceSpends(W, OTHER, false);
+    expect(out.allowance_spends_executed).toBe(false);
+    expect(String(out.allowance_spends_note)).toMatch(/none of these withdrawals happened/);
+    expect((out.allowance_spends as Array<Record<string, unknown>>)[0].sender_is_spender_now).toBe(false);
+    expect(out.allowance_spender_note).toBeDefined();
+  });
+
+  it("tells a failed read apart from a revoked allowance", async () => {
     mockGqlQuery.mockRejectedValueOnce(new Error("boom"));
-    const out = await allowanceSpends(
-      [{ amount: "1", coin_type: null, source: "sender_allowance", funder: FUNDER, allowance: ALLOWANCE }],
-      SPENDER,
-    );
-    expect((out.allowance_spends as Array<Record<string, unknown>>)[0].allowance_now).toBeNull();
-    expect(out.allowance_state_unavailable).toMatch(/could not be read/);
+    const failed = await allowanceSpends(W, SPENDER, true);
+    expect((failed.allowance_spends as Array<Record<string, unknown>>)[0]).toMatchObject({ allowance_state: "read_failed", allowance_now: null });
+    expect(failed.allowance_state_unavailable).toMatch(/not revoked/);
+    mockGqlQuery.mockResolvedValueOnce({ multiGetObjects: [null] });
+    const gone = await allowanceSpends(W, SPENDER, true);
+    expect((gone.allowance_spends as Array<Record<string, unknown>>)[0]).toMatchObject({ allowance_state: "absent", allowance_now: null });
+    expect(gone.allowance_state_unavailable).toBeUndefined();
   });
 });
 
@@ -278,6 +294,20 @@ describe("reading allowances by funder and by spender", () => {
     expect(r.allowances.map((a) => a.allowance_id)).toEqual([ALLOWANCE]);
   });
 
+  it("rescans past a cached truncated scan when a larger bound is asked for", async () => {
+    const page = (more: boolean, cursor: string | null) => ({
+      objects: { pageInfo: { hasNextPage: more, endCursor: cursor }, nodes: [{ address: OTHER, asMoveObject: { contents: { type: { repr: SUI_ALLOWANCE }, json: json({}, { spender: OTHER }) } } }] },
+    });
+    mockGqlQuery.mockResolvedValueOnce(page(true, "c1"));
+    expect((await readSpenderAllowances(SPENDER, T0, 1)).status).toBe("truncated");
+    // The same bound is answered from the cache.
+    expect((await readSpenderAllowances(SPENDER, T0, 1)).status).toBe("truncated");
+    expect(mockGqlQuery).toHaveBeenCalledTimes(1);
+    mockGqlQuery.mockResolvedValueOnce(page(true, "c1")).mockResolvedValueOnce(page(false, null));
+    const wider = await readSpenderAllowances(SPENDER, T0, 100);
+    expect(wider).toMatchObject({ status: "complete", scanned: 2 });
+  });
+
   it("does not cache a failed scan", async () => {
     mockGqlQuery.mockRejectedValueOnce(new Error("429"));
     expect((await readSpenderAllowances(SPENDER, T0)).status).toBe("failed");
@@ -311,6 +341,19 @@ describe("list_allowances", () => {
     expect(body.as_funder).toMatchObject({ count: 0, complete: true });
     expect(body.as_spender).toBeNull();
     expect(body.as_spender_unavailable).toMatch(/scan failed/);
+  });
+
+  it("offers a call with a raised bound when the funder walk stops", async () => {
+    mockGqlQuery.mockImplementation(async (query: string) => {
+      if (query.includes("AllowanceCap")) {
+        return { address: { objects: { pageInfo: { hasNextPage: true, endCursor: "next" }, nodes: [] } } };
+      }
+      return { multiGetObjects: [] };
+    });
+    const r = await tools.get("list_allowances")!({ address: FUNDER, role: "funder", max_cap_pages: 2 });
+    const body = JSON.parse(r.content[0].text);
+    expect(body.as_funder.complete).toBe(false);
+    expect(body.as_funder.next_call).toEqual({ tool: "list_allowances", args: { address: FUNDER, role: "funder", max_cap_pages: 8 } });
   });
 
   it("is an error when the only side asked for cannot be read", async () => {

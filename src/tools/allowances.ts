@@ -8,14 +8,17 @@
  */
 
 import { z } from "zod";
-import { addressArg } from "./args.js";
+import { addressArg, numArg } from "./args.js";
 import { errorResult, describeError } from "../utils/errors.js";
 import { getNetwork } from "../config.js";
-import { readFunderAllowances, readSpenderAllowances, spenderScanNote } from "../utils/allowance.js";
+import { FUNDER_CAP_PAGES, SCAN_CAP, readFunderAllowances, readSpenderAllowances, spenderScanNote } from "../utils/allowance.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const NOTE =
   "An allowance lets its spender withdraw from the funder's address balance, up to its limits, in transactions the spender signs and the funder does not. A funder's loss in such a transaction is a delegated spend, not by itself a stolen key. `spendable_now` is the most the allowance's limits still permit; the funder's balance bounds it too. `status` and the rate-limit window are evaluated at `evaluated_at` against the allowance's current state. The funder ends an allowance by calling 0x2::allowance::revoke with the AllowanceCap in `cap_id` and the allowance. An app-bound allowance (`app` set) is spent through that app's package, and the app can rotate its spender.";
+
+const MAX_CAP_PAGES = 200;
+const MAX_SCAN = 100_000;
 
 export function registerAllowanceTools(server: McpServer) {
   server.tool(
@@ -27,15 +30,29 @@ export function registerAllowanceTools(server: McpServer) {
         .enum(["funder", "spender", "both"])
         .default("both")
         .describe("'funder': allowances this address granted; 'spender': allowances naming it as spender; 'both' (default)"),
+      max_cap_pages: numArg()
+        .int()
+        .min(1)
+        .max(MAX_CAP_PAGES)
+        .optional()
+        .describe(`AllowanceCap pages of 50 read for the funder side (default ${FUNDER_CAP_PAGES})`),
+      max_scan: numArg()
+        .int()
+        .min(50)
+        .max(MAX_SCAN)
+        .optional()
+        .describe(`Allowance objects read by the spender scan before it stops (default ${SCAN_CAP})`),
     },
-    async ({ address, role }) => {
+    async ({ address, role, max_cap_pages, max_scan }) => {
+      const capPages = max_cap_pages ?? FUNDER_CAP_PAGES;
+      const scanBound = max_scan ?? SCAN_CAP;
       const network = getNetwork();
       const now = Date.now();
       const wantFunder = role !== "spender";
       const wantSpender = role !== "funder";
       const [f, s] = await Promise.allSettled([
-        wantFunder ? readFunderAllowances(address, now) : Promise.resolve(null),
-        wantSpender ? readSpenderAllowances(address, now) : Promise.resolve(null),
+        wantFunder ? readFunderAllowances(address, now, capPages) : Promise.resolve(null),
+        wantSpender ? readSpenderAllowances(address, now, scanBound) : Promise.resolve(null),
       ]);
       const funder = f.status === "fulfilled" ? f.value : null;
       const funderError = f.status === "rejected" ? describeError(f.reason, network) : null;
@@ -65,7 +82,12 @@ export function registerAllowanceTools(server: McpServer) {
               : {}),
             ...(funder.complete
               ? {}
-              : { incomplete_note: `Stopped after ${funder.caps_read} AllowanceCaps with more remaining, so this is not every allowance the address funds.` }),
+              : {
+                  incomplete_note: `Stopped after ${funder.caps_read} AllowanceCaps with more remaining, so this is not every allowance the address funds.`,
+                  ...(capPages < MAX_CAP_PAGES
+                    ? { next_call: { tool: "list_allowances", args: { address, role: "funder", max_cap_pages: Math.min(MAX_CAP_PAGES, capPages * 4) } } }
+                    : {}),
+                }),
           };
         } else {
           body.as_funder = null;
@@ -79,6 +101,9 @@ export function registerAllowanceTools(server: McpServer) {
             scan: { status: spender.status, scanned: spender.scanned, as_of: spender.as_of },
             allowances: spender.allowances,
             scan_note: spenderScanNote(spender),
+            ...(spender.status === "truncated" && scanBound < MAX_SCAN
+              ? { next_call: { tool: "list_allowances", args: { address, role: "spender", max_scan: Math.min(MAX_SCAN, scanBound * 4) } } }
+              : {}),
           };
         } else {
           body.as_spender = null;

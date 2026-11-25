@@ -544,9 +544,10 @@ export function registerIdentifyTools(server: McpServer) {
             // when it has granted none; a failed read says so.
             ...("failed" in allowancesRes
               ? {
+                  allowances_granted: null,
                   allowances_unavailable: `The AllowanceCaps could not be read (${allowancesRes.failed}), so whether this wallet has let anyone spend its balance is unknown.`,
                 }
-              : allowancesRes.allowances.length || !allowancesRes.complete
+              : allowancesRes.allowances.length || allowancesRes.caps_without_allowance.length || !allowancesRes.complete
                 ? {
                     allowances_granted: allowancesRes.allowances.map((a) => ({
                       allowance_id: a.allowance_id,
@@ -558,8 +559,14 @@ export function registerIdentifyTools(server: McpServer) {
                       spendable_now: a.spendable_now,
                       expiration_ms: a.expiration_ms,
                     })),
-                    allowances_note: `This wallet has granted native allowances (0x2::allowance): each spender can withdraw from its address balance up to spendable_now, signing alone, until the allowance expires or is revoked with its cap_id.${allowancesRes.complete ? "" : ` Only the first ${allowancesRes.caps_read} caps were read.`}`,
-                    allowances_next_call: { tool: "list_allowances", args: { address, role: "funder" } },
+                    ...(allowancesRes.caps_without_allowance.length
+                      ? { allowance_caps_unread: allowancesRes.caps_without_allowance }
+                      : {}),
+                    allowances_note: `This wallet has granted native allowances (0x2::allowance): each spender can withdraw from its address balance up to spendable_now, signing alone, until the allowance expires or is revoked with its cap_id.${allowancesRes.caps_without_allowance.length ? " allowance_caps_unread lists caps whose allowance could not be read, so what they permit is unknown." : ""}${allowancesRes.complete ? "" : ` Only the first ${allowancesRes.caps_read} caps were read.`}`,
+                    allowances_next_call: {
+                      tool: "list_allowances",
+                      args: { address, role: "funder", ...(allowancesRes.complete ? {} : { max_cap_pages: 40 }) },
+                    },
                   }
                 : {}),
             // A failed lookup is not an absence of delegation.

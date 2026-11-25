@@ -55,7 +55,8 @@ export function isAllowanceCall(pkg: string | undefined, module: string | undefi
   return !!pkg && module === "allowance" && normalizeSuiAddress(pkg) === ADDR2;
 }
 
-export type AllowanceStatus = "active" | "not_started" | "expired" | "exhausted";
+/** `unknown`: a time bound is set but could not be read, so whether it is in force is not known. */
+export type AllowanceStatus = "active" | "not_started" | "expired" | "exhausted" | "unknown";
 
 export interface AllowanceRateLimit {
   window: { kind: "periodic"; period_ms: string } | { kind: "calendar_months"; months: number } | { kind: "unknown" };
@@ -250,7 +251,13 @@ export function parseAllowance(id: string, objectType: string | null, json: unkn
   const start = intString(s.start_timestamp_ms);
   const expiration = intString(s.expiration_timestamp_ms);
   const rateLimit = readRateLimit(s.rate_limit, nowMs);
-  const rateLimitSet = opt(s.rate_limit) !== null;
+  // A bound that is set but does not parse is unknown, never absent: absent
+  // would read as unbounded.
+  const isSet = (v: unknown) => opt(v) !== null;
+  const lifetimeUnread = isSet(s.lifetime_cap) && lifetimeCap === null;
+  const timeUnread =
+    (isSet(s.start_timestamp_ms) && start === null) || (isSet(s.expiration_timestamp_ms) && expiration === null);
+  const rateLimitSet = isSet(s.rate_limit);
 
   const remainingLifetime =
     lifetimeCap !== null && currentSpend !== null
@@ -263,12 +270,13 @@ export function parseAllowance(id: string, objectType: string | null, json: unkn
   if (start !== null && nowMs < Number(start)) status = "not_started";
   else if (expiration !== null && nowMs >= Number(expiration)) status = "expired";
   else if (remainingLifetime === "0") status = "exhausted";
+  else if (timeUnread) status = "unknown";
 
   // The tighter of the two limits. A limit set but unreadable leaves it unknown.
   let spendable: string | null = null;
-  if (status !== "active") spendable = "0";
-  else {
-    const lifetimeOk = lifetimeCap === null || remainingLifetime !== null;
+  if (status !== "active" && status !== "unknown") spendable = "0";
+  else if (status === "active") {
+    const lifetimeOk = lifetimeCap === null ? !lifetimeUnread : remainingLifetime !== null;
     const rateOk = !rateLimitSet || rateLimit?.remaining_in_current_window != null;
     if (lifetimeOk && rateOk) {
       const bounds = [remainingLifetime, rateLimitSet ? rateLimit!.remaining_in_current_window : null]
@@ -339,8 +347,8 @@ function isAllowanceType(type: string | null): boolean {
   return !!type && type.replace(/^0x0*2::/, `${ADDR2}::`).startsWith(`${ALLOWANCE_TYPE}<`);
 }
 
-/** Cap pages (50 each) read per funder. */
-const FUNDER_CAP_PAGES = 10;
+/** Cap pages (50 each) read per funder by default. */
+export const FUNDER_CAP_PAGES = 10;
 
 const FUNDER_CAPS_QUERY = `query ($a: SuiAddress!, $after: String) {
   address(address: $a) {
@@ -373,12 +381,16 @@ export interface FunderAllowances {
  * Every allowance `funder` funds, from the `AllowanceCap`s it holds. The cap
  * cannot be transferred, so this is the complete set while `complete` is true.
  */
-export async function readFunderAllowances(funder: string, nowMs = Date.now()): Promise<FunderAllowances> {
+export async function readFunderAllowances(
+  funder: string,
+  nowMs = Date.now(),
+  maxPages = FUNDER_CAP_PAGES,
+): Promise<FunderAllowances> {
   const caps: Array<{ cap_id: string; allowance_id: string | null }> = [];
   let after: string | null = null;
   let complete = true;
   for (let page = 0; ; page++) {
-    if (page >= FUNDER_CAP_PAGES) {
+    if (page >= maxPages) {
       complete = false;
       break;
     }
@@ -412,8 +424,8 @@ export async function readFunderAllowances(funder: string, nowMs = Date.now()): 
 /* Spender side: a bounded, cached scan of every allowance. */
 
 const SCAN_PAGE = 50;
-/** Allowances read before a scan stops; the result then says `truncated`. */
-const SCAN_CAP = 5000;
+/** Allowances read by default before a scan stops; the result then says `truncated`. */
+export const SCAN_CAP = 5000;
 const SCAN_TTL_MS = 5 * 60 * 1000;
 
 const SCAN_QUERY = `query ($first: Int!, $after: String) {
@@ -445,10 +457,13 @@ export function resetAllowanceScanCache(): void {
   scanCache.clear();
 }
 
-async function scanAllowances(): Promise<AllowanceScan> {
+async function scanAllowances(maxScan: number): Promise<AllowanceScan> {
   const network = getNetwork();
   const cached = scanCache.get(network);
-  if (cached && Date.now() - cached.readAt < SCAN_TTL_MS) return cached;
+  // A cached truncated scan answers only a bound it already reached.
+  if (cached && Date.now() - cached.readAt < SCAN_TTL_MS && (cached.status === "complete" || cached.scanned >= maxScan)) {
+    return cached;
+  }
   const readAt = Date.now();
   const bySpender: AllowanceScan["bySpender"] = new Map();
   let after: string | null = null;
@@ -470,7 +485,7 @@ async function scanAllowances(): Promise<AllowanceScan> {
       }
       if (!r.objects.pageInfo.hasNextPage) break;
       after = r.objects.pageInfo.endCursor;
-      if (!after || scanned >= SCAN_CAP) {
+      if (!after || scanned >= maxScan) {
         status = "truncated";
         break;
       }
@@ -498,8 +513,12 @@ export interface SpenderAllowances {
  * objects. Reused for five minutes, so a spender rotated or an allowance
  * revoked inside that window is not reflected; `as_of` says when it was read.
  */
-export async function readSpenderAllowances(spender: string, nowMs = Date.now()): Promise<SpenderAllowances> {
-  const scan = await scanAllowances();
+export async function readSpenderAllowances(
+  spender: string,
+  nowMs = Date.now(),
+  maxScan = SCAN_CAP,
+): Promise<SpenderAllowances> {
+  const scan = await scanAllowances(maxScan);
   const hits = scan.bySpender.get(normalizeSuiAddress(spender)) ?? [];
   return {
     allowances: hits.map((h) => parseAllowance(h.id, h.type, h.json, nowMs)),

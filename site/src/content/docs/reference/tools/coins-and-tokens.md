@@ -70,6 +70,8 @@ List the native allowances (0x2::allowance) an address funds or can spend. An al
 |---|---|---|---|
 | `address` | string | yes | The address to look up (0x... or a SuiNS name) |
 | `role` | `funder` \| `spender` \| `both`, default `"both"` | no | 'funder': allowances this address granted; 'spender': allowances naming it as spender; 'both' (default) |
+| `max_cap_pages` | integer (1 to 200) | no | AllowanceCap pages of 50 read for the funder side (default 10) |
+| `max_scan` | integer (50 to 100000) | no | Allowance objects read by the spender scan before it stops (default 5000) |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## search_token

@@ -1917,8 +1917,15 @@ spender signs and the funder does not. Rules a change is likely to break:
 - **An allowance spend is not a stolen key.** The funder's loss appears in
   balance changes of a transaction it never signed. `get_transaction`
   reports it in `allowance_spends`; any reader of "who authorized this
-  loss" must consult it. `allowance_now` is the current state, null once
-  revoked, never the state at the spend.
+  loss" must consult it. `allowance_now` is the current state, never the
+  state at the spend. `allowance_state` keeps `absent` (what revoking
+  leaves) apart from `read_failed`: telling a victim an allowance is revoked
+  because a read failed is the dangerous error.
+- **A failed transaction spent nothing.** An allowance withdrawal input is
+  present whether or not `consume`'s checks passed, so a failed transaction's
+  rows say `allowance_spends_executed: false` and name an attempt by the
+  sender, not a spend from the funder. Only a successful spend proves the
+  sender was the spender; an app can rotate the spender afterwards.
 - **Status follows the module's checks.** Start inclusive, expiry exclusive,
   lifetime cap inclusive; a rate window rolls over as `charge` does, so the
   stored `spent` counts only while the stored window still holds `now`.

@@ -454,7 +454,7 @@ export function registerTransactionTools(server: McpServer) {
       const fundsWithdrawals = readFundsWithdrawals(ptbInputs);
       // A withdrawal under an allowance debits an address that did not sign.
       // Its allowance is read now, a secondary read that fails soft.
-      const allowanceSpent = await allowanceSpends(fundsWithdrawals, sender ?? null);
+      const allowanceSpentP = allowanceSpends(fundsWithdrawals, sender ?? null, effects?.status?.success === true);
       const gas =
         kind?.data.oneofKind === "programmableTransaction" && transaction?.gasPayment
           ? gasSource(transaction.gasPayment.objects ?? [])
@@ -726,7 +726,7 @@ export function registerTransactionTools(server: McpServer) {
                 "Each entry is an input authorising a withdrawal from an address balance, up to `amount`: the sender's, the gas sponsor's, or (`sender_allowance`) the `funder`'s under an allowance granted to the sender. What was actually withdrawn is in address_balance_ops and balance_changes.",
             }
           : {}),
-        ...allowanceSpent,
+        ...(await allowanceSpentP),
         ...(authorization.length ? { authorization } : {}),
         ...(signers.signer_is_sender === false
           ? {

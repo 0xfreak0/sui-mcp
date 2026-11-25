@@ -273,14 +273,10 @@ export const CAPABILITY_USES: Record<string, CapabilityUses> = {
         opens: "anyone can create a registry Display, or claim an unclaimed DisplayCap, for any of the package's types, which sets how its objects are shown",
       },
       {
-        fns: ["display::new", "transfer_policy::new"],
+        fns: ["transfer_policy::new"],
         takes: "&",
-        opens: "anyone can create Display and TransferPolicy objects for the package's types",
+        opens: "anyone can create TransferPolicy objects for the package's types",
         unlocks: [
-          {
-            fns: ["display_registry::migrate_v1_to_v2", "display_registry::claim"],
-            opens: "create a type's registry Display where it has none, or claim its DisplayCap where none was claimed, which sets how the type's objects are shown",
-          },
           {
             fns: ["transfer_policy::confirm_request"],
             opens: "clear a kiosk purchase of the package's types without the creator's royalty or lock rules",
@@ -289,8 +285,6 @@ export const CAPABILITY_USES: Record<string, CapabilityUses> = {
       },
     ],
     covered: {
-      "display::new_with_fields": "display::new with fields set",
-      "display::create_and_keep": "display::new, kept by the sender",
       "transfer_policy::default": "transfer_policy::new, shared, its cap kept by the sender",
       "package::burn_publisher": "destroys it, which ends the powers the grants state",
       "transfer_policy::destroy_and_withdraw": "destroys a TransferPolicy transfer_policy::new created",
@@ -300,11 +294,14 @@ export const CAPABILITY_USES: Record<string, CapabilityUses> = {
     },
     inert: {
       "display::is_authorized": "getter",
+      // Display V1 creation aborts (ENoLongerSupported); DISPLAY_V1_CLAIMS checks it.
+      "display::new": "aborts: Display V1 can no longer be created",
+      "display::new_with_fields": "aborts: Display V1 can no longer be created",
+      "display::create_and_keep": "aborts: Display V1 can no longer be created",
       "package::from_package": "getter",
       "package::from_module": "getter",
       "package::published_module": "getter",
       "package::published_package": "getter",
-      "display_registry::delete_legacy": "deletes a legacy Display once its registry Display's cap is claimed",
     },
   },
 };
@@ -324,6 +321,13 @@ export const OBJECT_FLOW_CLAIMS: FrameworkClaim[] = [
   { fn: "transfer::public_share_object", visibility: "public", typeParams: { T: ["key", "store"] }, doc: "ESharedNonNewObject", why: "sharing only works in the creating transaction" },
   { constant: "transfer::ESharedNonNewObject", why: "sharing only works in the creating transaction" },
   { fn: "transfer::public_freeze_object", visibility: "public", typeParams: { T: ["key", "store"] }, why: "any holder of a store object can freeze it" },
+  // A frozen or shared Publisher no longer creates a legacy Display, which
+  // was its route to the registry Display; these are inert while they abort.
+  ...["display::new", "display::new_with_fields", "display::create_and_keep"].map((fn) => ({
+    fn,
+    aborts: true,
+    why: "Display V1 creation aborts, so a Publisher taken by & creates no Display",
+  })),
 ];
 
 /** A grant as a note states it: which functions take the capability, how, and what that allows. */

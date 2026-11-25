@@ -114,6 +114,28 @@ export const REGISTRY_LAYOUT_CLAIMS: FrameworkClaim[] = [
   { struct: "coin_registry::SupplyState", fields: ["Fixed", "BurnOnly", "Unknown"], why: "supply state is read by variant name" },
   { struct: "coin_registry::RegulatedState", fields: ["Regulated", "Unregulated", "Unknown"], why: "regulated state is read by variant name" },
   { struct: "coin_registry::CurrencyKey", abilities: ["copy", "drop", "store"], fields: [], why: "a Currency's derived id uses the one-byte BCS of an empty key" },
+  {
+    fn: "derived_object::release",
+    visibility: "public",
+    calls: ["is_shared_input"],
+    doc: "so that its address can be claimed again",
+    why: "release refuses a shared object, so a shared Currency's derived id is never re-claimed by another object",
+  },
+  // `release` also needs the registry's `&mut UID`, which only the
+  // coin_registry module holds; test/sui-framework.test.ts checks that no
+  // framework function calls it.
+  {
+    fn: "coin_registry::finalize",
+    calls: ["transfer::share_object"],
+    why: "its new_currency (non-OTW) branch shares the Currency; the OTW branch sends it to 0xc until finalize_registration shares it",
+  },
+  {
+    fn: "coin_registry::finalize_and_delete_metadata_cap",
+    calls: ["transfer::share_object"],
+    why: "its new_currency (non-OTW) branch shares the Currency, like finalize",
+  },
+  { fn: "coin_registry::finalize_registration", calls: ["transfer::share_object"], why: "a registered one-time-witness Currency is shared, so release cannot free its derived id" },
+  { fn: "coin_registry::migrate_legacy_metadata", calls: ["transfer::share_object"], why: "a Currency migrated from legacy metadata is shared, so release cannot free its derived id" },
 ];
 
 function str(v: unknown): string | undefined {

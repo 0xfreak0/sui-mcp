@@ -4,11 +4,12 @@ import { registerMultisigTools } from "../../dist/tools/multisig.js";
 import { registerAnalyzeTokenTools } from "../../dist/tools/analyze-token.js";
 import { registerAllowanceTools } from "../../dist/tools/allowances.js";
 import { registerCoinTools } from "../../dist/tools/coins.js";
+import { registerBridgeTools } from "../../dist/tools/bridge.js";
 import { PAS_PACKAGES } from "../../dist/utils/pas.js";
 import { gqlQuery } from "../../dist/clients/graphql.js";
 import { runWithNetwork } from "../../dist/config.js";
 const tools={}; const c={tool:(n,_d,_s,h)=>{tools[n]=h;}};
-[registerRestrictionTools,registerMultisigTools,registerAnalyzeTokenTools,registerAllowanceTools,registerCoinTools].forEach(f=>f(c));
+[registerRestrictionTools,registerMultisigTools,registerAnalyzeTokenTools,registerAllowanceTools,registerBridgeTools,registerCoinTools].forEach(f=>f(c));
 const call=async(n,a)=>{const r=await tools[n](a);const t=r.content.map(x=>x.text);
   const j=t.find(x=>x.trim().startsWith("{")); return j?JSON.parse(j):{_text:t[0]};};
 const bad=[]; const ck=(n,ok,d="")=>{console.log(`   ${ok?"ok  ":"!!  "}${n}${d?"  "+d:""}`); if(!ok)bad.push(n);};
@@ -70,6 +71,22 @@ await runWithNetwork("mainnet", async () => {
     ck("spender scan finds it, or says it stopped",found||sp.as_spender?.scan?.status!=="complete",`status=${sp.as_spender?.scan?.status} scanned=${sp.as_spender?.scan?.scanned}`);
   }
 
+  console.log("\nD. a CCTP V2 burn against its own event and message bytes");
+  // Truth: the burn event and MessageSent read raw. A V2 message is version 1.
+  const V2_TX="95NbYXyiVud9o5vVPtS2XiBg7toghAZNYYtUnNrjNkzd";
+  const ev=await gqlQuery(`query($d:String!){ transaction(digest:$d){ effects { events(first:20){ nodes { contents { type { repr } json } } } } } }`,{d:V2_TX});
+  const nodes=ev.transaction?.effects?.events?.nodes??[];
+  const burn=nodes.find(n=>n.contents.type.repr.endsWith("::deposit_for_burn::DepositForBurn"))?.contents.json;
+  const msg=nodes.find(n=>n.contents.type.repr.endsWith("::send_message::MessageSent"))?.contents.json?.message;
+  const bytes=msg?Buffer.from(msg,"base64"):null;
+  ck("raw message is CCTP V2 (version 1)",bytes?.readUInt32BE(0)===1,`version=${bytes?.readUInt32BE(0)}`);
+  const r=await call("resolve_bridge_transfer",{digest:V2_TX});
+  const c=r.circle_cctp?.[0];
+  ck("tool reports cctp_version 2",c?.cctp_version===2,`${c?.cctp_version}`);
+  ck("no transfer id from a zero nonce",c?.transfer_id===null&&c?.nonce===null,`${c?.transfer_id}/${c?.nonce}`);
+  ck("destination domain matches the event",c?.destination_domain===burn?.destination_domain,`${c?.destination_domain} vs ${burn?.destination_domain}`);
+  ck("amount matches the event",c?.amount===burn?.amount,`${c?.amount}`);
+  ck("attestation lookup names this digest",c?.attestation_lookup?.transaction_hash===V2_TX);
   console.log("\nE. get_balance against a raw read of a PAS account's balances");
   // Truth: an Account object's own owner field, and the balances at its id read raw.
   const pas=await gqlQuery(`query($t:String!){ objects(filter:{type:$t}, first:50){ nodes { address asMoveObject { contents { json } } } } }`,{t:`${PAS_PACKAGES.mainnet}::account::Account`});

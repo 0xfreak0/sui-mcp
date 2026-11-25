@@ -214,7 +214,7 @@ amounts and timing.
 |---|---|
 | Wormhole | VAA emitter chain, emitter address and sequence; destination transaction where Wormholescan has indexed a redemption |
 | Sui native bridge | Chain-derived transfer identity and beneficiary; inbound claims carry their origin identity |
-| Circle CCTP | Source domain and nonce identify the transfer; beneficiary decoded from Sui data |
+| Circle CCTP | V1: source domain and nonce identify the transfer. V2: Circle assigns the nonce at attestation, so `attestation_lookup` (source domain and burn digest) identifies it. Beneficiary decoded from Sui data |
 | LayerZero V2 | Destination endpoint, GUID and destination OApp; LayerZero Scan's delivery transaction |
 | Axelar ITS, Allbridge Core, Celer cBridge | Chain-derived transfer data and beneficiaries |
 | Hashi | `hashi_withdrawal_requests` lists a requester's Bitcoin destination and the request's status; `hashi_withdrawals` lists a committed Bitcoin transaction's outputs and requesters; `hashi_cancellations` lists refunds; `hashi_inbound` lists BTC deposits confirmed and minted as hBTC on Sui. Bitcoin delivery must be checked on Bitcoin. |
@@ -226,6 +226,24 @@ Wormhole NTT, Mayan MCTP and Swift, Circle CCTP, Sui's native bridge,
 LayerZero OFT, Axelar ITS, Allbridge Core, Celer cBridge and Hashi. A contract
 receiving a redemption or message is separate: `redeemed_via_contract`
 or `destination_oapp`.
+
+A Circle CCTP burn reports `cctp_version`. A V2 burn has `transfer_id: null`
+and adds `attestation_lookup`, `max_fee`, `min_finality_threshold` and
+`finality` (`fast` at 1000 or below, otherwise `standard`):
+
+```
+resolve_bridge_transfer(95NbYXyiVud9o5vVPtS2XiBg7toghAZNYYtUnNrjNkzd)
+  → circle_cctp: [ { cctp_version: 2, transfer_id: null, nonce: null,
+      attestation_lookup: { source_domain: 8,
+        transaction_hash: 95NbYXyiVud9o5vVPtS2XiBg7toghAZNYYtUnNrjNkzd },
+      max_fee: 0, min_finality_threshold: 2000, finality: standard,
+      destination_domain: 19, destination_chain_label: "Circle domain 19",
+      mint_recipient_raw: 0x0000…0841, amount: 4347668986 } ]
+```
+
+Non-empty `hook_data` means the mint recipient may be a contract that acts on
+the USDC rather than the final holder. A Circle domain the server does not map
+is reported by number with the raw recipient bytes.
 
 Transfers arriving on Sui include native-bridge claims and Wormhole Token
 Bridge and NTT redemptions. `fulfilment_inbound` also covers any package whose

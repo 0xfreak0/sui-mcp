@@ -51,3 +51,15 @@ describe("ML-DSA-65 signers", () => {
     expect(deriveMultisigAddress(members, 1)).toBe(msPk.toSuiAddress());
   });
 });
+
+describe("unsignable keys of any length", () => {
+  it("states the chance for the key's own length and names no curve problem as the only reason", async () => {
+    const { unsignableKeyReason } = await import("../src/utils/multisig.js");
+    const bytes = MLDSA65Keypair.generate().getPublicKey().toRawBytes().slice();
+    bytes.fill(0, 100, 120);
+    const reason = unsignableKeyReason(bytes)!;
+    expect(reason).toMatch(/generated 1952-byte key has with probability below 3e-14/);
+    expect(reason).toMatch(/no signature scheme lets one be computed/);
+    expect(unsignableKeyReason(MLDSA65Keypair.generate().getPublicKey().toRawBytes())).toBeNull();
+  });
+});

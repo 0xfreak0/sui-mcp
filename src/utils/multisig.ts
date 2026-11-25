@@ -188,7 +188,9 @@ const MAX_GENERATED_RUN = 7;
 
 /**
  * Why no private key can exist for these public-key bytes, or null when they
- * look generated. A public key chosen by hand still parses, and may even be a
+ * look generated. It applies to every scheme's key bytes, a 1952-byte ML-DSA-65
+ * key as well as a 32-byte curve key; the stated chance scales with the length.
+ * A public key chosen by hand still parses, and may even be a
  * valid curve point, but finding the private key behind a chosen point is
  * the discrete-logarithm problem, so nobody holds it. A member with such a
  * key can never sign, so a 2-of-4 committee with one is in practice 2-of-3.
@@ -207,9 +209,12 @@ export function unsignableKeyReason(bytes: Uint8Array): string | null {
   let text = 0;
   while (text < bytes.length && bytes[text] >= 0x20 && bytes[text] <= 0x7e) text++;
   const prefix = text >= 3 ? `begins with the text "${Buffer.from(bytes.subarray(0, text)).toString("latin1")}" and ` : "";
+  // A run of more than MAX_GENERATED_RUN equal bytes starts at any of about
+  // `length` positions, each with probability 255 / 256^8 once the run is 8.
+  const chance = (bytes.length * 255) / 2 ** 64;
   return (
-    `The public key ${prefix}contains a run of ${longest} bytes of 0x${longestByte.toString(16).padStart(2, "0")}, which a generated key has with probability below 1e-15: it was written by hand. ` +
-    "Nobody holds a private key for a public key chosen this way (finding one is the discrete-logarithm problem), so this member can never sign."
+    `The public key ${prefix}contains a run of ${longest} bytes of 0x${longestByte.toString(16).padStart(2, "0")}, which a generated ${bytes.length}-byte key has with probability below ${chance.toExponential(0)}: it was written by hand. ` +
+    "Nobody holds a private key for a public key chosen this way (for a curve key, finding one is the discrete-logarithm problem; no signature scheme lets one be computed from a chosen public key), so this member can never sign."
   );
 }
 

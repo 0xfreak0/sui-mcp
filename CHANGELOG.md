@@ -7,6 +7,7 @@
 
 ### Fixed
 - **CCTP V2 burns.** `resolve_bridge_transfer` read a V2 message's 32-byte nonce as V1's u64, so every V2 burn from Sui shared the transfer id `8/0`. V2 burns now report `cctp_version: 2`, no transfer id, and `attestation_lookup` (source domain and burn digest), with `max_fee`, `min_finality_threshold`, `finality` and any `hook_data`. V1 burns are unchanged and report `cctp_version: 1`.
+- **ML-DSA-65 signers.** A post-quantum ML-DSA-65 signature (flag 7) or multisig member is named `mldsa65` with its derived address in `identify_address`, `analyze_multisig`, `get_transaction`'s `authorization` and `get_upgrade_history`, rather than `unknown`. Mainnet has not enabled the scheme yet (`mldsa65_auth` is off at protocol 142).
 - **Permissioned Asset Standard balances.** A wallet's PAS balances sit at its derived PAS account address, not at its own, so `get_balance` and `get_wallet_overview` reported none. `get_wallet_overview` now lists them as `pas_account` (account address, whether the account object exists, balances), and `get_balance` reports the same coin there as `pas_account_balance`. Both are kept apart from the wallet's spendable holdings, since a PAS balance moves only with its issuer policy's approval.
 
 ### Changed

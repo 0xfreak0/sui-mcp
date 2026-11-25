@@ -5775,6 +5775,7 @@ must be answerable from these tools, and no case check calls
   a page counter or a collection target return duplicates that skew whatever
   they feed — signer-set frequencies, event rankings, denied-address lists. The
   idiom is `if (!cursor) break;` immediately after the assignment.
+- **Forwarding addresses are not read yet.** `0x2::forwarding_address` has only its registry (`0xfa`, on devnet), no registration or resolution API. `NO_API_YET` in `test/sui-framework.test.ts` fails the framework sync that adds one, naming what must then be built.
 - Build copies `src/data/` to `dist/data/` — JSON files must exist in dist at runtime
 - Chain-qualify anything persisted or reported; bare addresses are Sui-only and
   ambiguous the moment a second chain enters a case

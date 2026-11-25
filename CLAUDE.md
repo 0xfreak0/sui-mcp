@@ -1266,6 +1266,7 @@ npm run sync:verified-coins  # regenerate src/data/coins.json
 npm run sync:protocol-roots  # regenerate src/data/protocol-roots.json
 npm run sync:labels -- --exclude FILE   # build, then regenerate src/data/deposit-labels.json; FILE lists private case addresses
 npm run sync:framework -- REF   # vendor the Sui framework sources test/sui-framework.test.ts checks claims against
+npm run sync:framework -- REF --checkout DIR   # the same, from a local MystenLabs/sui checkout of REF
 ```
 
 ### Weekly data refresh

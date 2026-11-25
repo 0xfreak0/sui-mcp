@@ -8,10 +8,10 @@ parameters, struct abilities and fields, and that every callable function
 taking a capability, or what a function taking one returns, is one the rules
 account for. Every non-test source is here so those checks see every module.
 
-- Upstream: https://github.com/MystenLabs/sui/tree/782577ca40c9ef0b3f400ade8bc2cc2dcd0e2b23/crates/sui-framework/packages/sui-framework/sources
-- Ref: `mainnet-v1.80.1`
-- Commit: `782577ca40c9ef0b3f400ade8bc2cc2dcd0e2b23`
-- Commit date: 2026-09-23T03:45:09Z
+- Upstream: https://github.com/MystenLabs/sui/tree/fdbc1e0e2ed8626677abc33ce00afa1f23cdfe98/crates/sui-framework/packages/sui-framework/sources
+- Ref: `mainnet-v1.84.2`
+- Commit: `fdbc1e0e2ed8626677abc33ce00afa1f23cdfe98`
+- Commit date: 2026-11-20T12:59:46-08:00
 
 The files are copied byte for byte and keep their Mysten Labs copyright and
 Apache-2.0 SPDX headers. `LICENSE` is the upstream repository's license.

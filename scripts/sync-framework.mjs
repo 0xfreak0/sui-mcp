@@ -5,6 +5,10 @@
  *
  *   npm run sync:framework -- <ref>    # a tag, branch or commit of MystenLabs/sui
  *   npm run sync:framework             # re-fetch the commit the README records
+ *   npm run sync:framework -- <ref> --checkout <dir>
+ *                                      # read a local MystenLabs/sui checkout of <ref>
+ *                                      # instead of the GitHub API (a sparse clone of
+ *                                      # the sources directory and LICENSE is enough)
  *
  * Vendored: every non-test source of the framework package, so the test's
  * completeness checks see every module that could take a capability or what
@@ -13,7 +17,8 @@
  * without an Apache-2.0 SPDX header is refused. `README.md` is generated and
  * records the commit, its date and why each file is there.
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CITED_FILES, REPO, SOURCES_DIR } from "./lib/sui-framework-files.mjs";
@@ -46,32 +51,58 @@ function recorded() {
   };
 }
 
-const arg = process.argv[2];
+const args = process.argv.slice(2);
+const at = args.indexOf("--checkout");
+const checkout = at >= 0 ? args[at + 1] : null;
+if (at >= 0 && !checkout) throw new Error("--checkout needs a directory");
+const arg = args.filter((_, i) => at < 0 || (i !== at && i !== at + 1))[0];
 const pinned = recorded();
 const ref = arg ?? pinned.ref;
 const lookup = arg ?? pinned.commit;
 if (!ref || !lookup) throw new Error("usage: npm run sync:framework -- <ref> (no commit is recorded yet)");
-
-const commitInfo = await get(`https://api.github.com/repos/${REPO}/commits/${encodeURIComponent(lookup)}`, "json");
-const commit = commitInfo?.sha;
-if (typeof commit !== "string") throw new Error(`could not resolve ${lookup} to a commit`);
-const date = commitInfo.commit?.committer?.date ?? "unknown";
-
-const tree = await get(`https://api.github.com/repos/${REPO}/git/trees/${commit}?recursive=1`, "json");
-if (tree.truncated) throw new Error("the tree listing came back truncated, so some sources might be missed");
 const prefix = `${SOURCES_DIR}/`;
-const sources = tree.tree
-  .filter((t) => t.type === "blob" && t.path.startsWith(prefix) && t.path.endsWith(".move"))
-  .map((t) => t.path.slice(prefix.length))
-  .filter((p) => !p.startsWith("test/"));
+
+let commit;
+let date;
+let sources;
+let readSource;
+let readLicense;
+if (checkout) {
+  // The checkout must be at the ref named, so the README records what was read.
+  const git = (...a) => execFileSync("git", ["-C", checkout, ...a], { encoding: "utf8" }).trim();
+  commit = git("rev-parse", "HEAD");
+  const wanted = git("rev-parse", `${lookup}^{commit}`);
+  if (wanted !== commit) throw new Error(`${checkout} is at ${commit}, not ${lookup} (${wanted})`);
+  date = git("log", "-1", "--format=%cI");
+  const walk = (dir) =>
+    readdirSync(join(checkout, prefix, dir), { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? walk(join(dir, e.name)) : e.name.endsWith(".move") ? [join(dir, e.name)] : [],
+    );
+  sources = walk("").filter((p) => !p.startsWith("test/"));
+  readSource = async (p) => readFileSync(join(checkout, prefix, p));
+  readLicense = async () => readFileSync(join(checkout, "LICENSE"));
+} else {
+  const commitInfo = await get(`https://api.github.com/repos/${REPO}/commits/${encodeURIComponent(lookup)}`, "json");
+  commit = commitInfo?.sha;
+  if (typeof commit !== "string") throw new Error(`could not resolve ${lookup} to a commit`);
+  date = commitInfo.commit?.committer?.date ?? "unknown";
+  const tree = await get(`https://api.github.com/repos/${REPO}/git/trees/${commit}?recursive=1`, "json");
+  if (tree.truncated) throw new Error("the tree listing came back truncated, so some sources might be missed");
+  sources = tree.tree
+    .filter((t) => t.type === "blob" && t.path.startsWith(prefix) && t.path.endsWith(".move"))
+    .map((t) => t.path.slice(prefix.length))
+    .filter((p) => !p.startsWith("test/"));
+  const raw = (path) => `https://raw.githubusercontent.com/${REPO}/${commit}/${path}`;
+  readSource = (p) => get(raw(`${prefix}${p}`));
+  readLicense = () => get(raw("LICENSE"));
+}
 const missing = CITED_FILES.filter((f) => !sources.includes(f));
 if (missing.length) throw new Error(`cited files absent at ${commit}: ${missing.join(", ")}`);
 
-const raw = (path) => `https://raw.githubusercontent.com/${REPO}/${commit}/${path}`;
 const bytes = new Map();
 for (let i = 0; i < sources.length; i += FETCH_CONCURRENCY) {
   const batch = sources.slice(i, i + FETCH_CONCURRENCY);
-  const got = await Promise.all(batch.map((p) => get(raw(`${prefix}${p}`))));
+  const got = await Promise.all(batch.map((p) => readSource(p)));
   batch.forEach((p, k) => bytes.set(p, got[k]));
 }
 
@@ -80,7 +111,7 @@ const chosen = [...reason.keys()].sort();
 const unlicensed = chosen.filter((p) => !LICENSE_HEADER.test(bytes.get(p).toString("utf8")));
 if (unlicensed.length) throw new Error(`no Apache-2.0 SPDX header, not vendoring: ${unlicensed.join(", ")}`);
 
-const license = await get(raw("LICENSE"));
+const license = await readLicense();
 rmSync(join(OUT, "sources"), { recursive: true, force: true });
 for (const p of chosen) {
   const dest = join(OUT, "sources", p);

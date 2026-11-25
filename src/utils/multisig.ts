@@ -32,6 +32,7 @@ import { MultiSigPublicKey } from "@mysten/sui/multisig";
 import { Ed25519PublicKey } from "@mysten/sui/keypairs/ed25519";
 import { Secp256k1PublicKey } from "@mysten/sui/keypairs/secp256k1";
 import { Secp256r1PublicKey } from "@mysten/sui/keypairs/secp256r1";
+import { MLDSA65PublicKey } from "@mysten/sui/keypairs/mldsa65";
 import { computeZkLoginAddressFromSeed } from "@mysten/sui/zklogin";
 import type { PublicKey } from "@mysten/sui/cryptography";
 
@@ -46,6 +47,7 @@ const PLAIN_KEY_CLASSES = {
   ED25519: Ed25519PublicKey,
   Secp256k1: Secp256k1PublicKey,
   Secp256r1: Secp256r1PublicKey,
+  MLDSA65: MLDSA65PublicKey,
 } as const;
 
 export type AuthScheme =
@@ -55,6 +57,7 @@ export type AuthScheme =
   | "multisig"
   | "zklogin"
   | "passkey"
+  | "mldsa65"
   | "unknown";
 
 /** SDK scheme names are capitalised; ours are the wire-ish lowercase form. */
@@ -65,6 +68,7 @@ const SCHEME_NAMES: Record<string, AuthScheme> = {
   MultiSig: "multisig",
   ZkLogin: "zklogin",
   Passkey: "passkey",
+  MLDSA65: "mldsa65",
 };
 
 /** A zkLogin identity as it appears on chain. See {@link zkLoginNote}. */
@@ -356,7 +360,7 @@ export function describeSignatures(signatures: string[]): SignatureIdentity[] {
       return { scheme, ...(address ? { address } : {}), zklogin };
     }
 
-    // Passkey and the three plain schemes all expose a public key directly.
+    // Passkey, ML-DSA-65 and the three curve schemes all expose a public key directly.
     const pk = publicKeyFor(
       parsed.signatureScheme === "Passkey" ? "Secp256r1" : parsed.signatureScheme,
       parsed.publicKey,
@@ -492,6 +496,9 @@ export function authenticationNote(auth: Authentication): string | undefined {
   if (auth.scheme === "zklogin" && auth.zklogin) return zkLoginNote(auth.zklogin);
   if (auth.scheme === "passkey") {
     return "This wallet authenticates with a passkey (WebAuthn), so its key lives in a device or platform keystore.";
+  }
+  if (auth.scheme === "mldsa65") {
+    return "This wallet signs with ML-DSA-65, a post-quantum signature scheme (flag 7). It is one key, like an Ed25519 wallet, and its address is the hash of that key.";
   }
   return undefined;
 }

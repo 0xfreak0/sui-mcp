@@ -17,6 +17,7 @@ const CALL_PATHS = [
  "versions_page.next_call",
   "package_activity.scan.next_call",
   "package_activity_next_call",
+  "allowances_next_call",
   "recent_transactions_next_call",
   "bridge_exits.transaction_detail.next_call",
   "events_page.next_call",

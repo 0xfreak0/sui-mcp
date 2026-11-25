@@ -556,6 +556,35 @@ state at `0xa`). `identify_address` reports this as `aliases`.
 - **Check it before concluding a multisig committee is the only spender.** The
   committee cannot rotate; the wallet's alias set can.
 
+## Allowances
+
+A funder can let a spender withdraw from the funder's address balance
+(`0x2::allowance`), within a lifetime cap and/or a rate limit, from a start
+time to an expiry. The spender signs and pays gas; the funder never signs a
+spend. Agent wallets use app-bound allowances (`app` set), spent through the
+app's own package.
+
+- **A funder's loss in a transaction it did not sign may be a delegated
+  spend.** `get_transaction` lists each withdrawal under an allowance in
+  `allowance_spends`, with the funder, the spender and the allowance's current
+  limits. Do not call such a loss a stolen key without first asking whether
+  the funder granted it.
+- **Granting is not consent to every spend.** An allowance bounds how much the
+  spender can take, not what for. Whether the funder meant it is a separate
+  question, answered off chain.
+- **The funder side is complete; the spender side is a scan.**
+  `list_allowances(address, role: "funder")` reads the funder's
+  `AllowanceCap`s, which cannot be transferred, so it lists every live
+  allowance. `role: "spender"` scans every allowance and states whether the
+  scan finished; a truncated or failed scan rules nothing out.
+- **The state is current.** `allowance_now` and `spendable_now` describe the
+  allowance at the read, not when a past spend ran. A revoked allowance is
+  deleted and reads as null.
+- **Stopping further loss**: the funder revokes with
+  `0x2::allowance::revoke(cap, allowance)`, using the `cap_id`
+  `list_allowances` gives. `identify_address` lists granted allowances as
+  `allowances_granted`.
+
 ## Exploit transactions and incident losses
 
 `analyze_attack_tx` breaks down one transaction; `summarize_incident_losses`

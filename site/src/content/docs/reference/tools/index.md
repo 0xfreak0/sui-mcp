@@ -6,7 +6,7 @@ sidebar:
   label: "Overview"
   order: 100
 ---
-These pages are generated from the `tools/list` response of the server started with `SUI_TOOLS=all`. The server registers 80 tools. 79 belong to one or more of the profiles `core`, `forensics`, `developer`, `market`, and `enable_tools` is always on.
+These pages are generated from the `tools/list` response of the server started with `SUI_TOOLS=all`. The server registers 81 tools. 80 belong to one or more of the profiles `core`, `forensics`, `developer`, `market`, and `enable_tools` is always on.
 
 ## Groups
 
@@ -15,7 +15,7 @@ These pages are generated from the `tools/list` response of the server started w
 | [Recommended starting points](/reference/tools/starting-points/) | `analyze_token`, `get_transaction_history`, `get_wallet_overview`, `get_wallet_packages`, `identify_address` |
 | [Chain and network](/reference/tools/chain-and-network/) | `get_chain_info`, `get_checkpoint` |
 | [Objects](/reference/tools/objects/) | `get_object`, `list_dynamic_fields`, `list_objects_by_type`, `list_owned_objects` |
-| [Coins and tokens](/reference/tools/coins-and-tokens/) | `get_balance`, `get_coin_info`, `get_token_prices`, `search_token` |
+| [Coins and tokens](/reference/tools/coins-and-tokens/) | `get_balance`, `get_coin_info`, `get_token_prices`, `list_allowances`, `search_token` |
 | [Transactions and events](/reference/tools/transactions-and-events/) | `get_transaction`, `get_transactions`, `query_events`, `query_transactions` |
 | [DeFi](/reference/tools/defi/) | `find_pools`, `get_defi_positions`, `get_pool_stats` |
 | [DeepBook](/reference/tools/deepbook/) | `compare_oracle_price`, `deepbook_orderbook`, `deepbook_trades` |
@@ -84,6 +84,7 @@ These pages are generated from the `tools/list` response of the server started w
 | [`get_wallet_overview`](/reference/tools/starting-points/#get_wallet_overview) | Overview of a Sui wallet. | [Recommended starting points](/reference/tools/starting-points/) | `core` (default) |
 | [`get_wallet_packages`](/reference/tools/starting-points/#get_wallet_packages) | List package versions created by publish or upgrade transactions sent from this wallet address. | [Recommended starting points](/reference/tools/starting-points/) | `core` (default) |
 | [`identify_address`](/reference/tools/starting-points/#identify_address) | Classify a Sui address as wallet, package, validator or object before choosing other tools. | [Recommended starting points](/reference/tools/starting-points/) | `core` (default) |
+| [`list_allowances`](/reference/tools/coins-and-tokens/#list_allowances) | List the native allowances (0x2::allowance) an address funds or can spend. | [Coins and tokens](/reference/tools/coins-and-tokens/) | `core` (default) |
 | [`list_dynamic_fields`](/reference/tools/objects/#list_dynamic_fields) | List dynamic fields of a Sui object. | [Objects](/reference/tools/objects/) | `developer` |
 | [`list_findings`](/reference/tools/incident-investigation/#list_findings) | List recorded findings, or every case with its finding count. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
 | [`list_nft_collections`](/reference/tools/nfts/#list_nft_collections) | Summary of the NFT collections a wallet holds: every kiosk plus directly owned objects, one row per collection type with its count. | [NFTs](/reference/tools/nfts/) | `core` (default) |

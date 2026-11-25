@@ -93,8 +93,11 @@ describe("build_transfer for a coin other than SUI", () => {
       typeArg: { Balance: CETUS },
       withdrawFrom: { $kind: "Sender" },
     });
-    expect(data.commands.map((c) => c.$kind)).toEqual(["MoveCall", "TransferObjects"]);
+    // The SDK redeems the reservation, splits the exact amount off it and
+    // returns the rest to the sender's address balance.
+    expect(data.commands.map((c) => c.$kind)).toEqual(["MoveCall", "SplitCoins", "MoveCall", "TransferObjects"]);
     expect(data.commands[0].MoveCall).toMatchObject({ module: "coin", function: "redeem_funds" });
+    expect(data.commands[2].MoveCall).toMatchObject({ module: "coin", function: "send_funds" });
   });
 
   it("refuses an amount above what the sender holds in coins and address balance together", async () => {

@@ -45,7 +45,7 @@ export const GROUPS = [
   {
     slug: "coins-and-tokens",
     title: "Coins and tokens",
-    tools: ["get_balance", "get_coin_info", "search_token", "get_token_prices"],
+    tools: ["get_balance", "list_allowances", "get_coin_info", "search_token", "get_token_prices"],
   },
   {
     slug: "transactions-and-events",

@@ -118,3 +118,64 @@ describe("domain mapping", () => {
     expect(cctpDomainLabel(999)).toBe("Circle domain 999");
   });
 });
+
+/** CCTP V2, captured from mainnet tx 95NbYXyiVud9o5vVPtS2XiBg7toghAZNYYtUnNrjNkzd (TokenMessengerMinterV2 0xeb14978a…). */
+const V2_MESSAGE_B64 =
+  "AAAAAQAAAAgAAAATAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD0eEKitaxEg3MZJ6dQAXWpNU0uzNlDEqpZHsULnoZX5gAAAAAAAAAAAAAAACi1oOnGIaW62qU2IZs6IoyBaM9dAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfQAAAAAAAAAAE/LijRY+JQQqx8lUPBVnWvWqXTwn28ZWpn839Ck6P97wAAAAAAAAAAAAAAACO/dzHAGb+SZoIFqBRjDZTIsQhBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQMkKfrx+O8qnK2bTyWMZ0hETDRlQuPFBO+OGkpr16fhOTl6QgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+
+const V2_DEPOSIT = {"burn_token": "0x3f2e28d163e25042ac7c9543c15675af5aa5d3c27dbc656a67f37f4293a3fdef", "amount": "4347668986", "depositor": "0xf1f8ef2a9cad9b4f258c6748444c346542e3c504ef8e1a4a6bd7a7e139397a42", "mint_recipient": "0x00000000000000000000000023bf7731c019bf92668205a814630d94c8b10841", "destination_domain": 19, "destination_token_messenger": "0x00000000000000000000000028b5a0e9c621a5badaa536219b3a228c8168cf5d", "destination_caller": "0x0000000000000000000000000000000000000000000000000000000000000000", "max_fee": "0", "min_finality_threshold": 2000, "hook_data": ""};
+
+describe("CCTP V2", () => {
+  it("reads a V2 header: version 1, no nonce until Circle attests, and the finality asked for", () => {
+    expect(parseMessageHeader(V2_MESSAGE_B64)).toEqual({
+      version: 1,
+      sourceDomain: 8,
+      destinationDomain: 19,
+      nonce: null,
+      minFinalityThreshold: 2000,
+    });
+  });
+
+  it("reads a nonce once one is set, all 32 bytes of it", () => {
+    const b = Buffer.from(V2_MESSAGE_B64, "base64");
+    b[43] = 7;
+    b[12] = 1;
+    const h = parseMessageHeader(b.toString("base64"))!;
+    expect(h.nonce).toBe((2n ** 248n + 7n).toString());
+  });
+
+  it("refuses a V2 message shorter than its header", () => {
+    const b = Buffer.from(V2_MESSAGE_B64, "base64").subarray(0, 100);
+    expect(parseMessageHeader(b.toString("base64"))).toBeNull();
+  });
+
+  it("gives a V2 burn no transfer id rather than one every V2 burn would share", () => {
+    const t = parseDepositForBurn(V2_DEPOSIT, parseMessageHeader(V2_MESSAGE_B64), true)!;
+    expect(t).toMatchObject({
+      cctpVersion: 2,
+      transferId: null,
+      nonce: null,
+      sourceDomain: 8,
+      destinationDomain: 19,
+      amount: "4347668986",
+      maxFee: "0",
+      minFinalityThreshold: 2000,
+      hookData: null,
+    });
+  });
+
+  it("tells V2 from V1 by the event alone when no message is paired", () => {
+    expect(parseDepositForBurn(V2_DEPOSIT, null, true)!.cctpVersion).toBe(2);
+    expect(parseDepositForBurn(DEPOSIT, null, true)!.cctpVersion).toBe(1);
+  });
+
+  it("keeps V1's transfer id and gives it no V2 fields", () => {
+    const t = parseDepositForBurn(DEPOSIT, parseMessageHeader(MESSAGE_B64), true)!;
+    expect(t).toMatchObject({ cctpVersion: 1, transferId: "8/425380", maxFee: null, minFinalityThreshold: null, hookData: null });
+  });
+
+  it("reports hook data as hex", () => {
+    const t = parseDepositForBurn({ ...V2_DEPOSIT, hook_data: Buffer.from([0xab, 0xcd]).toString("base64") }, null, true)!;
+    expect(t.hookData).toBe("0xabcd");
+  });
+});

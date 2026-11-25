@@ -2883,6 +2883,22 @@ over 32 for Solana — and a value whose "padding" is not zero is refused rather
 than trimmed into an address that is not the recipient. The nonce is carried as
 a string because it is a u64.
 
+CCTP V2 (TokenMessengerMinterV2 `0xeb14978a…`, MessageTransmitterV2
+`0x16bcfcfc…`) keeps the module and event names, so detection needs no new
+marker, but its message is version 1: `nonce(32)` at offset 12, then sender,
+recipient, destination caller and two u32 finality thresholds (148-byte
+header). The source chain's copy always has a zero nonce, since Circle's
+attester assigns it, so reading it as V1's u64 gave every V2 burn the
+identity `8/0`. A V2 burn has `transfer_id: null` and is identified by
+`attestation_lookup` (source domain and burn digest, the key Circle's
+`/v2/messages` takes). Its event adds `max_fee`, `min_finality_threshold`
+(1000 or below is fast) and `hook_data`; non-empty hook data means the mint
+recipient may be a contract that acts on the USDC. `amount` is a `u256`. V2
+also serves domains past 14 that `DOMAIN_NAMES` does not map; those stay
+reported by number until Circle's assignment is read from a first-party list.
+An Allbridge or Mayan CCTP leg is matched by V1 nonce, so it does not pair a
+V2 burn.
+
 Circle's attestation API is deliberately **not** called: an attestation says
 Circle signed the message, not that anyone claimed it, so it would add a
 third-party dependency for weaker information than the events already give.

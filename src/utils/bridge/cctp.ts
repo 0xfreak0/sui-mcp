@@ -7,9 +7,11 @@
  * the paired `MessageSent` carries the raw message whose header holds the
  * source domain and nonce.
  *
- * `(source_domain, nonce)` is CCTP's transfer identity and is quoted back by
- * the destination chain on mint, so it is also the key for confirming the
- * transfer completed.
+ * In V1, `(source_domain, nonce)` is the transfer identity, quoted back by the
+ * destination chain on mint. V2 (message version 1, `max_fee` in the burn
+ * event) leaves the 32-byte nonce zero in the source chain's message, since
+ * Circle's attester assigns it, so a V2 transfer is found by its source domain
+ * and burn transaction (Circle's `/v2/messages/{sourceDomain}?transactionHash=`).
  *
  * Circle also serves an attestation API. It is deliberately not called here: an
  * attestation says Circle signed the message, not that anyone claimed it, so it
@@ -63,31 +65,52 @@ export function caip2ForCctpDomain(domain: number): ChainId | null {
 
 /** CCTP message header, which is where the transfer's identity lives. */
 export interface CctpMessageHeader {
+  /** Message format version: 0 is CCTP V1, 1 is CCTP V2. */
   version: number;
   sourceDomain: number;
   destinationDomain: number;
-  nonce: string;
+  /**
+   * V1: the u64 nonce the source chain assigned. V2: null while the message's
+   * 32-byte nonce is still zero, which it always is in the source chain's own
+   * copy, since Circle's attester assigns it.
+   */
+  nonce: string | null;
+  /** V2 only: the finality the burner asked for (1000 fast, 2000 standard). */
+  minFinalityThreshold?: number;
 }
+
+/** CCTP V2 message: nonce(32) at 12, then sender, recipient, caller (32 each), two u32 thresholds. */
+const V2_HEADER_LEN = 148;
+const V2_MIN_FINALITY_AT = 140;
 
 /**
  * Read the fixed header of a CCTP message.
  *
- * Layout is version(4) ‖ sourceDomain(4) ‖ destinationDomain(4) ‖ nonce(8),
- * big-endian, then sender/recipient/body. Anything shorter than the header is
- * not a CCTP message and returns null rather than a record of zeros.
+ * V1 (version 0): version(4) ‖ sourceDomain(4) ‖ destinationDomain(4) ‖
+ * nonce(8), big-endian. V2 (version 1): the nonce is 32 bytes, and the header
+ * runs on to the sender, recipient, destination caller and finality
+ * thresholds. Anything shorter than its version's header is not a CCTP
+ * message and returns null rather than a record of zeros. An unknown
+ * version keeps its domains and reports no nonce.
  */
 export function parseMessageHeader(base64: string): CctpMessageHeader | null {
   try {
     const b = Buffer.from(base64, "base64");
-    if (b.length < 20) return null;
-    return {
-      version: b.readUInt32BE(0),
-      sourceDomain: b.readUInt32BE(4),
-      destinationDomain: b.readUInt32BE(8),
+    if (b.length < 12) return null;
+    const version = b.readUInt32BE(0);
+    const head = { version, sourceDomain: b.readUInt32BE(4), destinationDomain: b.readUInt32BE(8) };
+    if (version === 0) {
+      if (b.length < 20) return null;
       // u64: read as BigInt, since a nonce past 2^53 would lose precision as a
       // Number and stop matching the destination chain's copy.
-      nonce: b.readBigUInt64BE(12).toString(),
-    };
+      return { ...head, nonce: b.readBigUInt64BE(12).toString() };
+    }
+    if (version === 1) {
+      if (b.length < V2_HEADER_LEN) return null;
+      const nonce = BigInt(`0x${b.subarray(12, 44).toString("hex")}`);
+      return { ...head, nonce: nonce === 0n ? null : nonce.toString(), minFinalityThreshold: b.readUInt32BE(V2_MIN_FINALITY_AT) };
+    }
+    return { ...head, nonce: null };
   } catch {
     return null;
   }
@@ -108,7 +131,13 @@ export function decodeMintRecipient(raw: string, destinationDomain: number): str
 }
 
 export interface CctpTransfer {
-  /** `sourceDomain/nonce` — CCTP's transfer identity. */
+  /** 1 or 2, from the message version or the event's shape; null when neither says. */
+  cctpVersion: 1 | 2 | null;
+  /**
+   * `sourceDomain/nonce`, CCTP V1's transfer identity. Null for V2, whose
+   * nonce is assigned by Circle's attester after the burn: a V2 transfer is
+   * identified by its source domain and burn transaction instead.
+   */
   transferId: string | null;
   nonce: string | null;
   sourceDomain: number | null;
@@ -123,6 +152,21 @@ export interface CctpTransfer {
   depositor: string | null;
   amount: string | null;
   burnToken: string | null;
+  /** V2: the most of `amount` the burner lets the relayer keep as a fee. */
+  maxFee: string | null;
+  /** V2: 1000 or below asks for fast transfer, 2000 for standard finality. */
+  minFinalityThreshold: number | null;
+  /**
+   * V2: bytes the destination passes to a hook. Non-empty, the recipient is
+   * a contract that may act on the USDC rather than hold it.
+   */
+  hookData: string | null;
+}
+
+/** A `vector<u8>` field as hex: GraphQL renders it as base64. */
+function hexOf(v: string): string {
+  if (/^0x[0-9a-fA-F]*$/.test(v)) return v.toLowerCase();
+  return `0x${Buffer.from(v, "base64").toString("hex")}`;
 }
 
 const str = (v: unknown): string | null =>
@@ -148,8 +192,14 @@ export function parseDepositForBurn(
     typeof f.destination_domain === "number" ? f.destination_domain : header?.destinationDomain;
   if (destinationDomain === undefined) return null;
 
+  // V1's event carries a nonce; V2's carries max_fee and no nonce.
+  const cctpVersion: CctpTransfer["cctpVersion"] =
+    header?.version === 1 || "max_fee" in f ? 2 : header?.version === 0 || "nonce" in f ? 1 : null;
   const nonce = str(f.nonce) ?? header?.nonce ?? null;
   const sourceDomain = header?.sourceDomain ?? null;
+  const minFinality =
+    typeof f.min_finality_threshold === "number" ? f.min_finality_threshold : (header?.minFinalityThreshold ?? null);
+  const hook = str(f.hook_data);
   const mintRecipientRaw = str(f.mint_recipient);
 
   const destinationAddress = mintRecipientRaw
@@ -163,7 +213,8 @@ export function parseDepositForBurn(
     : null;
 
   return {
-    transferId: sourceDomain !== null && nonce ? `${sourceDomain}/${nonce}` : null,
+    cctpVersion,
+    transferId: cctpVersion !== 2 && sourceDomain !== null && nonce ? `${sourceDomain}/${nonce}` : null,
     nonce,
     sourceDomain,
     destinationDomain,
@@ -174,5 +225,8 @@ export function parseDepositForBurn(
     depositor: str(f.depositor),
     amount: str(f.amount),
     burnToken: str(f.burn_token),
+    maxFee: cctpVersion === 2 ? str(f.max_fee) : null,
+    minFinalityThreshold: cctpVersion === 2 ? minFinality : null,
+    hookData: cctpVersion === 2 && hook ? hexOf(hook) : null,
   };
 }

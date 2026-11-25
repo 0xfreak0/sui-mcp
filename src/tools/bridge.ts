@@ -379,9 +379,26 @@ export function registerBridgeTools(server: McpServer) {
           ? {
               circle_cctp: cctpTransfers.map((t) => ({
                 evidence: "chain-derived" as const,
+                cctp_version: t.cctpVersion,
                 transfer_id: t.transferId,
                 nonce: t.nonce,
                 source_domain: t.sourceDomain,
+                ...(t.cctpVersion === 2
+                  ? {
+                      attestation_lookup: { source_domain: t.sourceDomain, transaction_hash: digest },
+                      ...(t.maxFee !== null ? { max_fee: t.maxFee } : {}),
+                      min_finality_threshold: t.minFinalityThreshold,
+                      finality:
+                        t.minFinalityThreshold === null ? null : t.minFinalityThreshold <= 1000 ? "fast" : "standard",
+                      ...(t.hookData && t.hookData !== "0x"
+                        ? {
+                            hook_data: t.hookData,
+                            hook_note:
+                              "This burn carries hook data for the destination, so the mint recipient may be a contract that acts on the USDC (forwards it, swaps it) rather than the final holder.",
+                          }
+                        : {}),
+                    }
+                  : {}),
                 destination_chain: t.destinationAccount
                   ? t.destinationAccount.split(":").slice(0, 2).join(":")
                   : null,
@@ -404,7 +421,10 @@ export function registerBridgeTools(server: McpServer) {
                         note: "This burn carries the Allbridge Core transfer with the same nonce. USDC is minted to this address (on Solana, the wallet's token account); the beneficiary is Allbridge's recipient wallet in `beneficiaries`.",
                       }
                     : {
-                        note: "Destination read from the burn event, not from an indexer. Confirm the mint on the destination chain against this transfer id to establish it was completed.",
+                        note:
+                          t.cctpVersion === 2
+                            ? "Destination read from the burn event, not from an indexer. This is a CCTP V2 burn: its nonce is assigned when Circle attests the message, so the transfer is identified by attestation_lookup (source domain and this transaction's digest). Confirm the mint on the destination chain to establish it was completed. The amount minted is amount less the fee the relayer took, at most max_fee."
+                            : "Destination read from the burn event, not from an indexer. Confirm the mint on the destination chain against this transfer id to establish it was completed.",
                       }),
               })),
             }
